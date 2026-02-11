@@ -1,4 +1,0 @@
-#include "ggml-vulkan-shaders.hpp"
-
-const void * mul_data[2][2][2][2] = {{{{mul_f32_f32_f32_data,mul_f32_f32_f32_rte_data,}, {mul_f32_f32_f16_data,mul_f32_f32_f16_rte_data,}, }, {{mul_f32_f16_f32_data,mul_f32_f16_f32_rte_data,}, {mul_f32_f16_f16_data,mul_f32_f16_f16_rte_data,}, }, }, {{{mul_f16_f32_f32_data,mul_f16_f32_f32_rte_data,}, {mul_f16_f32_f16_data,mul_f16_f32_f16_rte_data,}, }, {{mul_f16_f16_f32_data,mul_f16_f16_f32_rte_data,}, {mul_f16_f16_f16_data,mul_f16_f16_f16_rte_data,}, }, }, };
-const uint64_t mul_len[2][2][2][2] = {{{{mul_f32_f32_f32_len,mul_f32_f32_f32_rte_len,}, {mul_f32_f32_f16_len,mul_f32_f32_f16_rte_len,}, }, {{mul_f32_f16_f32_len,mul_f32_f16_f32_rte_len,}, {mul_f32_f16_f16_len,mul_f32_f16_f16_rte_len,}, }, }, {{{mul_f16_f32_f32_len,mul_f16_f32_f32_rte_len,}, {mul_f16_f32_f16_len,mul_f16_f32_f16_rte_len,}, }, {{mul_f16_f16_f32_len,mul_f16_f16_f32_rte_len,}, {mul_f16_f16_f16_len,mul_f16_f16_f16_rte_len,}, }, }, };

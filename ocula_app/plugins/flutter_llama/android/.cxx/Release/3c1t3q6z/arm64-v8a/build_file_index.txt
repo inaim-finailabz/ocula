@@ -1,7 +1,0 @@
-/Volumes/ExternalDisk/projects/Ocula/ocula_app/plugins/flutter_llama/android/src/main/cpp/CMakeLists.txt
-/Volumes/ExternalDisk/projects/Ocula/ocula_app/plugins/flutter_llama/llama.cpp/CMakeLists.txt
-/Volumes/ExternalDisk/projects/Ocula/ocula_app/plugins/flutter_llama/llama.cpp/ggml/CMakeLists.txt
-/Volumes/ExternalDisk/projects/Ocula/ocula_app/plugins/flutter_llama/llama.cpp/ggml/src/CMakeLists.txt
-/Volumes/ExternalDisk/projects/Ocula/ocula_app/plugins/flutter_llama/llama.cpp/ggml/src/ggml-cpu/CMakeLists.txt
-/Volumes/ExternalDisk/projects/Ocula/ocula_app/plugins/flutter_llama/llama.cpp/ggml/src/ggml-vulkan/CMakeLists.txt
-/Volumes/ExternalDisk/projects/Ocula/ocula_app/plugins/flutter_llama/llama.cpp/src/CMakeLists.txt

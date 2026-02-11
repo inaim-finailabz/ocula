@@ -47,3 +47,13 @@ linux/flutter/ephemeral/
 
 # Firebase
 firebase_options.dart
+
+# Build & release artifacts
+build/
+**/build/
+**/.cxx/
+**/Release/
+**/Debug/
+
+# Large model files
+*.gguf
