@@ -64,13 +64,13 @@ class OculaModelManager {
     // ── SENSOR: Always-on, fast & tiny ──
     ModelInfo(
       fileName: 'SmolVLM2-256M-Video-Instruct-Q8_0.gguf',
-      downloadUrl: 'http://localhost:8080/models/SmolVLM2-256M-Video-Instruct-Q8_0.gguf',
+      downloadUrl: 'https://backend-ocula.finailabz.com/models/SmolVLM2-256M-Video-Instruct-Q8_0.gguf',
       sizeBytes: 175 * 1024 * 1024, // ~175 MB
       tier: AITier.free,
     ),
     ModelInfo(
       fileName: 'mmproj-SmolVLM2-256M-Video-Instruct-f16.gguf',
-      downloadUrl: 'http://localhost:8080/models/mmproj-SmolVLM2-256M-Video-Instruct-f16.gguf',
+      downloadUrl: 'https://backend-ocula.finailabz.com/models/mmproj-SmolVLM2-256M-Video-Instruct-f16.gguf',
       sizeBytes: 181 * 1024 * 1024, // ~181 MB
       tier: AITier.free,
       isVisionProjector: true,
@@ -79,13 +79,13 @@ class OculaModelManager {
     // Moondream 2 (April 2025) — quantized from f16 to Q4_K_M
     ModelInfo(
       fileName: 'moondream2-text-model-Q4_K_M.gguf',
-      downloadUrl: 'http://localhost:8080/models/moondream2-text-model-Q4_K_M.gguf',
+      downloadUrl: 'https://backend-ocula.finailabz.com/models/moondream2-text-model-Q4_K_M.gguf',
       sizeBytes: 900 * 1024 * 1024, // ~900 MB (Q4_K_M quantized)
       tier: AITier.plus,
     ),
     ModelInfo(
       fileName: 'moondream2-mmproj-f16-20250414.gguf',
-      downloadUrl: 'http://localhost:8080/models/moondream2-mmproj-f16-20250414.gguf',
+      downloadUrl: 'https://backend-ocula.finailabz.com/models/moondream2-mmproj-f16-20250414.gguf',
       sizeBytes: 910 * 1024 * 1024, // ~910 MB
       tier: AITier.plus,
       isVisionProjector: true,
@@ -93,13 +93,13 @@ class OculaModelManager {
     // ── THINKER: Reasoning with chain-of-thought ──
     ModelInfo(
       fileName: 'Qwen3VL-2B-Thinking-Q4_K_M.gguf',
-      downloadUrl: 'http://localhost:8080/models/Qwen3VL-2B-Thinking-Q4_K_M.gguf',
+      downloadUrl: 'https://backend-ocula.finailabz.com/models/Qwen3VL-2B-Thinking-Q4_K_M.gguf',
       sizeBytes: 1110 * 1024 * 1024, // ~1.11 GB
       tier: AITier.pro,
     ),
     ModelInfo(
       fileName: 'mmproj-Qwen3VL-2B-Thinking-F16.gguf',
-      downloadUrl: 'http://localhost:8080/models/mmproj-Qwen3VL-2B-Thinking-F16.gguf',
+      downloadUrl: 'https://backend-ocula.finailabz.com/models/mmproj-Qwen3VL-2B-Thinking-F16.gguf',
       sizeBytes: 819 * 1024 * 1024, // ~819 MB
       tier: AITier.pro,
       isVisionProjector: true,
@@ -116,10 +116,18 @@ class OculaModelManager {
   /// Values: 'Quick Scan', 'Detail & Counting', 'Vision & Deep Analysis'
   final StreamController<String> _featureReadyController = StreamController.broadcast();
 
+  /// Emits the AITier enum whenever that tier's models are fully downloaded.
+  /// AIManager subscribes to this to set a pending-upgrade flag.
+  final StreamController<AITier> _tierReadyController = StreamController.broadcast();
+
   Stream<Map<String, double>> get downloadProgressStream => _downloadProgressStreamController.stream;
 
   /// Subscribe to this for user-facing "feature X is ready" notifications.
   Stream<String> get featureReadyStream => _featureReadyController.stream;
+
+  /// Subscribe to this for programmatic "tier X is ready" signals.
+  /// AIManager listens here to set the pending-upgrade flag.
+  Stream<AITier> get tierReadyStream => _tierReadyController.stream;
 
   /// Human-friendly feature label for each tier (never expose model names).
   static String featureLabel(AITier tier) {
@@ -176,7 +184,10 @@ class OculaModelManager {
   /// Download remaining models in the background.
   /// Includes: free-tier projector (not required for splash) + all plus/pro models.
   /// Emits feature-ready notifications as each tier completes.
+  /// Each download has a 10-minute timeout so one failure doesn't block the rest.
   Future<void> downloadRemainingInBackground() async {
+    debugPrint('[ModelManager] Starting background download of remaining models...');
+
     // First, ensure the free-tier projector is copied/downloaded
     final freeProjector = models
         .where((m) => m.tier == AITier.free && m.isVisionProjector)
@@ -185,10 +196,15 @@ class OculaModelManager {
       // Try bundled copy first, then download
       final copied = await _ensureBundledModelCopied(freeProjector.fileName);
       if (!copied) {
-        await download(freeProjector, onProgress: (progress, status) {
-          _downloadProgress[freeProjector.fileName] = progress;
-          _downloadProgressStreamController.add(_downloadProgress);
-        });
+        try {
+          await download(freeProjector, onProgress: (progress, status) {
+            _downloadProgress[freeProjector.fileName] = progress;
+            _downloadProgressStreamController.add(_downloadProgress);
+          }).timeout(const Duration(minutes: 10));
+          debugPrint('[ModelManager] ✓ Free projector downloaded');
+        } catch (e) {
+          debugPrint('[ModelManager] ✗ Free projector download failed: $e');
+        }
       }
     }
 
@@ -196,21 +212,44 @@ class OculaModelManager {
     for (final tier in [AITier.plus, AITier.pro]) {
       final tierModels = modelsForTier(tier);
       bool allReady = true;
+
       for (final model in tierModels) {
-        if (await isDownloaded(model.fileName)) continue;
+        if (await isDownloaded(model.fileName)) {
+          debugPrint('[ModelManager] ${model.fileName} already downloaded');
+          continue;
+        }
         // Try bundled copy first (instant), then download as fallback
         final copied = await _ensureBundledModelCopied(model.fileName);
-        if (copied) continue;
-        final ok = await download(model, onProgress: (progress, status) {
-          _downloadProgress[model.fileName] = progress;
-          _downloadProgressStreamController.add(_downloadProgress);
-        });
-        if (!ok) allReady = false;
+        if (copied) {
+          debugPrint('[ModelManager] ✓ ${model.fileName} copied from bundle');
+          continue;
+        }
+        try {
+          debugPrint('[ModelManager] Downloading ${model.fileName} (${model.sizeLabel})...');
+          final ok = await download(model, onProgress: (progress, status) {
+            _downloadProgress[model.fileName] = progress;
+            _downloadProgressStreamController.add(_downloadProgress);
+          }).timeout(const Duration(minutes: 10));
+          if (!ok) {
+            allReady = false;
+            debugPrint('[ModelManager] ✗ ${model.fileName} download returned false');
+          } else {
+            debugPrint('[ModelManager] ✓ ${model.fileName} downloaded');
+          }
+        } catch (e) {
+          allReady = false;
+          debugPrint('[ModelManager] ✗ ${model.fileName} download failed: $e');
+        }
       }
+
       if (allReady) {
-        _featureReadyController.add(featureLabel(tier));
+        final label = featureLabel(tier);
+        debugPrint('[ModelManager] ★ Tier ${tier.name} ready: $label');
+        _featureReadyController.add(label);
+        _tierReadyController.add(tier);
       }
     }
+    debugPrint('[ModelManager] Background download pass complete');
   }
 
   Future<void> downloadAllModelsInBackground() async {
@@ -547,7 +586,8 @@ class OculaModelManager {
     await prefs.setBool('downloading_${model.fileName}', true);
 
     try {
-      _httpClient ??= HttpClient();
+      _httpClient ??= HttpClient()
+        ..connectionTimeout = const Duration(seconds: 15);
       final resolvedUrl = _resolveUrl(model.downloadUrl);
       debugPrint('[ModelManager] Downloading from: $resolvedUrl');
       final request = await _httpClient!.getUrl(Uri.parse(resolvedUrl));

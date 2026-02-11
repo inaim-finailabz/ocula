@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 import 'package:device_info_plus/device_info_plus.dart';
 import 'package:flutter/foundation.dart';
@@ -24,7 +25,12 @@ class ModelNotReadyException implements Exception {
 class AIManager {
   static final AIManager _instance = AIManager._internal();
   factory AIManager() => _instance;
-  AIManager._internal();
+  AIManager._internal() {
+    // Listen for tiers that finish downloading in the background.
+    // When a better tier becomes available, mark it as pending.
+    // The actual switch happens between queries via applyPendingUpgrade().
+    _tierReadySub = _models.tierReadyStream.listen(_onTierReady);
+  }
 
   final FlutterLlama _textEngine = FlutterLlama.instance;
   final FlutterLlamaMultimodal _visionEngine = FlutterLlamaMultimodal.instance;
@@ -35,8 +41,66 @@ class AIManager {
   final AppLanguage _appLang = AppLanguage();
   int? _deviceRamMB;
 
+  /// The best tier that finished downloading but hasn't been loaded yet.
+  /// Set by the tierReadyStream listener, consumed by applyPendingUpgrade().
+  AITier? _pendingUpgradeTier;
+  StreamSubscription<AITier>? _tierReadySub;
+
   AITier? get activeTier => _activeTier;
+  AITier? get pendingUpgradeTier => _pendingUpgradeTier;
   bool get isModelLoaded => _textEngine.isModelLoaded;
+
+  /// Tier priority: higher index = better model
+  static const _tierRank = {
+    AITier.free: 0,
+    AITier.plus: 1,
+    AITier.pro: 2,
+    AITier.enterprise: 3,
+  };
+
+  /// Called when a tier finishes downloading in the background.
+  /// Only records it as pending if it's better than what's currently loaded.
+  void _onTierReady(AITier tier) {
+    final currentRank = _tierRank[_activeTier] ?? -1;
+    final pendingRank = _tierRank[_pendingUpgradeTier] ?? -1;
+    final newRank = _tierRank[tier] ?? -1;
+
+    if (newRank > currentRank && newRank > pendingRank) {
+      _pendingUpgradeTier = tier;
+      debugPrint('[AIManager] 🏁 Pending upgrade queued: ${tier.name} '
+          '(current: ${_activeTier?.name ?? "none"})');
+    }
+  }
+
+  /// Apply a pending model upgrade if one is ready.
+  /// Call this BETWEEN queries (at the top of orchestrator.run())
+  /// so we never switch mid-generation.
+  ///
+  /// Returns true if the model was upgraded, false if no upgrade was pending.
+  Future<bool> applyPendingUpgrade() async {
+    final target = _pendingUpgradeTier;
+    if (target == null) return false;
+
+    // Clear the flag immediately so we don't retry on every query
+    _pendingUpgradeTier = null;
+
+    // Already on this tier (or a better one)
+    final currentRank = _tierRank[_activeTier] ?? -1;
+    final targetRank = _tierRank[target] ?? -1;
+    if (targetRank <= currentRank) return false;
+
+    debugPrint('[AIManager] ⬆ Applying pending upgrade: '
+        '${_activeTier?.name ?? "none"} → ${target.name}');
+
+    try {
+      await switchEngine(target);
+      debugPrint('[AIManager] ⬆ Upgrade complete: now on ${target.name}');
+      return true;
+    } catch (e) {
+      debugPrint('[AIManager] ⬆ Upgrade to ${target.name} failed: $e — staying on ${_activeTier?.name}');
+      return false;
+    }
+  }
 
   /// Device RAM in MB. Cached after first call.
   Future<int> get deviceRamMB async {
@@ -154,6 +218,13 @@ class AIManager {
     return path != null;
   }
 
+  /// Check if a tier's main model file is downloaded and on disk.
+  /// Does NOT require loading — just checks the file exists.
+  Future<bool> isTierDownloaded(AITier tier) async {
+    final path = await _models.mainModelPath(tier);
+    return path != null;
+  }
+
   Future<void> switchEngine(AITier tier) async {
     if (_activeTier == tier) return;
 
@@ -162,16 +233,21 @@ class AIManager {
       return;
     }
 
-    // Check if model is downloaded
+    // ── SAFETY: Verify the target model is downloaded BEFORE touching anything ──
     final mainPath = await _models.mainModelPath(tier);
     if (mainPath == null) {
       throw ModelNotReadyException(tier);
     }
 
-    // Remember what was loaded so we can restore on failure
-    final previousTier = _activeTier;
+    // Verify the file actually exists and is > 1MB (not a corrupt stub)
+    final targetFile = File(mainPath);
+    if (!targetFile.existsSync() || targetFile.lengthSync() < 1024 * 1024) {
+      throw ModelNotReadyException(tier);
+    }
 
-    // 1. Flush RAM — unload whatever is currently loaded
+    debugPrint('[AIManager] switchEngine: ${_activeTier?.name ?? "none"} → ${tier.name}');
+
+    // ── Unload current model ──
     if (_activeTier != null) {
       try {
         if (_isVisionMode) {
@@ -182,13 +258,11 @@ class AIManager {
       } catch (e) {
         debugPrint('[AIManager] unload failed (non-fatal): $e');
       }
-      // Model is gone from native side regardless
       _activeTier = null;
       _isVisionMode = false;
     }
 
-    // 2. Always load via text engine for chat.
-    //    Vision engine is loaded on-demand in ask() when an image is attached.
+    // ── Load new model ──
     try {
       await _textEngine.loadModel(LlamaConfig(
         modelPath: mainPath,
@@ -197,10 +271,11 @@ class AIManager {
       ));
       _isVisionMode = false;
       _activeTier = tier;
+      debugPrint('[AIManager] switchEngine: ${tier.name} loaded ✓');
     } catch (e) {
-      debugPrint('[AIManager] loadModel($tier) failed: $e');
-      // Try to recover by reloading the free model
-      if (tier != AITier.free && previousTier != null) {
+      debugPrint('[AIManager] loadModel(${tier.name}) failed: $e');
+      // Recovery: try to reload free model so we're never stuck with nothing
+      if (tier != AITier.free) {
         final freePath = await _models.mainModelPath(AITier.free);
         if (freePath != null) {
           try {
@@ -211,7 +286,8 @@ class AIManager {
             ));
             _activeTier = AITier.free;
             _isVisionMode = false;
-            return; // recovered to free tier
+            debugPrint('[AIManager] Recovered to free tier');
+            return;
           } catch (_) {}
         }
       }
@@ -344,9 +420,12 @@ class AIManager {
 
   /// Unload everything and free all native memory.
   Future<void> dispose() async {
+    await _tierReadySub?.cancel();
+    _tierReadySub = null;
     if (_textEngine.isModelLoaded) {
       await _textEngine.unloadModel();
     }
     _activeTier = null;
+    _pendingUpgradeTier = null;
   }
 }

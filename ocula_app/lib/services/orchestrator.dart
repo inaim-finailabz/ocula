@@ -87,6 +87,13 @@ class Orchestrator {
     var state = AgentState(query: query, hasImage: hasImage, imagePath: imagePath);
     state.status = StepStatus.running;
 
+    // STEP 0: If a better model finished downloading in the background,
+    //         switch to it NOW (between queries, never mid-generation).
+    final upgraded = await _ai.applyPendingUpgrade();
+    if (upgraded) {
+      debugPrint('[Orchestrator] ⬆ Auto-upgraded to ${_ai.activeTier?.name}');
+    }
+
     // STEP 1: Detect intent
     state = await _detectIntent(state);
 
@@ -212,18 +219,20 @@ class Orchestrator {
 
   /// Node 5: Conditional routing — pick the right model based on state.
   ///
+  /// SAFETY: Never unloads the current model. Only switches if the target
+  /// model is already downloaded and ready. If no better model is available,
+  /// keeps the currently loaded model running.
+  ///
   /// 1. Hardware gate: low-RAM devices → Sensor (free) only.
   /// 2. Reasoning intent → Thinker (pro / Qwen3-VL-2B).
   /// 3. Spatial intent   → Specialist (plus / Moondream 2).
   /// 4. Default          → Sensor (free / SmolVLM2).
-  ///
-  /// Falls back gracefully: pro → plus → free if a tier's model isn't ready.
   Future<AgentState> _routeModel(AgentState state) async {
     // Hardware gate
     final ram = await _ai.deviceRamMB;
     if (ram < 4000) {
-      state.modelUsed = AITier.free;
-      await _ai.switchEngine(state.modelUsed);
+      // Low-RAM: stay on free, don't even attempt switching
+      state.modelUsed = _ai.activeTier ?? AITier.free;
       state.stepsCompleted.add('route_model');
       return state;
     }
@@ -259,25 +268,40 @@ class Orchestrator {
       preferred = [AITier.free];
     }
 
-    // Try each tier in order — fall back if model not downloaded yet
+    // ── SAFE ROUTING: Check download status BEFORE attempting any switch ──
+    // Never call switchEngine unless the model is on disk.
+    // This prevents unloading the current working model for nothing.
     for (final tier in preferred) {
+      // Skip tiers whose model isn't downloaded yet
+      if (!await _ai.isTierDownloaded(tier)) {
+        debugPrint('[Orchestrator] ${tier.name} not downloaded — skipping');
+        continue;
+      }
+
+      // Already on this tier? Use it.
+      if (_ai.activeTier == tier) {
+        state.modelUsed = tier;
+        debugPrint('[Orchestrator] Route: already on ${tier.name}');
+        state.stepsCompleted.add('route_model');
+        return state;
+      }
+
+      // Model is downloaded — safe to switch
       try {
         await _ai.switchEngine(tier);
         state.modelUsed = tier;
         debugPrint('[Orchestrator] Route: ${tier.name} (intent=${state.intent.name})');
         state.stepsCompleted.add('route_model');
         return state;
-      } on ModelNotReadyException {
-        debugPrint('[Orchestrator] ${tier.name} not ready — trying next');
-        continue;
       } catch (e) {
-        debugPrint('[Orchestrator] ${tier.name} switchEngine error: $e — trying next');
+        debugPrint('[Orchestrator] ${tier.name} switch failed: $e — keeping current');
         continue;
       }
     }
 
-    // Absolute fallback — should always succeed since free is loaded at startup
-    state.modelUsed = AITier.free;
+    // All preferred tiers failed — keep whatever is currently loaded
+    state.modelUsed = _ai.activeTier ?? AITier.free;
+    debugPrint('[Orchestrator] Keeping current: ${state.modelUsed.name}');
     state.stepsCompleted.add('route_model');
     return state;
   }
