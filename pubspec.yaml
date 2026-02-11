@@ -1,0 +1,34 @@
+name: ocula
+description: Multi-agent mobile AI app with tiered vision models.
+version: 1.0.0
+
+environment:
+  sdk: '>=3.2.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  # AI Core
+  flutter_llama: ^1.2.0          # High-level llama.cpp wrapper for GGUF
+
+  # Assistant Features
+  speech_to_text: ^7.0.0         # STT — voice input
+  flutter_tts: ^4.2.0            # TTS — voice output
+
+  # Document & Communication
+  pdf: ^3.11.0                   # Generate PDF reports
+  share_plus: ^10.0.0            # Send to Email/WhatsApp/Slack
+  path_provider: ^2.1.2          # Manage model storage on device
+
+  # Media
+  camera: ^0.11.0                # Vision input from device camera
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^5.0.0
+
+flutter:
+  assets:
+    - assets/models/
