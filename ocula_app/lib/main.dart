@@ -1,9 +1,13 @@
+import 'dart:async';
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:image_picker/image_picker.dart';
 import 'services/ai_manager.dart';
 import 'services/speech_service.dart';
 import 'services/export_service.dart';
 import 'services/indexer.dart';
+import 'services/model_manager.dart';
 import 'services/orchestrator.dart';
 import 'screens/splash_screen.dart';
 import 'screens/onboarding_screen.dart';
@@ -77,12 +81,16 @@ class _AssistantScreenState extends State<AssistantScreen>
   late final SpeechService _speech;
   final _textController = TextEditingController();
   final _scrollController = ScrollController();
+  final _modelManager = OculaModelManager();
+  StreamSubscription? _downloadProgressSubscription;
+  StreamSubscription? _featureReadySubscription;
 
   final List<_Message> _messages = [];
   bool _isThinking = false;
   bool _isListening = false;
   bool _isSpeaking = false;
   OrbState _orbState = OrbState.idle;
+  File? _attachedImage;
 
   bool _orbExpanded = true;
 
@@ -93,7 +101,7 @@ class _AssistantScreenState extends State<AssistantScreen>
     super.initState();
     _speech = SpeechService(aiManager: _ai);
     _speech.init();
-    _ai.switchEngine(AITier.free);
+    // Free-tier model already loaded during splash — no need to call switchEngine here.
 
     _orchestrator.onAskInternet = _showInternetDialog;
     Indexer().runFullIndex();
@@ -102,6 +110,49 @@ class _AssistantScreenState extends State<AssistantScreen>
     _orbSizeController = AnimationController(
       vsync: this,
       duration: const Duration(milliseconds: 400),
+    );
+
+    // Listen for feature-ready notifications (user-friendly, no model names).
+    _featureReadySubscription =
+        _modelManager.featureReadyStream.listen((featureName) {
+      _showFeatureReady(featureName);
+    });
+  }
+
+  /// Show a friendly notification when a new feature becomes available.
+  void _showFeatureReady(String featureName) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Row(
+          children: [
+            const Icon(Icons.check_circle, color: Colors.greenAccent, size: 20),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text('$featureName is ready to use'),
+            ),
+          ],
+        ),
+        behavior: SnackBarBehavior.floating,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+        duration: const Duration(seconds: 4),
+        margin: const EdgeInsets.fromLTRB(16, 0, 16, 24),
+      ),
+    );
+  }
+
+  void _showSnackbar(String message, {Duration? duration}) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(message),
+        duration: duration ?? const Duration(seconds: 4),
+        action: SnackBarAction(
+          label: 'OK',
+          onPressed: () {
+            ScaffoldMessenger.of(context).hideCurrentSnackBar();
+          },
+        ),
+      ),
     );
   }
 
@@ -131,6 +182,50 @@ class _AssistantScreenState extends State<AssistantScreen>
     return result ?? false;
   }
 
+  void _pickImage() {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Theme.of(context).colorScheme.surfaceContainerHighest,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (ctx) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 12),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              ListTile(
+                leading: const Icon(Icons.camera_alt),
+                title: const Text('Take Photo'),
+                onTap: () async {
+                  Navigator.pop(ctx);
+                  final picked = await ImagePicker()
+                      .pickImage(source: ImageSource.camera);
+                  if (picked != null) {
+                    setState(() => _attachedImage = File(picked.path));
+                  }
+                },
+              ),
+              ListTile(
+                leading: const Icon(Icons.photo_library),
+                title: const Text('Choose from Gallery'),
+                onTap: () async {
+                  Navigator.pop(ctx);
+                  final picked = await ImagePicker()
+                      .pickImage(source: ImageSource.gallery);
+                  if (picked != null) {
+                    setState(() => _attachedImage = File(picked.path));
+                  }
+                },
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
   void _toggleOrb() {
     setState(() => _orbExpanded = !_orbExpanded);
     if (_orbExpanded) {
@@ -144,8 +239,10 @@ class _AssistantScreenState extends State<AssistantScreen>
     if (text.trim().isEmpty) return;
     _textController.clear();
 
+    final image = _attachedImage;
     setState(() {
-      _messages.add(_Message(text: text, isUser: true));
+      _messages.add(_Message(text: text, isUser: true, image: image));
+      _attachedImage = null;
       _isThinking = true;
       _orbState = OrbState.thinking;
       _orbExpanded = true;
@@ -153,25 +250,45 @@ class _AssistantScreenState extends State<AssistantScreen>
     _orbSizeController.forward();
     _scrollToBottom();
 
-    final response = await _orchestrator.run(text);
+    try {
+      final response = await _orchestrator.run(text).timeout(
+        const Duration(minutes: 2),
+        onTimeout: () => 'Sorry, I took too long to respond. Please try again.',
+      );
 
-    setState(() {
-      _messages.add(_Message(text: response, isUser: false));
-      _isThinking = false;
-      _orbState = OrbState.speaking;
-      _isSpeaking = true;
-    });
-    _scrollToBottom();
-
-    await _speech.speak(response);
-    if (mounted) {
+      if (!mounted) return;
       setState(() {
+        _messages.add(_Message(text: response, isUser: false));
+        _isThinking = false;
+        _orbState = OrbState.speaking;
+        _isSpeaking = true;
+      });
+      _scrollToBottom();
+
+      await _speech.speak(response);
+      if (mounted) {
+        setState(() {
+          _orbState = OrbState.idle;
+          _isSpeaking = false;
+          if (_messages.isNotEmpty) {
+            _orbExpanded = false;
+            _orbSizeController.reverse();
+          }
+        });
+      }
+    } on ModelNotReadyException catch (e) {
+      if (!mounted) return;
+      _showSnackbar(e.toString());
+      setState(() {
+        _isThinking = false;
         _orbState = OrbState.idle;
-        _isSpeaking = false;
-        if (_messages.isNotEmpty) {
-          _orbExpanded = false;
-          _orbSizeController.reverse();
-        }
+      });
+    } catch (e) {
+      if (!mounted) return;
+      _showSnackbar('An error occurred: $e');
+      setState(() {
+        _isThinking = false;
+        _orbState = OrbState.idle;
       });
     }
   }
@@ -190,23 +307,45 @@ class _AssistantScreenState extends State<AssistantScreen>
         _orbExpanded = true;
       });
       _orbSizeController.forward();
-      _speech.startListening(
-        onResult: (text) {
-          _textController.text = text;
-        },
-        onAIResponse: (response) {
-          setState(() {
-            _messages.add(_Message(text: _textController.text, isUser: true));
-            _messages.add(_Message(text: response, isUser: false));
-            _isListening = false;
-            _orbState = OrbState.idle;
-            _textController.clear();
-            _orbExpanded = false;
-          });
-          _orbSizeController.reverse();
-          _scrollToBottom();
-        },
-      );
+      try {
+        _speech.startListening(
+          onResult: (text) {
+            _textController.text = text;
+          },
+          onAIResponse: (response) {
+            setState(() {
+              _messages
+                  .add(_Message(text: _textController.text, isUser: true));
+              _messages.add(_Message(text: response, isUser: false));
+              _isListening = false;
+              _orbState = OrbState.idle;
+              _textController.clear();
+              _orbExpanded = false;
+            });
+            _orbSizeController.reverse();
+            _scrollToBottom();
+          },
+          onError: () {
+            _showSnackbar('Could not start listening. Please check microphone permissions.');
+            setState(() {
+              _isListening = false;
+              _orbState = OrbState.idle;
+            });
+          },
+        );
+      } on ModelNotReadyException catch (e) {
+        _showSnackbar(e.toString());
+        setState(() {
+          _isListening = false;
+          _orbState = OrbState.idle;
+        });
+      } catch (e) {
+        _showSnackbar('An error occurred: $e');
+        setState(() {
+          _isListening = false;
+          _orbState = OrbState.idle;
+        });
+      }
     }
   }
 
@@ -242,6 +381,8 @@ class _AssistantScreenState extends State<AssistantScreen>
     _textController.dispose();
     _scrollController.dispose();
     _orbSizeController.dispose();
+    _downloadProgressSubscription?.cancel();
+    _featureReadySubscription?.cancel();
     super.dispose();
   }
 
@@ -339,34 +480,42 @@ class _AssistantScreenState extends State<AssistantScreen>
                               );
                             },
                           )
-                        : Center(
-                            child: Padding(
-                              padding: EdgeInsets.only(top: screenHeight * 0.35),
-                              child: Column(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  Text(
-                                    _isListening
-                                        ? 'Listening...'
-                                        : 'Tap the orb or type below',
-                                    style: TextStyle(
-                                      color: colors.onSurface.withAlpha(100),
-                                      fontSize: 15,
-                                    ),
-                                  ),
-                                  const SizedBox(height: 6),
-                                  Text(
-                                    'Your private AI assistant',
-                                    style: TextStyle(
-                                      color: colors.onSurface.withAlpha(60),
-                                      fontSize: 12,
-                                    ),
-                                  ),
-                                ],
+                        : const SizedBox.shrink(),
+                  ),
+
+                  // ── Attached image preview ──
+                  if (_attachedImage != null)
+                    Container(
+                      padding: const EdgeInsets.fromLTRB(16, 6, 16, 0),
+                      child: Row(
+                        children: [
+                          ClipRRect(
+                            borderRadius: BorderRadius.circular(10),
+                            child: Image.file(
+                              _attachedImage!,
+                              width: 56,
+                              height: 56,
+                              fit: BoxFit.cover,
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Text(
+                              'Image attached',
+                              style: TextStyle(
+                                color: colors.onSurface.withAlpha(150),
+                                fontSize: 13,
                               ),
                             ),
                           ),
-                  ),
+                          IconButton(
+                            icon: const Icon(Icons.close, size: 18),
+                            onPressed: () =>
+                                setState(() => _attachedImage = null),
+                          ),
+                        ],
+                      ),
+                    ),
 
                   // ── Enhanced input bar ──
                   Container(
@@ -392,9 +541,7 @@ class _AssistantScreenState extends State<AssistantScreen>
                           _InputAction(
                             icon: Icons.camera_alt_outlined,
                             label: 'Camera',
-                            onTap: () {
-                              // TODO: Open camera or gallery
-                            },
+                            onTap: _pickImage,
                           ),
                           // Text input
                           Expanded(
@@ -424,22 +571,25 @@ class _AssistantScreenState extends State<AssistantScreen>
                               ),
                             ),
                           ),
-                          // Send or Mic
-                          _textController.text.isNotEmpty
-                              ? _SendButton(
-                                  onTap: () => _send(_textController.text),
-                                  color: colors.primary,
-                                )
-                              : _InputAction(
-                                  icon: _isListening
-                                      ? Icons.stop_circle
-                                      : Icons.mic,
-                                  label: _isListening ? 'Stop' : 'Voice',
-                                  color: _isListening
-                                      ? const Color(0xFFFF7675)
-                                      : colors.primary,
+                          // Send or Mic — always show stop when listening
+                          _isListening
+                              ? _InputAction(
+                                  icon: Icons.stop_circle,
+                                  label: 'Stop',
+                                  color: const Color(0xFFFF7675),
                                   onTap: _toggleVoice,
-                                ),
+                                )
+                              : _textController.text.isNotEmpty
+                                  ? _SendButton(
+                                      onTap: () => _send(_textController.text),
+                                      color: colors.primary,
+                                    )
+                                  : _InputAction(
+                                      icon: Icons.mic,
+                                      label: 'Voice',
+                                      color: colors.primary,
+                                      onTap: _toggleVoice,
+                                    ),
                         ],
                       ),
                     ),
@@ -544,8 +694,9 @@ class _AssistantScreenState extends State<AssistantScreen>
 class _Message {
   final String text;
   final bool isUser;
+  final File? image;
 
-  _Message({required this.text, required this.isUser});
+  _Message({required this.text, required this.isUser, this.image});
 }
 
 /// Chat bubble with long-press copy and selectable text.
@@ -596,13 +747,30 @@ class _MessageBubble extends StatelessWidget {
               ),
             ],
           ),
-          child: SelectableText(
-            message.text,
-            style: TextStyle(
-              color: isUser ? colors.onPrimary : colors.onSurface,
-              fontSize: 15,
-              height: 1.45,
-            ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              if (message.image != null) ...[
+                ClipRRect(
+                  borderRadius: BorderRadius.circular(12),
+                  child: Image.file(
+                    message.image!,
+                    width: 200,
+                    fit: BoxFit.cover,
+                  ),
+                ),
+                const SizedBox(height: 8),
+              ],
+              SelectableText(
+                message.text,
+                style: TextStyle(
+                  color: isUser ? colors.onPrimary : colors.onSurface,
+                  fontSize: 15,
+                  height: 1.45,
+                ),
+              ),
+            ],
           ),
         ),
       ),

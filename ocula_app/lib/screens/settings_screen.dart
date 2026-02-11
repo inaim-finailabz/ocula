@@ -1,7 +1,12 @@
 import 'package:flutter/material.dart';
+import 'package:url_launcher/url_launcher.dart';
+import '../widgets/model_management.dart';
+import '../screens/enterprise_settings.dart';
 import '../services/speech_service.dart';
 import '../services/network_permission.dart';
 import '../services/app_language.dart';
+import '../services/ai_manager.dart';
+import '../services/model_manager.dart';
 
 /// Settings screen — voice customisation + privacy controls.
 class SettingsScreen extends StatefulWidget {
@@ -151,6 +156,19 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 const SizedBox(height: 32),
 
                 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+                // AI MODELS
+                // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+                const ModelManagement(),
+                const SizedBox(height: 32),
+
+                // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+                // ENTERPRISE SETTINGS
+                // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+                const _SectionHeader(title: 'Enterprise Backend'),
+                const EnterpriseSettings(),
+                const SizedBox(height: 32),
+
+                // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
                 // INTERNET ACCESS
                 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
                 const _SectionHeader(title: 'Internet Access'),
@@ -226,9 +244,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 const SizedBox(height: 32),
 
                 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-                // ABOUT
+                // ABOUT OCULA
                 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-                const _SectionHeader(title: 'About'),
+                const _SectionHeader(title: 'About Ocula'),
                 const SizedBox(height: 8),
                 Container(
                   padding: const EdgeInsets.all(16),
@@ -241,9 +259,18 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     children: [
                       Row(
                         children: [
-                          const Text(
-                            'Ocula',
-                            style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+                          ShaderMask(
+                            shaderCallback: (bounds) => const LinearGradient(
+                              colors: [Color(0xFF6C5CE7), Color(0xFF00CEC9)],
+                            ).createShader(bounds),
+                            child: const Text(
+                              'Ocula',
+                              style: TextStyle(
+                                fontSize: 22,
+                                fontWeight: FontWeight.bold,
+                                color: Colors.white,
+                              ),
+                            ),
                           ),
                           const SizedBox(width: 8),
                           Container(
@@ -268,60 +295,213 @@ class _SettingsScreenState extends State<SettingsScreen> {
                           fontWeight: FontWeight.w600,
                         ),
                       ),
-                      const SizedBox(height: 12),
+                      const SizedBox(height: 14),
                       Text(
                         'See. Hear. Reason.',
                         style: TextStyle(
-                          fontSize: 15,
-                          fontWeight: FontWeight.w500,
-                          color: colors.onSurface.withAlpha(200),
+                          fontSize: 16,
+                          fontWeight: FontWeight.w600,
+                          color: colors.onSurface.withAlpha(220),
                           fontStyle: FontStyle.italic,
                         ),
                       ),
-                      const SizedBox(height: 8),
+                      const SizedBox(height: 10),
                       Text(
-                        'Ocula is your private AI assistant that lives entirely on '
-                        'your device. No cloud. No data transfer. Your emails, files, '
-                        'photos, and contacts stay yours \u2014 always.',
+                        'Ocula is a private, on-device AI assistant that sees, hears, '
+                        'and reasons — without ever touching the cloud. Your emails, '
+                        'files, photos, and contacts never leave your device.',
                         style: TextStyle(
                           fontSize: 13,
-                          height: 1.4,
-                          color: colors.onSurface.withAlpha(150),
+                          height: 1.5,
+                          color: colors.onSurface.withAlpha(160),
                         ),
-                      ),
-                      const SizedBox(height: 12),
-                      Divider(color: colors.onSurface.withAlpha(30)),
-                      const SizedBox(height: 8),
-                      Text(
-                        'Finai Labz builds AI tools that put privacy and '
-                        'user ownership first. We believe the future of AI is '
-                        'on-device, offline, and in your hands.',
-                        style: TextStyle(
-                          fontSize: 12,
-                          height: 1.4,
-                          color: colors.onSurface.withAlpha(120),
-                        ),
-                      ),
-                      const SizedBox(height: 12),
-                      Row(
-                        children: [
-                          Icon(Icons.language, size: 16, color: colors.primary),
-                          const SizedBox(width: 6),
-                          Text(
-                            'finailabz.com',
-                            style: TextStyle(
-                              fontSize: 13,
-                              color: colors.primary,
-                              fontWeight: FontWeight.w500,
-                            ),
-                          ),
-                        ],
                       ),
                     ],
                   ),
                 ),
 
-                const SizedBox(height: 32),
+                const SizedBox(height: 20),
+
+                // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+                // KEY FEATURES
+                // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+                const _SectionHeader(title: 'Key Features'),
+                const SizedBox(height: 8),
+                _featureTile(
+                  icon: Icons.visibility,
+                  title: 'Vision AI',
+                  subtitle: 'Point your camera and Ocula identifies, reads, and analyses what it sees.',
+                  colors: colors,
+                ),
+                _featureTile(
+                  icon: Icons.mic,
+                  title: 'Voice Assistant',
+                  subtitle: 'Talk naturally — Ocula listens, thinks, and speaks back.',
+                  colors: colors,
+                ),
+                _featureTile(
+                  icon: Icons.lock,
+                  title: '100% Private',
+                  subtitle: 'All AI models run on-device. Zero data sent to any server.',
+                  colors: colors,
+                ),
+                _featureTile(
+                  icon: Icons.wifi_off,
+                  title: 'Works Offline',
+                  subtitle: 'No internet required. Full functionality in airplane mode.',
+                  colors: colors,
+                ),
+                _featureTile(
+                  icon: Icons.picture_as_pdf,
+                  title: 'PDF Export',
+                  subtitle: 'Turn any AI analysis into a shareable PDF report.',
+                  colors: colors,
+                ),
+
+                const SizedBox(height: 20),
+
+                // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+                // SUPPORT & CONTACT
+                // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+                const _SectionHeader(title: 'Support'),
+                const SizedBox(height: 8),
+                Container(
+                  padding: const EdgeInsets.all(16),
+                  decoration: BoxDecoration(
+                    color: colors.surfaceContainerHighest,
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'Need help or have feedback? We\'d love to hear from you.',
+                        style: TextStyle(
+                          fontSize: 13,
+                          height: 1.4,
+                          color: colors.onSurface.withAlpha(160),
+                        ),
+                      ),
+                      const SizedBox(height: 14),
+                      _linkRow(
+                        icon: Icons.email_outlined,
+                        label: 'support@finailabz.com',
+                        url: 'mailto:support@finailabz.com',
+                        colors: colors,
+                      ),
+                      const SizedBox(height: 10),
+                      _linkRow(
+                        icon: Icons.language,
+                        label: 'finailabz.com',
+                        url: 'https://finailabz.com',
+                        colors: colors,
+                      ),
+                      const SizedBox(height: 10),
+                      _linkRow(
+                        icon: Icons.article_outlined,
+                        label: 'FAQ & Knowledge Base',
+                        url: 'https://finailabz.com/support',
+                        colors: colors,
+                      ),
+                      const SizedBox(height: 10),
+                      _linkRow(
+                        icon: Icons.privacy_tip_outlined,
+                        label: 'Privacy Policy',
+                        url: 'https://finailabz.com/privacy',
+                        colors: colors,
+                      ),
+                      const SizedBox(height: 10),
+                      _linkRow(
+                        icon: Icons.description_outlined,
+                        label: 'Terms of Service',
+                        url: 'https://finailabz.com/terms',
+                        colors: colors,
+                      ),
+                    ],
+                  ),
+                ),
+
+                const SizedBox(height: 20),
+
+                // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+                // SOCIAL / FOLLOW US
+                // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+                const _SectionHeader(title: 'Follow Us'),
+                const SizedBox(height: 8),
+                Row(
+                  children: [
+                    _socialChip('X / Twitter', 'https://x.com/finailabz', colors),
+                    const SizedBox(width: 8),
+                    _socialChip('LinkedIn', 'https://linkedin.com/company/finailabz', colors),
+                    const SizedBox(width: 8),
+                    _socialChip('GitHub', 'https://github.com/finailabz', colors),
+                  ],
+                ),
+
+                const SizedBox(height: 20),
+
+                // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+                // ABOUT FINAI LABZ
+                // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+                const _SectionHeader(title: 'About Finai Labz'),
+                const SizedBox(height: 8),
+                Container(
+                  padding: const EdgeInsets.all(16),
+                  decoration: BoxDecoration(
+                    color: colors.surfaceContainerHighest,
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'Finai Labz builds AI tools that put privacy and user '
+                        'ownership first. We believe the future of artificial '
+                        'intelligence is on-device, offline, and in your hands.',
+                        style: TextStyle(
+                          fontSize: 13,
+                          height: 1.5,
+                          color: colors.onSurface.withAlpha(160),
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      Text(
+                        'Our mission: make powerful AI accessible to everyone — '
+                        'without sacrificing privacy, requiring subscriptions to '
+                        'cloud services, or sending your data to third parties.',
+                        style: TextStyle(
+                          fontSize: 13,
+                          height: 1.5,
+                          color: colors.onSurface.withAlpha(140),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+
+                const SizedBox(height: 20),
+
+                // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+                // LEGAL
+                // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+                Center(
+                  child: Text(
+                    '\u00A9 2026 Finai Labz. All rights reserved.',
+                    style: TextStyle(
+                      fontSize: 11,
+                      color: colors.onSurface.withAlpha(80),
+                    ),
+                  ),
+                ),
+
+                const SizedBox(height: 16),
+
+                // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+                // ADVANCED TOOLS
+                // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+                _buildAdvancedSection(),
+
+                const SizedBox(height: 24),
 
                 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
                 // RESET
@@ -341,8 +521,206 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
   }
 
-  // ── Recommended Presets ──
+  Widget _buildAdvancedSection() {
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16.0),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Icon(Icons.engineering, color: Colors.orange),
+                const SizedBox(width: 10),
+                Text(
+                  'Advanced',
+                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 15),
+            Text(
+              'Tools for advanced users and troubleshooting',
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                color: Colors.grey[600],
+              ),
+            ),
+            const SizedBox(height: 15),
+            _buildAdvancedTile(
+              'Clear Memory',
+              'Unload AI models from RAM',
+              Icons.memory,
+              () => _showClearMemoryDialog(),
+            ),
+            _buildAdvancedTile(
+              'Clear Model Files',
+              'Delete downloaded models to free space',
+              Icons.delete_sweep,
+              () => _showClearFilesDialog(),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
 
+  Widget _buildAdvancedTile(
+    String title,
+    String subtitle,
+    IconData icon,
+    VoidCallback onTap,
+  ) {
+    return ListTile(
+      leading: Icon(icon, color: Colors.red[400]),
+      title: Text(title),
+      subtitle: Text(subtitle),
+      trailing: const Icon(Icons.arrow_forward_ios, size: 16),
+      onTap: onTap,
+    );
+  }
+
+  void _showClearMemoryDialog() {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Clear Memory'),
+        content: const Text(
+          'This will unload all AI models from memory. '
+          'You may need to wait for models to reload when using AI features again.\n\n'
+          'Use this if the app is using too much memory.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () async {
+              Navigator.pop(context);
+              await _clearMemory();
+            },
+            child: const Text('Clear', style: TextStyle(color: Colors.red)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _showClearFilesDialog() {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Clear Model Files'),
+        content: const Text(
+          'This will delete all downloaded AI models from storage. '
+          'The app will need to re-download models when you use AI features.\n\n'
+          'Use this to free up storage space.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () async {
+              Navigator.pop(context);
+              await _clearModelFiles();
+            },
+            child: const Text('Delete', style: TextStyle(color: Colors.red)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _clearMemory() async {
+    try {
+      // Show loading
+      showDialog(
+        context: context,
+        barrierDismissible: false,
+        builder: (context) => const AlertDialog(
+          content: Row(
+            children: [
+              CircularProgressIndicator(),
+              SizedBox(width: 20),
+              Text('Clearing memory...'),
+            ],
+          ),
+        ),
+      );
+
+      await AIManager().clearMemory();
+      
+      Navigator.pop(context); // Close loading dialog
+      
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Memory cleared successfully'),
+          backgroundColor: Colors.green,
+        ),
+      );
+    } catch (e) {
+      Navigator.pop(context); // Close loading dialog
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Failed to clear memory: $e'),
+          backgroundColor: Colors.red,
+        ),
+      );
+    }
+  }
+
+  Future<void> _clearModelFiles() async {
+    try {
+      // Show loading
+      showDialog(
+        context: context,
+        barrierDismissible: false,
+        builder: (context) => const AlertDialog(
+          content: Row(
+            children: [
+              CircularProgressIndicator(),
+              SizedBox(width: 20),
+              Text('Deleting model files...'),
+            ],
+          ),
+        ),
+      );
+
+      final success = await OculaModelManager().clearModelFiles();
+      
+      Navigator.pop(context); // Close loading dialog
+      
+      if (success) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Model files deleted successfully'),
+            backgroundColor: Colors.green,
+          ),
+        );
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Failed to delete model files'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    } catch (e) {
+      Navigator.pop(context); // Close loading dialog
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Error: $e'),
+          backgroundColor: Colors.red,
+        ),
+      );
+    }
+  }
+
+  // Voice presets
   static const _presets = [
     _VoicePreset(
       name: 'Calm',
@@ -405,9 +783,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
               ),
               child: Column(
                 mainAxisAlignment: MainAxisAlignment.center,
+                mainAxisSize: MainAxisSize.min,
                 children: [
-                  Icon(p.icon, size: 28, color: isActive ? colors.primary : colors.onSurface),
-                  const SizedBox(height: 6),
+                  Icon(p.icon, size: 24, color: isActive ? colors.primary : colors.onSurface),
+                  const SizedBox(height: 4),
                   Text(
                     p.name,
                     style: TextStyle(
@@ -580,6 +959,109 @@ class _SettingsScreenState extends State<SettingsScreen> {
         ),
       ),
     );
+  }
+
+  // ── Feature Tile ──
+
+  Widget _featureTile({
+    required IconData icon,
+    required String title,
+    required String subtitle,
+    required ColorScheme colors,
+  }) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+        decoration: BoxDecoration(
+          color: colors.surfaceContainerHighest,
+          borderRadius: BorderRadius.circular(12),
+        ),
+        child: Row(
+          children: [
+            Container(
+              padding: const EdgeInsets.all(8),
+              decoration: BoxDecoration(
+                color: colors.primary.withAlpha(25),
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: Icon(icon, size: 20, color: colors.primary),
+            ),
+            const SizedBox(width: 14),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    title,
+                    style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 14),
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    subtitle,
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: colors.onSurface.withAlpha(120),
+                      height: 1.3,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // ── Link Row (tappable URL) ──
+
+  Widget _linkRow({
+    required IconData icon,
+    required String label,
+    required String url,
+    required ColorScheme colors,
+  }) {
+    return InkWell(
+      borderRadius: BorderRadius.circular(8),
+      onTap: () => _openUrl(url),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 4),
+        child: Row(
+          children: [
+            Icon(icon, size: 18, color: colors.primary),
+            const SizedBox(width: 10),
+            Text(
+              label,
+              style: TextStyle(
+                fontSize: 13,
+                color: colors.primary,
+                fontWeight: FontWeight.w500,
+              ),
+            ),
+            const Spacer(),
+            Icon(Icons.open_in_new, size: 14, color: colors.onSurface.withAlpha(60)),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // ── Social Chip ──
+
+  Widget _socialChip(String label, String url, ColorScheme colors) {
+    return ActionChip(
+      label: Text(label, style: const TextStyle(fontSize: 12)),
+      avatar: Icon(Icons.open_in_new, size: 14, color: colors.primary),
+      onPressed: () => _openUrl(url),
+    );
+  }
+
+  Future<void> _openUrl(String url) async {
+    final uri = Uri.parse(url);
+    if (await canLaunchUrl(uri)) {
+      await launchUrl(uri, mode: LaunchMode.externalApplication);
+    }
   }
 
   // ── Helpers ──

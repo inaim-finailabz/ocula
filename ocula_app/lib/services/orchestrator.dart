@@ -187,11 +187,25 @@ class Orchestrator {
   }
 
   /// Node 5: Conditional routing — pick the right model based on state.
+  ///
+  /// 1. Hardware gate: low-RAM devices → Sensor (free) only.
+  /// 2. Reasoning intent → Thinker (pro / Qwen3-VL-2B).
+  /// 3. Spatial intent   → Specialist (plus / Moondream 2).
+  /// 4. Default          → Sensor (free / SmolVLM2).
   Future<AgentState> _routeModel(AgentState state) async {
+    // Hardware gate
+    final ram = await _ai.deviceRamMB;
+    if (ram < 4000) {
+      state.modelUsed = AITier.free;
+      await _ai.switchEngine(state.modelUsed);
+      state.stepsCompleted.add('route_model');
+      return state;
+    }
+
     final lower = state.query.toLowerCase();
 
-    // Pro: reasoning, analysis, documents
-    final needsPro = lower.contains('why') ||
+    // Thinker: reasoning, analysis, documents
+    final isReasoning = lower.contains('why') ||
         lower.contains('how') ||
         lower.contains('explain') ||
         lower.contains('analyze') ||
@@ -199,17 +213,19 @@ class Orchestrator {
         lower.contains('summarize') ||
         state.intent == QueryIntent.file;
 
-    // Plus: vision, counting, reading
-    final needsPlus = state.hasImage ||
-        lower.contains('read') ||
+    // Specialist: spatial, counting, pointing
+    final isSpatial = state.hasImage ||
+        lower.contains('where') ||
         lower.contains('count') ||
+        lower.contains('find') ||
+        lower.contains('point') ||
         lower.contains('total') ||
         lower.contains('receipt') ||
         state.intent == QueryIntent.photo;
 
-    if (needsPro) {
+    if (isReasoning) {
       state.modelUsed = AITier.pro;
-    } else if (needsPlus) {
+    } else if (isSpatial) {
       state.modelUsed = AITier.plus;
     } else {
       state.modelUsed = AITier.free;

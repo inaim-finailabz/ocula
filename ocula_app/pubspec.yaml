@@ -4,15 +4,15 @@ publish_to: 'none'
 version: 1.0.0+1
 
 environment:
-  sdk: ^3.10.8
+  sdk: '>=3.10.0 <4.0.0'
 
 dependencies:
   flutter:
     sdk: flutter
   cupertino_icons: ^1.0.8
 
-  # AI Core
-  flutter_llama: ^1.1.2          # High-level llama.cpp wrapper for GGUF
+  # AI Core - Fixed version to resolve dependency conflict
+  flutter_llama: ^1.1.2           # High-level llama.cpp wrapper for GGUF
 
   # Assistant Features
   speech_to_text: ^7.0.0         # STT — voice input
@@ -22,6 +22,7 @@ dependencies:
   pdf: ^3.11.0                   # Generate PDF reports
   share_plus: ^10.0.0            # Send to Email/WhatsApp/Slack
   path_provider: ^2.1.2          # Manage model storage on device
+  url_launcher: ^6.2.5           # Open links in Settings/About
 
   # Media
   camera: ^0.11.0                # Vision input from device camera
@@ -36,6 +37,7 @@ dependencies:
   enough_mail: any               # IMAP email access (local)
   lottie: ^3.3.2
   shared_preferences: ^2.5.4
+  device_info_plus: ^11.0.0      # RAM detection for model routing
 
 dev_dependencies:
   flutter_test:

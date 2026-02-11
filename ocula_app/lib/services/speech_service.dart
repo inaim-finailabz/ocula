@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:speech_to_text/speech_to_text.dart' as stt;
 import 'package:flutter_tts/flutter_tts.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -101,25 +102,48 @@ class SpeechService {
   Future<void> startListening({
     required Function(String) onResult,
     Function(String)? onAIResponse,
+    Function? onError,
   }) async {
-    final available = await _speech.initialize();
-    if (!available) return;
+    final available = await _speech.initialize(
+      onError: (error) {
+        debugPrint('STT init error: $error');
+        if (onError != null) {
+          onError();
+        }
+      },
+    );
+    debugPrint('STT available: $available');
+
+    if (!available) {
+      if (onError != null) {
+        onError();
+      }
+      return;
+    }
 
     _isListening = true;
-    _speech.listen(onResult: (val) async {
-      final text = val.recognizedWords;
-      onResult(text);
+    bool _handled = false;
+    _speech.listen(
+      onResult: (val) async {
+        final text = val.recognizedWords;
+        onResult(text);
 
-      // When speech is finalized, send to the AI model
-      if (val.finalResult && text.isNotEmpty) {
-        _isListening = false;
-        if (onAIResponse != null) {
-          final response = await _aiManager.ask(text);
-          onAIResponse(response);
-          await speak(response);
+        // When speech is finalized (silence detected), send to the AI model
+        if (val.finalResult && text.isNotEmpty && !_handled) {
+          _handled = true;
+          _isListening = false;
+          if (onAIResponse != null) {
+            final response = await _aiManager.ask(text);
+            onAIResponse(response);
+            await speak(response);
+          }
         }
-      }
-    });
+      },
+      // Auto-stop after 2s of silence — triggers finalResult
+      pauseFor: const Duration(seconds: 2),
+      // Max listen time before auto-stop
+      listenFor: const Duration(seconds: 30),
+    );
   }
 
   /// Stop listening.
