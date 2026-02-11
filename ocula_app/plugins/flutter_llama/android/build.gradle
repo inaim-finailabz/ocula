@@ -57,12 +57,8 @@ android {
             cmake {
                 cppFlags '-std=c++17 -fexceptions -frtti -O3'
                 arguments '-DANDROID_STL=c++_shared',
-                          '-DANDROID_PLATFORM=android-24',
-                          '-DCMAKE_BUILD_TYPE=Release',
-                          '-DGGML_VULKAN=OFF',
-                          '-DGGML_CUDA=OFF',
-                          '-DGGML_METAL=OFF',
-                          '-DGGML_OPENCL=OFF'
+                          '-DANDROID_PLATFORM=android-28',
+                          '-DCMAKE_BUILD_TYPE=Release'
             }
         }
     }

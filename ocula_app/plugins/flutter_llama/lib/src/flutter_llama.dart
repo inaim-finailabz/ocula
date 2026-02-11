@@ -198,6 +198,43 @@ class FlutterLlama {
       }
     }
   }
+
+  /// Get embedding vector for text (for RAG pipeline).
+  ///
+  /// Uses the currently loaded model to compute a normalized embedding.
+  /// Returns null if model is not loaded or embedding extraction fails.
+  Future<List<double>?> getEmbedding(String text) async {
+    if (!_isModelLoaded) return null;
+
+    try {
+      final result = await _channel.invokeMethod<List<dynamic>>(
+        'getEmbedding',
+        {'text': text},
+      );
+      if (result == null) return null;
+      return result.cast<double>();
+    } catch (e) {
+      if (kDebugMode) {
+        print('[FlutterLlama] Error getting embedding: $e');
+      }
+      return null;
+    }
+  }
+
+  /// Get the embedding dimension of the currently loaded model.
+  /// Returns 0 if no model is loaded.
+  Future<int> getEmbeddingDim() async {
+    if (!_isModelLoaded) return 0;
+    try {
+      final result = await _channel.invokeMethod<int>('getEmbeddingDim');
+      return result ?? 0;
+    } catch (e) {
+      if (kDebugMode) {
+        print('[FlutterLlama] Error getting embedding dim: $e');
+      }
+      return 0;
+    }
+  }
   
   /// Load model with automatic download from HuggingFace or Ollama
   /// 

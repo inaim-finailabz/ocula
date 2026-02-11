@@ -72,7 +72,7 @@ SPEC CHECKSUMS:
   CwlCatchExceptionSupport: 54ccab8d8c78907b57f99717fb19d4cc3bce02dc
   device_info_plus: 4fb280989f669696856f8b129e4a5e3cd6c48f76
   file_selector_macos: 9e9e068e90ebee155097d00e89ae91edb2374db7
-  flutter_llama: fde233c88d0b015ed441daa512106f5eba204ab8
+  flutter_llama: 62627921574960b013787e3cc7c34c04f8cf0a50
   flutter_tts: ae915565cc6948444b513acc8ee021993281e027
   FlutterMacOS: d0db08ddef1a9af05a5ec4b724367152bb0500b1
   ObjectBox: 7da4aceb5013d041bfafdbc6d744a26918b09757

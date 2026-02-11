@@ -468,6 +468,16 @@ func llama_bridge_free_model()
 @_silgen_name("llama_stop_generation")
 func llama_stop_generation()
 
+@_silgen_name("llama_get_embedding")
+func llama_bridge_get_embedding(
+    _ text: UnsafePointer<CChar>,
+    _ output: UnsafeMutablePointer<Float>,
+    _ outputSize: Int32
+) -> Int32
+
+@_silgen_name("llama_get_embedding_dim")
+func llama_bridge_get_embedding_dim() -> Int32
+
 /**
  * FlutterLlamaPlugin - плагин для работы с llama.cpp моделями на macOS
  * 
@@ -519,6 +529,10 @@ public class FlutterLlamaPlugin: NSObject, FlutterPlugin, FlutterStreamHandler {
             getModelInfo(result: result)
         case "stopGeneration":
             stopGeneration(result: result)
+        case "getEmbedding":
+            getEmbedding(call: call, result: result)
+        case "getEmbeddingDim":
+            getEmbeddingDim(result: result)
         default:
             result(FlutterMethodNotImplemented)
         }
@@ -810,6 +824,60 @@ public class FlutterLlamaPlugin: NSObject, FlutterPlugin, FlutterStreamHandler {
         shouldStop = true
         llama_stop_generation()
         result(nil)
+    }
+    
+    // MARK: - Get Embedding (for RAG)
+    
+    private func getEmbedding(call: FlutterMethodCall, result: @escaping FlutterResult) {
+        guard modelLoaded else {
+            result(FlutterError(
+                code: "MODEL_NOT_LOADED",
+                message: "Model not loaded",
+                details: nil
+            ))
+            return
+        }
+        
+        queue.async {
+            guard let args = call.arguments as? [String: Any],
+                  let text = args["text"] as? String else {
+                DispatchQueue.main.async {
+                    result(FlutterError(
+                        code: "INVALID_ARGS",
+                        message: "Missing text parameter",
+                        details: nil
+                    ))
+                }
+                return
+            }
+            
+            let maxDim = 8192
+            var outputBuffer = [Float](repeating: 0.0, count: maxDim)
+            
+            let n_embd = text.withCString { textPtr -> Int32 in
+                return llama_bridge_get_embedding(textPtr, &outputBuffer, Int32(maxDim))
+            }
+            
+            DispatchQueue.main.async {
+                if n_embd > 0 {
+                    let embedding = Array(outputBuffer.prefix(Int(n_embd))).map { Double($0) }
+                    result(embedding)
+                } else {
+                    result(FlutterError(
+                        code: "EMBEDDING_FAILED",
+                        message: "Failed to compute embedding",
+                        details: nil
+                    ))
+                }
+            }
+        }
+    }
+    
+    // MARK: - Get Embedding Dimension
+    
+    private func getEmbeddingDim(result: @escaping FlutterResult) {
+        let dim = llama_bridge_get_embedding_dim()
+        result(Int(dim))
     }
 }
 

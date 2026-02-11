@@ -16,6 +16,7 @@ find_library(android-lib android)
 
 # llama.cpp configuration
 set(LLAMA_CPP_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../../../llama.cpp")
+set(THIRD_PARTY_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../../../third_party")
 
 # Configure llama.cpp build
 set(LLAMA_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
@@ -27,34 +28,100 @@ set(BUILD_SHARED_LIBS ON CACHE BOOL "" FORCE)
 set(GGML_USE_LLAMAFILE OFF CACHE BOOL "" FORCE)
 set(GGML_OPENMP OFF CACHE BOOL "" FORCE)
 set(GGML_AMX OFF CACHE BOOL "" FORCE)
+set(GGML_CUDA OFF CACHE BOOL "" FORCE)
+set(GGML_METAL OFF CACHE BOOL "" FORCE)
+set(GGML_OPENCL OFF CACHE BOOL "" FORCE)
 
-# GPU Acceleration for Android devices
-# Vulkan for modern devices (Android 7.0+)
-# OpenCL as fallback for older devices
-# CPU backend with NEON as last resort
+# ── Vulkan GPU acceleration ──
+# The NDK ships libvulkan.so + C headers, but NOT vulkan.hpp (C++ bindings).
+# We supply vulkan.hpp from third_party/vulkan-hpp.
+# glslc shader compiler comes from the NDK's shader-tools.
 
-# Try to enable Vulkan (best performance on modern devices)
 find_library(vulkan-lib vulkan)
-if(vulkan-lib)
+set(VULKAN_HPP_DIR "${THIRD_PARTY_DIR}/vulkan-hpp")
+
+if(vulkan-lib AND EXISTS "${VULKAN_HPP_DIR}/vulkan.hpp")
+    # Tell llama.cpp to build Vulkan backend
     set(GGML_VULKAN ON CACHE BOOL "" FORCE)
-    message(STATUS "🚀 Vulkan GPU acceleration ENABLED")
-    message(STATUS "   Supported: Adreno 5xx+, Mali-G71+, Samsung Exynos 9+")
-    message(STATUS "   Expected: 4-8x faster than CPU")
-else()
-    # Try OpenCL as fallback
-    find_library(opencl-lib OpenCL)
-    if(opencl-lib)
-        set(GGML_OPENCL ON CACHE BOOL "" FORCE)
-        message(STATUS "⚡ OpenCL GPU acceleration ENABLED (fallback)")
-        message(STATUS "   Supported: Most Android devices with GPU")
-        message(STATUS "   Expected: 2-5x faster than CPU")
-    else()
-        message(STATUS "⚡ Using optimized CPU backend with ARM NEON")
-        message(STATUS "   GPU libraries not found, falling back to CPU")
+
+    # NDK sysroot already has vulkan/vulkan_core.h etc.
+    # We need vulkan.hpp to sit next to them at <vulkan/vulkan.hpp>.
+    # Create a wrapper include dir: third_party/vulkan-hpp is used as
+    # an additional include with files at vulkan-hpp/vulkan.hpp, but
+    # the #include expects <vulkan/vulkan.hpp>.  So we point at the
+    # parent directory of vulkan-hpp.
+    # Actually, the files live at third_party/vulkan-hpp/*.hpp and the
+    # include is <vulkan/vulkan.hpp>, so we need a directory layout:
+    #   <some_dir>/vulkan/vulkan.hpp
+    # We'll create a symlink or just use the include path trick.
+
+    # The NDK sysroot include dir already has a vulkan/ subdirectory with
+    # the C headers.  We can overlay the C++ headers by adding vulkan-hpp's
+    # parent as an include path.  But vulkan-hpp files are NOT in a vulkan/
+    # subfolder.  Fix: we need them at third_party/vulkan-hpp/vulkan/*.hpp
+
+    # Check if we already have the proper layout
+    if(NOT EXISTS "${VULKAN_HPP_DIR}/vulkan")
+        # Create proper vulkan/ subdirectory layout via symlink at configure time
+        file(MAKE_DIRECTORY "${VULKAN_HPP_DIR}/vulkan")
+        file(GLOB VK_HPP_FILES "${VULKAN_HPP_DIR}/*.hpp" "${VULKAN_HPP_DIR}/*.cppm")
+        foreach(vkf ${VK_HPP_FILES})
+            get_filename_component(vkfname "${vkf}" NAME)
+            if(NOT EXISTS "${VULKAN_HPP_DIR}/vulkan/${vkfname}")
+                file(CREATE_LINK "${vkf}" "${VULKAN_HPP_DIR}/vulkan/${vkfname}" SYMBOLIC)
+            endif()
+        endforeach()
     endif()
+
+    # Provide Vulkan package variables so find_package(Vulkan) succeeds inside llama.cpp
+    set(Vulkan_FOUND TRUE CACHE BOOL "" FORCE)
+    set(Vulkan_INCLUDE_DIR "${VULKAN_HPP_DIR}" CACHE PATH "" FORCE)
+    set(VULKAN_INCLUDE_DIR "${VULKAN_HPP_DIR}" CACHE PATH "" FORCE)
+    set(Vulkan_LIBRARY "${vulkan-lib}" CACHE FILEPATH "" FORCE)
+    set(VULKAN_LIBRARY "${vulkan-lib}" CACHE FILEPATH "" FORCE)
+
+    # Create imported targets that llama.cpp's CMake expects
+    if(NOT TARGET Vulkan::Vulkan)
+        add_library(Vulkan::Vulkan SHARED IMPORTED)
+        set_target_properties(Vulkan::Vulkan PROPERTIES
+            IMPORTED_LOCATION "${vulkan-lib}"
+            INTERFACE_INCLUDE_DIRECTORIES "${VULKAN_HPP_DIR}"
+        )
+    endif()
+
+    # Find glslc in the NDK's shader-tools
+    # The NDK bundles glslc at <ndk>/shader-tools/<host>/glslc
+    get_filename_component(NDK_DIR "${CMAKE_ANDROID_NDK}" ABSOLUTE)
+    find_program(Vulkan_GLSLC_EXECUTABLE
+        NAMES glslc
+        HINTS "${NDK_DIR}/shader-tools/darwin-x86_64"
+              "${NDK_DIR}/shader-tools/linux-x86_64"
+              "${NDK_DIR}/shader-tools/windows-x86_64"
+        NO_DEFAULT_PATH
+    )
+
+    if(Vulkan_GLSLC_EXECUTABLE)
+        set(Vulkan_glslc_FOUND TRUE CACHE BOOL "" FORCE)
+        if(NOT TARGET Vulkan::glslc)
+            add_executable(Vulkan::glslc IMPORTED)
+            set_target_properties(Vulkan::glslc PROPERTIES
+                IMPORTED_LOCATION "${Vulkan_GLSLC_EXECUTABLE}"
+            )
+        endif()
+        message(STATUS "Vulkan GPU acceleration ENABLED")
+        message(STATUS "  glslc: ${Vulkan_GLSLC_EXECUTABLE}")
+        message(STATUS "  vulkan.hpp: ${VULKAN_HPP_DIR}")
+    else()
+        # No glslc — can't compile shaders, fall back to CPU
+        set(GGML_VULKAN OFF CACHE BOOL "" FORCE)
+        message(STATUS "Vulkan disabled: glslc not found in NDK")
+    endif()
+else()
+    message(STATUS "Vulkan disabled: missing libvulkan or vulkan-hpp headers")
+    message(STATUS "  Using optimized CPU backend with ARM NEON")
 endif()
 
-message(STATUS "   Works on: All ARM64 Android devices")
+message(STATUS "Works on: All ARM64 Android devices")
 
 # Add llama.cpp as subdirectory (it will build its own CMakeLists.txt)
 add_subdirectory(${LLAMA_CPP_DIR} build-llama)
@@ -79,18 +146,67 @@ target_link_libraries(flutter_llama_bridge
     ${android-lib}
 )
 
-# Link GPU libraries if found
-if(vulkan-lib)
+# Link Vulkan if enabled
+if(GGML_VULKAN AND vulkan-lib)
     target_link_libraries(flutter_llama_bridge ${vulkan-lib})
     message(STATUS "  Linked: Vulkan library")
 endif()
 
-if(opencl-lib)
-    target_link_libraries(flutter_llama_bridge ${opencl-lib})
-    message(STATUS "  Linked: OpenCL library")
+# ── Multimodal (mtmd) bridge ────────────────────────────────────────
+set(MTMD_DIR "${LLAMA_CPP_DIR}/tools/mtmd")
+
+# Collect mtmd core + model sources
+set(MTMD_SOURCES
+    ${MTMD_DIR}/clip.cpp
+    ${MTMD_DIR}/mtmd.cpp
+    ${MTMD_DIR}/mtmd-audio.cpp
+    ${MTMD_DIR}/mtmd-helper.cpp
+    # model-specific clip implementations
+    ${MTMD_DIR}/models/cogvlm.cpp
+    ${MTMD_DIR}/models/conformer.cpp
+    ${MTMD_DIR}/models/glm4v.cpp
+    ${MTMD_DIR}/models/internvl.cpp
+    ${MTMD_DIR}/models/kimivl.cpp
+    ${MTMD_DIR}/models/llama4.cpp
+    ${MTMD_DIR}/models/llava.cpp
+    ${MTMD_DIR}/models/minicpmv.cpp
+    ${MTMD_DIR}/models/mobilenetv5.cpp
+    ${MTMD_DIR}/models/pixtral.cpp
+    ${MTMD_DIR}/models/qwen2vl.cpp
+    ${MTMD_DIR}/models/qwen3vl.cpp
+    ${MTMD_DIR}/models/siglip.cpp
+    ${MTMD_DIR}/models/whisper-enc.cpp
+    ${MTMD_DIR}/models/youtuvl.cpp
+)
+
+add_library(flutter_llama_multimodal_bridge SHARED
+    flutter_llama_multimodal_bridge.cpp
+    ${MTMD_SOURCES}
+)
+
+target_include_directories(flutter_llama_multimodal_bridge PRIVATE
+    ${LLAMA_CPP_DIR}/include
+    ${LLAMA_CPP_DIR}/src
+    ${LLAMA_CPP_DIR}/ggml/include
+    ${LLAMA_CPP_DIR}/common
+    ${MTMD_DIR}
+    ${LLAMA_CPP_DIR}/vendor
+    ${LLAMA_CPP_DIR}
+)
+
+target_link_libraries(flutter_llama_multimodal_bridge
+    llama
+    ggml
+    ${log-lib}
+    ${android-lib}
+)
+
+if(GGML_VULKAN AND vulkan-lib)
+    target_link_libraries(flutter_llama_multimodal_bridge ${vulkan-lib})
 endif()
 
 message(STATUS "Flutter Llama Bridge configuration:")
 message(STATUS "  Android ABI: ${ANDROID_ABI}")
 message(STATUS "  llama.cpp Dir: ${LLAMA_CPP_DIR}")
 message(STATUS "  Build Type: ${CMAKE_BUILD_TYPE}")
+message(STATUS "  Multimodal: ENABLED (mtmd sources from ${MTMD_DIR})")

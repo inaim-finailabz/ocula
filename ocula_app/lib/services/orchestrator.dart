@@ -5,6 +5,7 @@ import 'dart:io';
 
 import 'ai_manager.dart';
 import 'rag_engine.dart';
+import 'indexer.dart';
 import 'network_permission.dart';
 import 'local_data.dart';
 
@@ -109,6 +110,9 @@ class Orchestrator {
     // STEP 7: Log to episodic memory
     await _memory.log(state);
 
+    // STEP 8: Index conversation for RAG (non-blocking)
+    Indexer().indexChatTurn(state.query, state.response).catchError((_) {});
+
     // Revoke temp internet grant after query completes
     _network.revokeTemp();
 
@@ -141,8 +145,28 @@ class Orchestrator {
   }
 
   /// Node 2: RAG retrieval from local vector store.
+  /// Passes intent-based source hint to boost relevant result types.
   Future<AgentState> _retrieve(AgentState state) async {
-    final context = await _rag.getContext(state.query);
+    // Map intent to a source hint for the hybrid search
+    String? sourceHint;
+    switch (state.intent) {
+      case QueryIntent.file:
+        sourceHint = 'file';
+        break;
+      case QueryIntent.email:
+        sourceHint = 'email';
+        break;
+      case QueryIntent.photo:
+        sourceHint = 'photo';
+        break;
+      case QueryIntent.calendar:
+        sourceHint = 'calendar';
+        break;
+      default:
+        break;
+    }
+
+    final context = await _rag.getContext(state.query, sourceHint: sourceHint);
     state.ragContext = context;
     state.stepsCompleted.add('retrieve');
     return state;

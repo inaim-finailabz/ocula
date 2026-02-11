@@ -23,6 +23,7 @@ static bool g_should_stop = false;
 static std::vector<std::string> g_stream_tokens;
 static size_t g_stream_pos = 0;
 static bool g_backends_loaded = false;
+static llama_context* g_embed_ctx = nullptr;  // Embedding context (for RAG)
 
 extern "C" {
 
@@ -358,6 +359,12 @@ void llama_bridge_free_model() {
     
     NSLog(@"[llama_cpp_bridge] Freeing model");
     
+    // Free embedding context first (shares g_model)
+    if (g_embed_ctx) {
+        llama_free(g_embed_ctx);
+        g_embed_ctx = nullptr;
+    }
+    
     if (g_sampler) {
         llama_sampler_free(g_sampler);
         g_sampler = nullptr;
@@ -384,6 +391,77 @@ void llama_stop_generation() {
     
     NSLog(@"[llama_cpp_bridge] Stopping generation");
     g_should_stop = true;
+}
+
+// ──────────────────────────────────────────
+// EMBEDDING — for RAG pipeline
+// ──────────────────────────────────────────
+
+int32_t llama_get_embedding(
+    const char* text,
+    float* output,
+    int32_t output_size
+) {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    
+    if (!g_model || !g_vocab) {
+        NSLog(@"[llama_cpp_bridge] getEmbedding: model not loaded");
+        return 0;
+    }
+    
+    if (!g_embed_ctx) {
+        llama_context_params ctx_params = llama_context_default_params();
+        ctx_params.n_ctx       = 512;
+        ctx_params.n_batch     = 512;
+        ctx_params.n_threads   = 4;
+        ctx_params.n_threads_batch = 4;
+        ctx_params.embeddings  = true;
+        ctx_params.pooling_type = LLAMA_POOLING_TYPE_MEAN;
+        
+        g_embed_ctx = llama_init_from_model(g_model, ctx_params);
+        if (!g_embed_ctx) {
+            NSLog(@"[llama_cpp_bridge] getEmbedding: failed to create embedding context");
+            return 0;
+        }
+        NSLog(@"[llama_cpp_bridge] Embedding context created (n_embd=%d)",
+              llama_model_n_embd(g_model));
+    }
+    
+    std::string text_str(text);
+    const int n_tokens = -llama_tokenize(g_vocab, text_str.c_str(), text_str.size(), NULL, 0, true, true);
+    if (n_tokens <= 0) return 0;
+    
+    int n_use = std::min(n_tokens, (int)llama_n_ctx(g_embed_ctx));
+    std::vector<llama_token> tokens(n_tokens);
+    llama_tokenize(g_vocab, text_str.c_str(), text_str.size(), tokens.data(), tokens.size(), true, true);
+    if (n_use < n_tokens) tokens.resize(n_use);
+    
+    llama_memory_clear(llama_get_memory(g_embed_ctx), true);
+    
+    llama_batch batch = llama_batch_get_one(tokens.data(), (int32_t)tokens.size());
+    if (llama_encode(g_embed_ctx, batch) != 0) return 0;
+    
+    int n_embd = llama_model_n_embd(g_model);
+    const float* embd = llama_get_embeddings_seq(g_embed_ctx, 0);
+    if (!embd) embd = llama_get_embeddings_ith(g_embed_ctx, -1);
+    if (!embd) return 0;
+    
+    int copy_n = std::min(n_embd, (int)output_size);
+    float norm = 0.0f;
+    for (int i = 0; i < copy_n; i++) norm += embd[i] * embd[i];
+    norm = sqrtf(norm);
+    if (norm > 0.0f) {
+        for (int i = 0; i < copy_n; i++) output[i] = embd[i] / norm;
+    } else {
+        memcpy(output, embd, copy_n * sizeof(float));
+    }
+    
+    return copy_n;
+}
+
+int32_t llama_get_embedding_dim() {
+    if (!g_model) return 0;
+    return llama_model_n_embd(g_model);
 }
 
 } // extern "C"

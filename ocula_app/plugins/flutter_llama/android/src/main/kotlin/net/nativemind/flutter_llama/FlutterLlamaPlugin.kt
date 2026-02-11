@@ -53,6 +53,9 @@ class FlutterLlamaPlugin : FlutterPlugin, MethodCallHandler, EventChannel.Stream
     private var modelPath: String? = null
     private var shouldStop = false
 
+    // Multimodal plugin (separate channels for image+text inference)
+    private var multimodalPlugin: FlutterLlamaMultimodalPlugin? = null
+
     override fun onAttachedToEngine(flutterPluginBinding: FlutterPlugin.FlutterPluginBinding) {
         channel = MethodChannel(flutterPluginBinding.binaryMessenger, CHANNEL_NAME)
         channel.setMethodCallHandler(this)
@@ -60,7 +63,11 @@ class FlutterLlamaPlugin : FlutterPlugin, MethodCallHandler, EventChannel.Stream
         eventChannel = EventChannel(flutterPluginBinding.binaryMessenger, EVENT_CHANNEL_NAME)
         eventChannel.setStreamHandler(this)
         
-        Log.d(TAG, "Plugin attached to engine")
+        // Register multimodal plugin on the same engine binding
+        multimodalPlugin = FlutterLlamaMultimodalPlugin()
+        multimodalPlugin!!.onAttachedToEngine(flutterPluginBinding)
+        
+        Log.d(TAG, "Plugin attached to engine (text + multimodal)")
     }
 
     override fun onMethodCall(call: MethodCall, result: Result) {
@@ -71,6 +78,8 @@ class FlutterLlamaPlugin : FlutterPlugin, MethodCallHandler, EventChannel.Stream
             "unloadModel" -> unloadModel(result)
             "getModelInfo" -> getModelInfo(result)
             "stopGeneration" -> stopGeneration(result)
+            "getEmbedding" -> getEmbedding(call, result)
+            "getEmbeddingDim" -> getEmbeddingDim(result)
             else -> result.notImplemented()
         }
     }
@@ -78,6 +87,8 @@ class FlutterLlamaPlugin : FlutterPlugin, MethodCallHandler, EventChannel.Stream
     override fun onDetachedFromEngine(binding: FlutterPlugin.FlutterPluginBinding) {
         channel.setMethodCallHandler(null)
         eventChannel.setStreamHandler(null)
+        multimodalPlugin?.onDetachedFromEngine(binding)
+        multimodalPlugin = null
         executor.shutdown()
     }
 
@@ -325,6 +336,52 @@ class FlutterLlamaPlugin : FlutterPlugin, MethodCallHandler, EventChannel.Stream
         result.success(null)
     }
 
+    // MARK: - Get Embedding (for RAG)
+
+    private fun getEmbedding(call: MethodCall, result: Result) {
+        if (!modelLoaded) {
+            result.error("MODEL_NOT_LOADED", "Model not loaded", null)
+            return
+        }
+
+        executor.execute {
+            try {
+                val text = call.argument<String>("text")
+                if (text == null) {
+                    mainHandler.post {
+                        result.error("INVALID_ARGS", "Missing text parameter", null)
+                    }
+                    return@execute
+                }
+
+                val embedding = nativeGetEmbedding(text)
+
+                mainHandler.post {
+                    if (embedding != null && embedding.isNotEmpty()) {
+                        // Convert float[] to List<Double> for Dart
+                        val doubleList = embedding.map { it.toDouble() }
+                        Log.d(TAG, "Embedding: ${embedding.size}-dim")
+                        result.success(doubleList)
+                    } else {
+                        result.error("EMBEDDING_FAILED", "Failed to compute embedding", null)
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Error computing embedding", e)
+                mainHandler.post {
+                    result.error("EXCEPTION", "Error computing embedding: ${e.message}", null)
+                }
+            }
+        }
+    }
+
+    // MARK: - Get Embedding Dimension
+
+    private fun getEmbeddingDim(result: Result) {
+        val dim = nativeGetEmbeddingDim()
+        result.success(dim)
+    }
+
     // MARK: - Native Methods (JNI)
 
     private external fun nativeInitModel(
@@ -364,6 +421,10 @@ class FlutterLlamaPlugin : FlutterPlugin, MethodCallHandler, EventChannel.Stream
     private external fun nativeFreeModel()
 
     private external fun nativeStopGeneration()
+
+    private external fun nativeGetEmbedding(text: String): FloatArray?
+
+    private external fun nativeGetEmbeddingDim(): Int
 
     // Data classes for JNI results
     data class GenerationResult(

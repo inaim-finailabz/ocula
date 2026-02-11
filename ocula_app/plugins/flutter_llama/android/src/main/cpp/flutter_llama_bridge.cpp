@@ -27,6 +27,7 @@ static std::mutex g_mutex;
 static bool g_should_stop = false;
 static std::vector<std::string> g_stream_tokens;
 static size_t g_stream_pos = 0;
+static llama_context* g_embed_ctx = nullptr;  // Embedding context (for RAG)
 
 extern "C" {
 
@@ -396,6 +397,12 @@ Java_net_nativemind_flutter_1llama_FlutterLlamaPlugin_nativeFreeModel(
     
     LOGI("Freeing model");
     
+    // Free embedding context first (shares g_model)
+    if (g_embed_ctx) {
+        llama_free(g_embed_ctx);
+        g_embed_ctx = nullptr;
+    }
+    
     if (g_sampler) {
         llama_sampler_free(g_sampler);
         g_sampler = nullptr;
@@ -426,6 +433,104 @@ Java_net_nativemind_flutter_1llama_FlutterLlamaPlugin_nativeStopGeneration(
     
     LOGI("Stopping generation");
     g_should_stop = true;
+}
+
+// ──────────────────────────────────────────
+// EMBEDDING — for RAG pipeline
+// ──────────────────────────────────────────
+
+JNIEXPORT jfloatArray JNICALL
+Java_net_nativemind_flutter_1llama_FlutterLlamaPlugin_nativeGetEmbedding(
+    JNIEnv* env,
+    jobject thiz,
+    jstring text
+) {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    
+    if (!g_model || !g_vocab) {
+        LOGE("getEmbedding: model not loaded");
+        return nullptr;
+    }
+    
+    // Lazily create embedding context
+    if (!g_embed_ctx) {
+        llama_context_params ctx_params = llama_context_default_params();
+        ctx_params.n_ctx       = 512;
+        ctx_params.n_batch     = 512;
+        ctx_params.n_threads   = 4;
+        ctx_params.n_threads_batch = 4;
+        ctx_params.embeddings  = true;
+        ctx_params.pooling_type = LLAMA_POOLING_TYPE_MEAN;
+        
+        g_embed_ctx = llama_init_from_model(g_model, ctx_params);
+        if (!g_embed_ctx) {
+            LOGE("getEmbedding: failed to create embedding context");
+            return nullptr;
+        }
+        LOGI("Embedding context created (n_embd=%d)", llama_model_n_embd(g_model));
+    }
+    
+    const char* text_str = env->GetStringUTFChars(text, nullptr);
+    std::string text_cpp(text_str);
+    env->ReleaseStringUTFChars(text, text_str);
+    
+    // Tokenize
+    const int n_tokens = -llama_tokenize(g_vocab, text_cpp.c_str(), text_cpp.size(), NULL, 0, true, true);
+    if (n_tokens <= 0) {
+        LOGE("getEmbedding: tokenization failed");
+        return nullptr;
+    }
+    
+    int n_use = std::min(n_tokens, (int)llama_n_ctx(g_embed_ctx));
+    std::vector<llama_token> tokens(n_tokens);
+    llama_tokenize(g_vocab, text_cpp.c_str(), text_cpp.size(), tokens.data(), tokens.size(), true, true);
+    if (n_use < n_tokens) tokens.resize(n_use);
+    
+    // Clear KV cache
+    llama_memory_clear(llama_get_memory(g_embed_ctx), true);
+    
+    // Encode
+    llama_batch batch = llama_batch_get_one(tokens.data(), (int32_t)tokens.size());
+    if (llama_encode(g_embed_ctx, batch) != 0) {
+        LOGE("getEmbedding: encode failed");
+        return nullptr;
+    }
+    
+    int n_embd = llama_model_n_embd(g_model);
+    
+    const float* embd = llama_get_embeddings_seq(g_embed_ctx, 0);
+    if (!embd) embd = llama_get_embeddings_ith(g_embed_ctx, -1);
+    if (!embd) {
+        LOGE("getEmbedding: no embeddings available");
+        return nullptr;
+    }
+    
+    // L2-normalize
+    std::vector<float> normalized(n_embd);
+    float norm = 0.0f;
+    for (int i = 0; i < n_embd; i++) norm += embd[i] * embd[i];
+    norm = sqrtf(norm);
+    if (norm > 0.0f) {
+        for (int i = 0; i < n_embd; i++) normalized[i] = embd[i] / norm;
+    } else {
+        memcpy(normalized.data(), embd, n_embd * sizeof(float));
+    }
+    
+    // Return as Java float array
+    jfloatArray result = env->NewFloatArray(n_embd);
+    env->SetFloatArrayRegion(result, 0, n_embd, normalized.data());
+    
+    LOGI("getEmbedding: returned %d-dim embedding", n_embd);
+    return result;
+}
+
+JNIEXPORT jint JNICALL
+Java_net_nativemind_flutter_1llama_FlutterLlamaPlugin_nativeGetEmbeddingDim(
+    JNIEnv* env,
+    jobject thiz
+) {
+    if (!g_model) return 0;
+    return llama_model_n_embd(g_model);
 }
 
 } // extern "C"
