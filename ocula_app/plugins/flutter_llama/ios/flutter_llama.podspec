@@ -14,15 +14,15 @@ Supports GPU acceleration via Metal and CPU optimization via Accelerate framewor
   s.author           = { 'NativeMind' => 'licensing@nativemind.net' }
   s.source           = { :path => '.' }
 
-  # Source files
+  # Source files — plugin classes + mtmd multimodal via include wrapper (mtmd_sources.mm)
   s.source_files = 'Classes/**/*.{swift,h,m,mm}'
   s.public_header_files = 'Classes/**/*.h'
 
   # Use xcframework (supports device + simulator)
   s.vendored_frameworks = 'llama.xcframework'
 
-  # Preserve llama.cpp headers
-  s.preserve_paths = '../llama.cpp/include/**/*', '../llama.cpp/ggml/include/**/*'
+  # Preserve llama.cpp headers and mtmd headers
+  s.preserve_paths = '../llama.cpp/include/**/*', '../llama.cpp/ggml/include/**/*', '../llama.cpp/tools/mtmd/**/*', '../llama.cpp/vendor/**/*'
 
   # C++ settings
   s.library = 'c++'
@@ -35,7 +35,7 @@ Supports GPU acceleration via Metal and CPU optimization via Accelerate framewor
     'GCC_ENABLE_CPP_RTTI' => 'YES',
     'CLANG_WARN_DOCUMENTATION_COMMENTS' => 'NO',
     'GCC_WARN_INHIBIT_ALL_WARNINGS' => 'YES',
-    'HEADER_SEARCH_PATHS' => '"${PODS_TARGET_SRCROOT}/../llama.cpp/include" "${PODS_TARGET_SRCROOT}/../llama.cpp/ggml/include"',
+    'HEADER_SEARCH_PATHS' => '"${PODS_TARGET_SRCROOT}/../llama.cpp/include" "${PODS_TARGET_SRCROOT}/../llama.cpp/ggml/include" "${PODS_TARGET_SRCROOT}/../llama.cpp/tools/mtmd" "${PODS_TARGET_SRCROOT}/../llama.cpp/tools/mtmd/models" "${PODS_TARGET_SRCROOT}/../llama.cpp" "${PODS_TARGET_SRCROOT}/../llama.cpp/vendor" "${PODS_TARGET_SRCROOT}/../llama.cpp/vendor/stb" "${PODS_TARGET_SRCROOT}/../llama.cpp/vendor/miniaudio"',
     'OTHER_LDFLAGS' => '$(inherited) -framework "llama"',
   }
 

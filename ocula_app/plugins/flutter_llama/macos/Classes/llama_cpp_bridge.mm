@@ -22,6 +22,7 @@ static std::mutex g_mutex;
 static bool g_should_stop = false;
 static std::vector<std::string> g_stream_tokens;
 static size_t g_stream_pos = 0;
+static bool g_backends_loaded = false;
 
 extern "C" {
 
@@ -55,8 +56,11 @@ bool llama_init_model(
         g_model = nullptr;
     }
     
-    // Load dynamic backends
-    ggml_backend_load_all();
+    // Load dynamic backends (only once per process)
+    if (!g_backends_loaded) {
+        ggml_backend_load_all();
+        g_backends_loaded = true;
+    }
     
     // Set up model parameters
     llama_model_params model_params = llama_model_default_params();

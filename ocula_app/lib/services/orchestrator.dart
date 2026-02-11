@@ -246,6 +246,9 @@ class Orchestrator {
       } on ModelNotReadyException {
         debugPrint('[Orchestrator] ${tier.name} not ready — trying next');
         continue;
+      } catch (e) {
+        debugPrint('[Orchestrator] ${tier.name} switchEngine error: $e — trying next');
+        continue;
       }
     }
 

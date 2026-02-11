@@ -22,6 +22,7 @@ static std::mutex g_mutex;
 static bool g_should_stop = false;
 static std::vector<std::string> g_stream_tokens;
 static size_t g_stream_pos = 0;
+static bool g_backends_loaded = false;
 
 extern "C" {
 
@@ -55,12 +56,22 @@ bool llama_init_model(
         g_model = nullptr;
     }
     
-    // Load dynamic backends
-    ggml_backend_load_all();
+    // Load dynamic backends (only once per process)
+    if (!g_backends_loaded) {
+        ggml_backend_load_all();
+        g_backends_loaded = true;
+    }
     
     // Set up model parameters
     llama_model_params model_params = llama_model_default_params();
+#if TARGET_OS_SIMULATOR
+    // iOS Simulator has no real Metal GPU — force CPU to avoid
+    // backend cleanup crashes in llama_model destructor.
+    model_params.n_gpu_layers = 0;
+    NSLog(@"[llama_cpp_bridge] Simulator detected — forcing n_gpu_layers=0");
+#else
     model_params.n_gpu_layers = use_gpu ? n_gpu_layers : 0;
+#endif
     
     // Load model
     g_model = llama_model_load_from_file(model_path, model_params);
@@ -352,21 +363,28 @@ void llama_get_model_info(
 void llama_cpp_bridge_free_model() {
     std::lock_guard<std::mutex> lock(g_mutex);
     
-    NSLog(@"[llama_cpp_bridge] Freeing model");
+    NSLog(@"[llama_cpp_bridge] Freeing model — g_model=%p g_context=%p g_sampler=%p",
+          (void*)g_model, (void*)g_context, (void*)g_sampler);
     
     if (g_sampler) {
+        NSLog(@"[llama_cpp_bridge] Freeing sampler...");
         llama_sampler_free(g_sampler);
         g_sampler = nullptr;
+        NSLog(@"[llama_cpp_bridge] Sampler freed OK");
     }
     
     if (g_context) {
+        NSLog(@"[llama_cpp_bridge] Freeing context...");
         llama_free(g_context);
         g_context = nullptr;
+        NSLog(@"[llama_cpp_bridge] Context freed OK");
     }
     
     if (g_model) {
+        NSLog(@"[llama_cpp_bridge] Freeing model pointer %p ...", (void*)g_model);
         llama_model_free(g_model);
         g_model = nullptr;
+        NSLog(@"[llama_cpp_bridge] Model freed OK");
     }
     
     g_vocab = nullptr;

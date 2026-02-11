@@ -149,6 +149,7 @@ class FlutterLlama {
     try {
       if (kDebugMode) {
         print('[FlutterLlama] Unloading model');
+        print('[FlutterLlama] Caller stack:\n${StackTrace.current}');
       }
 
       await _channel.invokeMethod<void>('unloadModel');

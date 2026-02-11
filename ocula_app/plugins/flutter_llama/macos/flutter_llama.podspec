@@ -14,7 +14,7 @@ Supports GPU acceleration via Metal and CPU optimization via Accelerate framewor
   s.author           = { 'NativeMind' => 'licensing@nativemind.net' }
   s.source           = { :path => '.' }
   
-  # Include Swift/ObjC++ files and headers
+  # Include Swift/ObjC++ files, headers, and mtmd multimodal via include wrapper
   s.source_files = 'Classes/**/*.{swift,h,m,mm}'
   
   # Public headers
@@ -78,8 +78,8 @@ Supports GPU acceleration via Metal and CPU optimization via Accelerate framewor
     'GCC_ENABLE_CPP_RTTI' => 'YES',
     'CLANG_WARN_DOCUMENTATION_COMMENTS' => 'NO',
     'GCC_WARN_INHIBIT_ALL_WARNINGS' => 'YES',
-    'HEADER_SEARCH_PATHS' => '"${PODS_TARGET_SRCROOT}/../llama.cpp/include" "${PODS_TARGET_SRCROOT}/../llama.cpp/src" "${PODS_TARGET_SRCROOT}/../llama.cpp/ggml/include" "${PODS_TARGET_SRCROOT}/../llama.cpp/ggml/src" "${PODS_TARGET_SRCROOT}/../llama.cpp/ggml/src/ggml-cpu" "${PODS_TARGET_SRCROOT}/../llama.cpp/ggml/src/ggml-metal"',
-    'USER_HEADER_SEARCH_PATHS' => '"${PODS_TARGET_SRCROOT}/../llama.cpp/include" "${PODS_TARGET_SRCROOT}/../llama.cpp/ggml/include"',
+    'HEADER_SEARCH_PATHS' => '"${PODS_TARGET_SRCROOT}/../llama.cpp/include" "${PODS_TARGET_SRCROOT}/../llama.cpp/src" "${PODS_TARGET_SRCROOT}/../llama.cpp/ggml/include" "${PODS_TARGET_SRCROOT}/../llama.cpp/ggml/src" "${PODS_TARGET_SRCROOT}/../llama.cpp/ggml/src/ggml-cpu" "${PODS_TARGET_SRCROOT}/../llama.cpp/ggml/src/ggml-metal" "${PODS_TARGET_SRCROOT}/../llama.cpp/tools/mtmd" "${PODS_TARGET_SRCROOT}/../llama.cpp/tools/mtmd/models" "${PODS_TARGET_SRCROOT}/../llama.cpp" "${PODS_TARGET_SRCROOT}/../llama.cpp/vendor" "${PODS_TARGET_SRCROOT}/../llama.cpp/vendor/stb" "${PODS_TARGET_SRCROOT}/../llama.cpp/vendor/miniaudio"',
+    'USER_HEADER_SEARCH_PATHS' => '"${PODS_TARGET_SRCROOT}/../llama.cpp/include" "${PODS_TARGET_SRCROOT}/../llama.cpp/ggml/include" "${PODS_TARGET_SRCROOT}/../llama.cpp/tools/mtmd"',
     'OTHER_LDFLAGS' => '$(inherited) -force_load "${PODS_TARGET_SRCROOT}/macos_libs/libllama.a" -force_load "${PODS_TARGET_SRCROOT}/macos_libs/libggml.a" -force_load "${PODS_TARGET_SRCROOT}/macos_libs/libggml-base.a" -force_load "${PODS_TARGET_SRCROOT}/macos_libs/libggml-cpu.a" -force_load "${PODS_TARGET_SRCROOT}/macos_libs/libggml-metal.a" -force_load "${PODS_TARGET_SRCROOT}/macos_libs/libggml-blas.a"'
   }
   

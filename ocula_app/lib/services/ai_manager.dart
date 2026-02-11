@@ -1,5 +1,6 @@
 import 'dart:io';
 import 'package:device_info_plus/device_info_plus.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter_llama/flutter_llama.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'app_language.dart';
@@ -167,27 +168,55 @@ class AIManager {
       throw ModelNotReadyException(tier);
     }
 
+    // Remember what was loaded so we can restore on failure
+    final previousTier = _activeTier;
+
     // 1. Flush RAM — unload whatever is currently loaded
     if (_activeTier != null) {
-      if (_isVisionMode) {
-        await _visionEngine.unloadMultimodalModel();
-      } else {
-        await _textEngine.unloadModel();
+      try {
+        if (_isVisionMode) {
+          await _visionEngine.unloadMultimodalModel();
+        } else {
+          await _textEngine.unloadModel();
+        }
+      } catch (e) {
+        debugPrint('[AIManager] unload failed (non-fatal): $e');
       }
+      // Model is gone from native side regardless
+      _activeTier = null;
+      _isVisionMode = false;
     }
 
     // 2. Always load via text engine for chat.
     //    Vision engine is loaded on-demand in ask() when an image is attached.
-    //    This avoids the problem where FlutterLlamaMultimodal cannot do
-    //    text-only generation.
-    await _textEngine.loadModel(LlamaConfig(
-      modelPath: mainPath,
-      nGpuLayers: -1,
-      useGpu: true,
-    ));
-    _isVisionMode = false;
-
-    _activeTier = tier;
+    try {
+      await _textEngine.loadModel(LlamaConfig(
+        modelPath: mainPath,
+        nGpuLayers: -1,
+        useGpu: true,
+      ));
+      _isVisionMode = false;
+      _activeTier = tier;
+    } catch (e) {
+      debugPrint('[AIManager] loadModel($tier) failed: $e');
+      // Try to recover by reloading the free model
+      if (tier != AITier.free && previousTier != null) {
+        final freePath = await _models.mainModelPath(AITier.free);
+        if (freePath != null) {
+          try {
+            await _textEngine.loadModel(LlamaConfig(
+              modelPath: freePath,
+              nGpuLayers: -1,
+              useGpu: true,
+            ));
+            _activeTier = AITier.free;
+            _isVisionMode = false;
+            return; // recovered to free tier
+          } catch (_) {}
+        }
+      }
+      rethrow;
+    }
   }
 
   /// Auto-route: pick the right model based on hardware + intent.
@@ -256,27 +285,45 @@ class AIManager {
         '<|im_start|>user\n$userMsg<|im_end|>\n'
         '<|im_start|>assistant\n';
 
-    // Generate — if image is attached, hot-swap to vision engine
+    // Generate — if image is attached, try to hot-swap to vision engine
     if (imagePath != null) {
       final projPath = await _models.visionProjectorPath(_activeTier ?? AITier.free);
       if (projPath != null) {
-        // Unload text engine, load vision engine for this query
-        await _textEngine.unloadModel();
-        await _visionEngine.loadMultimodalModel(
-          MultimodalConfig.textAndImage(
-            await _models.mainModelPath(_activeTier ?? AITier.free) ?? '',
-            projPath,
-          ),
-        );
-        final response = await _visionEngine.describeImage(imagePath, fullPrompt);
-        // Swap back to text engine for next query
-        await _visionEngine.unloadMultimodalModel();
-        await _textEngine.loadModel(LlamaConfig(
-          modelPath: await _models.mainModelPath(_activeTier ?? AITier.free) ?? '',
-          nGpuLayers: -1,
-          useGpu: true,
-        ));
-        return response.text;
+        try {
+          final mainPath = await _models.mainModelPath(_activeTier ?? AITier.free) ?? '';
+          // Unload text engine, load vision engine for this query
+          await _textEngine.unloadModel();
+          final loaded = await _visionEngine.loadMultimodalModel(
+            MultimodalConfig.textAndImage(mainPath, projPath),
+          );
+          if (loaded) {
+            final response = await _visionEngine.describeImage(imagePath, fullPrompt);
+            // Swap back to text engine for next query
+            await _visionEngine.unloadMultimodalModel();
+            await _textEngine.loadModel(LlamaConfig(
+              modelPath: mainPath,
+              nGpuLayers: -1,
+              useGpu: true,
+            ));
+            return response.text;
+          }
+          // Vision engine failed to load — reload text engine and fall through
+          await _textEngine.loadModel(LlamaConfig(
+            modelPath: mainPath,
+            nGpuLayers: -1,
+            useGpu: true,
+          ));
+        } catch (e) {
+          // Vision engine not available on this platform — fall through to text-only
+          final mainPath = await _models.mainModelPath(_activeTier ?? AITier.free) ?? '';
+          if (!_textEngine.isModelLoaded) {
+            await _textEngine.loadModel(LlamaConfig(
+              modelPath: mainPath,
+              nGpuLayers: -1,
+              useGpu: true,
+            ));
+          }
+        }
       }
     }
 
