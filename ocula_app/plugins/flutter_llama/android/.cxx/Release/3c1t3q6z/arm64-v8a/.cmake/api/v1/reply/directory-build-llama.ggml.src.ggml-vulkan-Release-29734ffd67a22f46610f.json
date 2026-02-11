@@ -1,0 +1,53 @@
+{
+	"backtraceGraph" : 
+	{
+		"commands" : 
+		[
+			"install",
+			"ggml_add_backend_library"
+		],
+		"files" : 
+		[
+			"/Volumes/ExternalDisk/projects/Ocula/ocula_app/plugins/flutter_llama/llama.cpp/ggml/src/CMakeLists.txt",
+			"/Volumes/ExternalDisk/projects/Ocula/ocula_app/plugins/flutter_llama/llama.cpp/ggml/src/ggml-vulkan/CMakeLists.txt"
+		],
+		"nodes" : 
+		[
+			{
+				"file" : 1
+			},
+			{
+				"command" : 1,
+				"file" : 1,
+				"line" : 57,
+				"parent" : 0
+			},
+			{
+				"command" : 0,
+				"file" : 0,
+				"line" : 262,
+				"parent" : 1
+			}
+		]
+	},
+	"installers" : 
+	[
+		{
+			"backtrace" : 2,
+			"component" : "Unspecified",
+			"destination" : "lib",
+			"paths" : 
+			[
+				"bin/libggml-vulkan.so"
+			],
+			"targetId" : "ggml-vulkan::@122a48557561f0ed9464",
+			"targetIndex" : 4,
+			"type" : "target"
+		}
+	],
+	"paths" : 
+	{
+		"build" : "build-llama/ggml/src/ggml-vulkan",
+		"source" : "/Volumes/ExternalDisk/projects/Ocula/ocula_app/plugins/flutter_llama/llama.cpp/ggml/src/ggml-vulkan"
+	}
+}

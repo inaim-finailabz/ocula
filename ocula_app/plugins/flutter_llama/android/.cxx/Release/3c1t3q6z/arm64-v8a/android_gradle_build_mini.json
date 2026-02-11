@@ -1,0 +1,87 @@
+{
+  "buildFiles": [
+    "/Volumes/ExternalDisk/projects/Ocula/ocula_app/plugins/flutter_llama/android/src/main/cpp/CMakeLists.txt",
+    "/Volumes/ExternalDisk/projects/Ocula/ocula_app/plugins/flutter_llama/llama.cpp/CMakeLists.txt",
+    "/Volumes/ExternalDisk/projects/Ocula/ocula_app/plugins/flutter_llama/llama.cpp/ggml/CMakeLists.txt",
+    "/Volumes/ExternalDisk/projects/Ocula/ocula_app/plugins/flutter_llama/llama.cpp/ggml/src/CMakeLists.txt",
+    "/Volumes/ExternalDisk/projects/Ocula/ocula_app/plugins/flutter_llama/llama.cpp/ggml/src/ggml-cpu/CMakeLists.txt",
+    "/Volumes/ExternalDisk/projects/Ocula/ocula_app/plugins/flutter_llama/llama.cpp/ggml/src/ggml-vulkan/CMakeLists.txt",
+    "/Volumes/ExternalDisk/projects/Ocula/ocula_app/plugins/flutter_llama/llama.cpp/src/CMakeLists.txt"
+  ],
+  "cleanCommandsComponents": [
+    [
+      "/Users/issamnaim/Library/Android/sdk/cmake/3.22.1/bin/ninja",
+      "-C",
+      "/Volumes/ExternalDisk/projects/Ocula/ocula_app/plugins/flutter_llama/android/.cxx/Release/3c1t3q6z/arm64-v8a",
+      "clean"
+    ]
+  ],
+  "buildTargetsCommandComponents": [
+    "/Users/issamnaim/Library/Android/sdk/cmake/3.22.1/bin/ninja",
+    "-C",
+    "/Volumes/ExternalDisk/projects/Ocula/ocula_app/plugins/flutter_llama/android/.cxx/Release/3c1t3q6z/arm64-v8a",
+    "{LIST_OF_TARGETS_TO_BUILD}"
+  ],
+  "libraries": {
+    "flutter_llama_bridge::@6890427a1f51a3e7e1df": {
+      "artifactName": "flutter_llama_bridge",
+      "abi": "arm64-v8a",
+      "output": "/Volumes/ExternalDisk/projects/Ocula/ocula_app/build/flutter_llama/intermediates/cxx/Release/3c1t3q6z/obj/arm64-v8a/libflutter_llama_bridge.so",
+      "runtimeFiles": [
+        "/Volumes/ExternalDisk/projects/Ocula/ocula_app/plugins/flutter_llama/android/.cxx/Release/3c1t3q6z/arm64-v8a/bin/libllama.so",
+        "/Volumes/ExternalDisk/projects/Ocula/ocula_app/plugins/flutter_llama/android/.cxx/Release/3c1t3q6z/arm64-v8a/bin/libggml.so",
+        "/Volumes/ExternalDisk/projects/Ocula/ocula_app/plugins/flutter_llama/android/.cxx/Release/3c1t3q6z/arm64-v8a/bin/libggml-cpu.so",
+        "/Volumes/ExternalDisk/projects/Ocula/ocula_app/plugins/flutter_llama/android/.cxx/Release/3c1t3q6z/arm64-v8a/bin/libggml-vulkan.so",
+        "/Volumes/ExternalDisk/projects/Ocula/ocula_app/plugins/flutter_llama/android/.cxx/Release/3c1t3q6z/arm64-v8a/bin/libggml-base.so"
+      ]
+    },
+    "vulkan-shaders-gen::@122a48557561f0ed9464": {
+      "artifactName": "vulkan-shaders-gen",
+      "abi": "arm64-v8a",
+      "runtimeFiles": []
+    },
+    "ggml::@23533c6d68a59d54598d": {
+      "artifactName": "ggml",
+      "abi": "arm64-v8a",
+      "output": "/Volumes/ExternalDisk/projects/Ocula/ocula_app/plugins/flutter_llama/android/.cxx/Release/3c1t3q6z/arm64-v8a/bin/libggml.so",
+      "runtimeFiles": [
+        "/Volumes/ExternalDisk/projects/Ocula/ocula_app/plugins/flutter_llama/android/.cxx/Release/3c1t3q6z/arm64-v8a/bin/libggml-cpu.so",
+        "/Volumes/ExternalDisk/projects/Ocula/ocula_app/plugins/flutter_llama/android/.cxx/Release/3c1t3q6z/arm64-v8a/bin/libggml-vulkan.so",
+        "/Volumes/ExternalDisk/projects/Ocula/ocula_app/plugins/flutter_llama/android/.cxx/Release/3c1t3q6z/arm64-v8a/bin/libggml-base.so"
+      ]
+    },
+    "ggml-vulkan::@122a48557561f0ed9464": {
+      "artifactName": "ggml-vulkan",
+      "abi": "arm64-v8a",
+      "output": "/Volumes/ExternalDisk/projects/Ocula/ocula_app/plugins/flutter_llama/android/.cxx/Release/3c1t3q6z/arm64-v8a/bin/libggml-vulkan.so",
+      "runtimeFiles": [
+        "/Volumes/ExternalDisk/projects/Ocula/ocula_app/plugins/flutter_llama/android/.cxx/Release/3c1t3q6z/arm64-v8a/bin/libggml-base.so"
+      ]
+    },
+    "llama::@b791850eb95f38641ccb": {
+      "artifactName": "llama",
+      "abi": "arm64-v8a",
+      "output": "/Volumes/ExternalDisk/projects/Ocula/ocula_app/plugins/flutter_llama/android/.cxx/Release/3c1t3q6z/arm64-v8a/bin/libllama.so",
+      "runtimeFiles": [
+        "/Volumes/ExternalDisk/projects/Ocula/ocula_app/plugins/flutter_llama/android/.cxx/Release/3c1t3q6z/arm64-v8a/bin/libggml.so",
+        "/Volumes/ExternalDisk/projects/Ocula/ocula_app/plugins/flutter_llama/android/.cxx/Release/3c1t3q6z/arm64-v8a/bin/libggml-cpu.so",
+        "/Volumes/ExternalDisk/projects/Ocula/ocula_app/plugins/flutter_llama/android/.cxx/Release/3c1t3q6z/arm64-v8a/bin/libggml-vulkan.so",
+        "/Volumes/ExternalDisk/projects/Ocula/ocula_app/plugins/flutter_llama/android/.cxx/Release/3c1t3q6z/arm64-v8a/bin/libggml-base.so"
+      ]
+    },
+    "ggml-cpu::@23533c6d68a59d54598d": {
+      "artifactName": "ggml-cpu",
+      "abi": "arm64-v8a",
+      "output": "/Volumes/ExternalDisk/projects/Ocula/ocula_app/plugins/flutter_llama/android/.cxx/Release/3c1t3q6z/arm64-v8a/bin/libggml-cpu.so",
+      "runtimeFiles": [
+        "/Volumes/ExternalDisk/projects/Ocula/ocula_app/plugins/flutter_llama/android/.cxx/Release/3c1t3q6z/arm64-v8a/bin/libggml-base.so"
+      ]
+    },
+    "ggml-base::@23533c6d68a59d54598d": {
+      "artifactName": "ggml-base",
+      "abi": "arm64-v8a",
+      "output": "/Volumes/ExternalDisk/projects/Ocula/ocula_app/plugins/flutter_llama/android/.cxx/Release/3c1t3q6z/arm64-v8a/bin/libggml-base.so",
+      "runtimeFiles": []
+    }
+  }
+}

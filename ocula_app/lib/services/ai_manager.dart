@@ -2,8 +2,6 @@ import 'dart:io';
 import 'package:device_info_plus/device_info_plus.dart';
 import 'package:flutter_llama/flutter_llama.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'local_data.dart';
-import 'rag_engine.dart';
 import 'app_language.dart';
 import 'model_manager.dart';
 
@@ -33,8 +31,6 @@ class AIManager {
 
   AITier? _activeTier;
   bool _isVisionMode = false;
-  final LocalData _localData = LocalData();
-  final RAGEngine _rag = RAGEngine();
   final AppLanguage _appLang = AppLanguage();
   int? _deviceRamMB;
 
@@ -194,31 +190,6 @@ class AIManager {
     _activeTier = tier;
   }
 
-  /// Detect what the user wants from their message.
-  QueryIntent _detectIntent(String prompt) {
-    final lower = prompt.toLowerCase();
-
-    if (lower.contains('search') || lower.contains('google') || lower.contains('look up')) {
-      return QueryIntent.web;
-    }
-    if (lower.contains('email') || lower.contains('inbox') || lower.contains('mail')) {
-      return QueryIntent.email;
-    }
-    if (lower.contains('photo') || lower.contains('picture') || lower.contains('screenshot')) {
-      return QueryIntent.photo;
-    }
-    if (lower.contains('file') || lower.contains('document') || lower.contains('pdf')) {
-      return QueryIntent.file;
-    }
-    if (lower.contains('contact') || lower.contains('phone number') || lower.contains('call')) {
-      return QueryIntent.contact;
-    }
-    if (lower.contains('schedule') || lower.contains('calendar') || lower.contains('meeting')) {
-      return QueryIntent.calendar;
-    }
-    return QueryIntent.chat;
-  }
-
   /// Auto-route: pick the right model based on hardware + intent.
   ///
   /// Routing order:
@@ -264,38 +235,26 @@ class AIManager {
   }
 
   /// The main entry point. Full pipeline:
-  /// 1. Detect intent
-  /// 2. RAG search for relevant local data
-  /// 3. Build prompt with context → generate response
-  Future<String> ask(String prompt, {bool hasImage = false, String? imagePath}) async {
-    final intent = _detectIntent(prompt);
-    String context = '';
-
-    // RAG search across all indexed local data
-    final ragContext = await _rag.getContext(prompt);
-    if (ragContext.isNotEmpty) {
-      context = ragContext;
-    }
-
-    // Web search — ONLY intent that touches the internet
-    if (intent == QueryIntent.web) {
-      final webResult = await _localData.webSearch(prompt);
-      if (webResult.isNotEmpty) {
-        context += '\n\n[web] $webResult';
-      }
-    }
-
-    // Build the full prompt
+  /// 1. Build ChatML-formatted prompt with system + context + user message
+  /// 2. If image attached, hot-swap to vision engine
+  /// 3. Generate response
+  Future<String> ask(String prompt, {
+    String context = '',
+    bool hasImage = false,
+    String? imagePath,
+  }) async {
+    // Build ChatML-formatted prompt — SmolVLM2 and Qwen3 both use this template
     final langPrefix = _appLang.promptPrefix;
-    final fullPrompt = context.isNotEmpty
-        ? '${langPrefix}You are Ocula, a private AI assistant. '
-          'Answer based on the user\'s personal data below. '
-          'Be concise and helpful.\n\n'
-          'Retrieved context:\n$context\n\n'
-          'User: $prompt'
-        : '${langPrefix}You are Ocula, a private AI assistant. '
-          'Be concise and helpful.\n\n'
-          'User: $prompt';
+    final systemMsg = '${langPrefix}You are Ocula, a private AI assistant that runs '
+        'entirely on-device. Be concise and helpful. Answer only the user\'s question.';
+
+    final userMsg = context.isNotEmpty
+        ? 'Context:\n$context\n\n$prompt'
+        : prompt;
+
+    final fullPrompt = '<|im_start|>system\n$systemMsg<|im_end|>\n'
+        '<|im_start|>user\n$userMsg<|im_end|>\n'
+        '<|im_start|>assistant\n';
 
     // Generate — if image is attached, hot-swap to vision engine
     if (imagePath != null) {
@@ -326,8 +285,14 @@ class AIManager {
       prompt: fullPrompt,
       maxTokens: 512,
       temperature: 0.7,
+      repeatPenalty: 1.3,
+      stopSequences: ['<|im_end|>', '<|im_start|>'],
     ));
-    return response.text;
+
+    // Strip any trailing template tokens the model might emit
+    var text = response.text;
+    text = text.replaceAll('<|im_end|>', '').replaceAll('<|im_start|>', '').trim();
+    return text;
   }
 
   /// Unload everything and free all native memory.

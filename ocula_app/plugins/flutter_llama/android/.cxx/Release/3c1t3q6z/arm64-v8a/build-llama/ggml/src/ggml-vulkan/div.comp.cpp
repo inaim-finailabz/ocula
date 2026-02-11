@@ -1,0 +1,4 @@
+#include "ggml-vulkan-shaders.hpp"
+
+const void * div_data[2][2][2][2] = {{{{div_f32_f32_f32_data,div_f32_f32_f32_rte_data,}, {div_f32_f32_f16_data,div_f32_f32_f16_rte_data,}, }, {{div_f32_f16_f32_data,div_f32_f16_f32_rte_data,}, {div_f32_f16_f16_data,div_f32_f16_f16_rte_data,}, }, }, {{{div_f16_f32_f32_data,div_f16_f32_f32_rte_data,}, {div_f16_f32_f16_data,div_f16_f32_f16_rte_data,}, }, {{div_f16_f16_f32_data,div_f16_f16_f32_rte_data,}, {div_f16_f16_f16_data,div_f16_f16_f16_rte_data,}, }, }, };
+const uint64_t div_len[2][2][2][2] = {{{{div_f32_f32_f32_len,div_f32_f32_f32_rte_len,}, {div_f32_f32_f16_len,div_f32_f32_f16_rte_len,}, }, {{div_f32_f16_f32_len,div_f32_f16_f32_rte_len,}, {div_f32_f16_f16_len,div_f32_f16_f16_rte_len,}, }, }, {{{div_f16_f32_f32_len,div_f16_f32_f32_rte_len,}, {div_f16_f32_f16_len,div_f16_f32_f16_rte_len,}, }, {{div_f16_f16_f32_len,div_f16_f16_f32_rte_len,}, {div_f16_f16_f16_len,div_f16_f16_f16_rte_len,}, }, }, };

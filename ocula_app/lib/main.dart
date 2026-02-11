@@ -251,7 +251,11 @@ class _AssistantScreenState extends State<AssistantScreen>
     _scrollToBottom();
 
     try {
-      final response = await _orchestrator.run(text).timeout(
+      final response = await _orchestrator.run(
+        text,
+        hasImage: image != null,
+        imagePath: image?.path,
+      ).timeout(
         const Duration(minutes: 2),
         onTimeout: () => 'Sorry, I took too long to respond. Please try again.',
       );
@@ -433,15 +437,21 @@ class _AssistantScreenState extends State<AssistantScreen>
                         ),
                         const Spacer(),
                         if (_messages.any((m) => !m.isUser))
-                          IconButton(
-                            icon: const Icon(Icons.ios_share, size: 20),
-                            tooltip: 'Export',
-                            onPressed: () {
-                              final lastResponse = _messages
-                                  .lastWhere((m) => !m.isUser)
-                                  .text;
-                              _export.exportAndShare(lastResponse);
-                            },
+                          Builder(
+                            builder: (ctx) => IconButton(
+                              icon: const Icon(Icons.ios_share, size: 20),
+                              tooltip: 'Export',
+                              onPressed: () {
+                                final lastResponse = _messages
+                                    .lastWhere((m) => !m.isUser)
+                                    .text;
+                                final box = ctx.findRenderObject() as RenderBox?;
+                                final origin = box != null
+                                    ? box.localToGlobal(Offset.zero) & box.size
+                                    : null;
+                                _export.exportAndShare(lastResponse, origin: origin);
+                              },
+                            ),
                           ),
                         IconButton(
                           icon: const Icon(Icons.settings_outlined, size: 20),

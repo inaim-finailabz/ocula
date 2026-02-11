@@ -1,0 +1,20 @@
+                        -H/Volumes/ExternalDisk/projects/Ocula/ocula_app/plugins/flutter_llama/android/src/main/cpp
+-DCMAKE_SYSTEM_NAME=Android
+-DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+-DCMAKE_SYSTEM_VERSION=24
+-DANDROID_ABI=arm64-v8a
+-DCMAKE_ANDROID_ARCH_ABI=arm64-v8a
+-DANDROID_NDK=/Users/issamnaim/Library/Android/sdk/ndk/27.0.12077973
+-DCMAKE_ANDROID_NDK=/Users/issamnaim/Library/Android/sdk/ndk/27.0.12077973
+-DCMAKE_TOOLCHAIN_FILE=/Users/issamnaim/Library/Android/sdk/ndk/27.0.12077973/build/cmake/android.toolchain.cmake
+-DCMAKE_MAKE_PROGRAM=/Users/issamnaim/Library/Android/sdk/cmake/3.22.1/bin/ninja
+-DCMAKE_CXX_FLAGS=-std=c++17 -fexceptions -frtti -O3
+-DCMAKE_LIBRARY_OUTPUT_DIRECTORY=/Volumes/ExternalDisk/projects/Ocula/ocula_app/build/flutter_llama/intermediates/cxx/Release/3c1t3q6z/obj/arm64-v8a
+-DCMAKE_RUNTIME_OUTPUT_DIRECTORY=/Volumes/ExternalDisk/projects/Ocula/ocula_app/build/flutter_llama/intermediates/cxx/Release/3c1t3q6z/obj/arm64-v8a
+-B/Volumes/ExternalDisk/projects/Ocula/ocula_app/plugins/flutter_llama/android/.cxx/Release/3c1t3q6z/arm64-v8a
+-GNinja
+-DANDROID_STL=c++_shared
+-DANDROID_PLATFORM=android-24
+-DCMAKE_BUILD_TYPE=Release
+                        Build command args: []
+                        Version: 2

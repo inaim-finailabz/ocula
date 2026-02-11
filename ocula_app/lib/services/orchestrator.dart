@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'package:flutter/foundation.dart';
 import 'package:path_provider/path_provider.dart';
 import 'dart:io';
 
@@ -6,7 +7,6 @@ import 'ai_manager.dart';
 import 'rag_engine.dart';
 import 'network_permission.dart';
 import 'local_data.dart';
-import 'app_language.dart';
 
 /// Lightweight agent orchestrator inspired by LangGraph patterns.
 /// No backend. No MongoDB. Just a local state machine on the phone.
@@ -192,6 +192,8 @@ class Orchestrator {
   /// 2. Reasoning intent → Thinker (pro / Qwen3-VL-2B).
   /// 3. Spatial intent   → Specialist (plus / Moondream 2).
   /// 4. Default          → Sensor (free / SmolVLM2).
+  ///
+  /// Falls back gracefully: pro → plus → free if a tier's model isn't ready.
   Future<AgentState> _routeModel(AgentState state) async {
     // Hardware gate
     final ram = await _ai.deviceRamMB;
@@ -223,32 +225,47 @@ class Orchestrator {
         lower.contains('receipt') ||
         state.intent == QueryIntent.photo;
 
+    // Build preferred tier order with graceful fallback
+    List<AITier> preferred;
     if (isReasoning) {
-      state.modelUsed = AITier.pro;
+      preferred = [AITier.pro, AITier.plus, AITier.free];
     } else if (isSpatial) {
-      state.modelUsed = AITier.plus;
+      preferred = [AITier.plus, AITier.pro, AITier.free];
     } else {
-      state.modelUsed = AITier.free;
+      preferred = [AITier.free];
     }
 
-    await _ai.switchEngine(state.modelUsed);
+    // Try each tier in order — fall back if model not downloaded yet
+    for (final tier in preferred) {
+      try {
+        await _ai.switchEngine(tier);
+        state.modelUsed = tier;
+        debugPrint('[Orchestrator] Route: ${tier.name} (intent=${state.intent.name})');
+        state.stepsCompleted.add('route_model');
+        return state;
+      } on ModelNotReadyException {
+        debugPrint('[Orchestrator] ${tier.name} not ready — trying next');
+        continue;
+      }
+    }
+
+    // Absolute fallback — should always succeed since free is loaded at startup
+    state.modelUsed = AITier.free;
     state.stepsCompleted.add('route_model');
     return state;
   }
 
   /// Node 6: Generate response from the LLM.
   Future<AgentState> _generate(AgentState state) async {
-    final langPrefix = AppLanguage().promptPrefix;
+    // Build context string — ai_manager.ask() handles the system prompt + ChatML template
+    final context = state.ragContext;
 
-    final prompt = state.ragContext.isNotEmpty
-        ? '${langPrefix}You are Ocula, a private AI assistant that lives on the user\'s phone. '
-          'Everything you know comes from their device. Be concise.\n\n'
-          'Context:\n${state.ragContext}\n\n'
-          'User: ${state.query}'
-        : '${langPrefix}You are Ocula, a private AI assistant. Be concise.\n\n'
-          'User: ${state.query}';
-
-    state.response = await _ai.ask(prompt);
+    state.response = await _ai.ask(
+      state.query,
+      context: context,
+      hasImage: state.hasImage,
+      imagePath: state.imagePath,
+    );
     state.stepsCompleted.add('generate');
     return state;
   }

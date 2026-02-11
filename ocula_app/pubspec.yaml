@@ -11,8 +11,9 @@ dependencies:
     sdk: flutter
   cupertino_icons: ^1.0.8
 
-  # AI Core - Fixed version to resolve dependency conflict
-  flutter_llama: ^1.1.2           # High-level llama.cpp wrapper for GGUF
+  # AI Core - Local fork with iOS @_silgen_name fix (String → UnsafePointer<CChar>)
+  flutter_llama:
+    path: plugins/flutter_llama
 
   # Assistant Features
   speech_to_text: ^7.0.0         # STT — voice input

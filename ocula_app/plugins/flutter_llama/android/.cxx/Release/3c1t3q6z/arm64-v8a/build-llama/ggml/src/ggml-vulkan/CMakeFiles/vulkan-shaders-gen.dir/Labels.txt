@@ -1,0 +1,13 @@
+# Target labels
+ vulkan-shaders-gen
+# Source files and their labels
+/Volumes/ExternalDisk/projects/Ocula/ocula_app/plugins/flutter_llama/android/.cxx/Release/3c1t3q6z/arm64-v8a/build-llama/ggml/src/ggml-vulkan/CMakeFiles/vulkan-shaders-gen
+/Volumes/ExternalDisk/projects/Ocula/ocula_app/plugins/flutter_llama/android/.cxx/Release/3c1t3q6z/arm64-v8a/build-llama/ggml/src/ggml-vulkan/CMakeFiles/vulkan-shaders-gen.rule
+/Volumes/ExternalDisk/projects/Ocula/ocula_app/plugins/flutter_llama/android/.cxx/Release/3c1t3q6z/arm64-v8a/build-llama/ggml/src/ggml-vulkan/CMakeFiles/vulkan-shaders-gen-complete.rule
+/Volumes/ExternalDisk/projects/Ocula/ocula_app/plugins/flutter_llama/android/.cxx/Release/3c1t3q6z/arm64-v8a/build-llama/ggml/src/ggml-vulkan/vulkan-shaders-gen-prefix/src/vulkan-shaders-gen-stamp/vulkan-shaders-gen-build.rule
+/Volumes/ExternalDisk/projects/Ocula/ocula_app/plugins/flutter_llama/android/.cxx/Release/3c1t3q6z/arm64-v8a/build-llama/ggml/src/ggml-vulkan/vulkan-shaders-gen-prefix/src/vulkan-shaders-gen-stamp/vulkan-shaders-gen-configure.rule
+/Volumes/ExternalDisk/projects/Ocula/ocula_app/plugins/flutter_llama/android/.cxx/Release/3c1t3q6z/arm64-v8a/build-llama/ggml/src/ggml-vulkan/vulkan-shaders-gen-prefix/src/vulkan-shaders-gen-stamp/vulkan-shaders-gen-download.rule
+/Volumes/ExternalDisk/projects/Ocula/ocula_app/plugins/flutter_llama/android/.cxx/Release/3c1t3q6z/arm64-v8a/build-llama/ggml/src/ggml-vulkan/vulkan-shaders-gen-prefix/src/vulkan-shaders-gen-stamp/vulkan-shaders-gen-install.rule
+/Volumes/ExternalDisk/projects/Ocula/ocula_app/plugins/flutter_llama/android/.cxx/Release/3c1t3q6z/arm64-v8a/build-llama/ggml/src/ggml-vulkan/vulkan-shaders-gen-prefix/src/vulkan-shaders-gen-stamp/vulkan-shaders-gen-mkdir.rule
+/Volumes/ExternalDisk/projects/Ocula/ocula_app/plugins/flutter_llama/android/.cxx/Release/3c1t3q6z/arm64-v8a/build-llama/ggml/src/ggml-vulkan/vulkan-shaders-gen-prefix/src/vulkan-shaders-gen-stamp/vulkan-shaders-gen-patch.rule
+/Volumes/ExternalDisk/projects/Ocula/ocula_app/plugins/flutter_llama/android/.cxx/Release/3c1t3q6z/arm64-v8a/build-llama/ggml/src/ggml-vulkan/vulkan-shaders-gen-prefix/src/vulkan-shaders-gen-stamp/vulkan-shaders-gen-update.rule

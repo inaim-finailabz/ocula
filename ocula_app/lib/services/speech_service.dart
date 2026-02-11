@@ -11,6 +11,7 @@ class SpeechService {
   final AIManager _aiManager;
 
   bool _isListening = false;
+  bool _sttInitialized = false;
 
   bool get isListening => _isListening;
   FlutterTts get tts => _tts;
@@ -104,21 +105,29 @@ class SpeechService {
     Function(String)? onAIResponse,
     Function? onError,
   }) async {
-    final available = await _speech.initialize(
-      onError: (error) {
-        debugPrint('STT init error: $error');
+    // Initialize STT only once
+    if (!_sttInitialized) {
+      final available = await _speech.initialize(
+        onError: (error) {
+          debugPrint('STT error: $error');
+          // Only invoke onError for permanent failures (listen session ended)
+          if (error.permanent && _isListening) {
+            _isListening = false;
+            if (onError != null) {
+              onError();
+            }
+          }
+        },
+      );
+      debugPrint('STT available: $available');
+
+      if (!available) {
         if (onError != null) {
           onError();
         }
-      },
-    );
-    debugPrint('STT available: $available');
-
-    if (!available) {
-      if (onError != null) {
-        onError();
+        return;
       }
-      return;
+      _sttInitialized = true;
     }
 
     _isListening = true;

@@ -240,11 +240,19 @@ class _HomeScreenState extends State<HomeScreen> {
                     },
             ),
             // Export to PDF
-            IconButton(
-              icon: const Icon(Icons.picture_as_pdf),
-              onPressed: _result.isEmpty
-                  ? null
-                  : () => _export.exportAndShare(_result),
+            Builder(
+              builder: (ctx) => IconButton(
+                icon: const Icon(Icons.picture_as_pdf),
+                onPressed: _result.isEmpty
+                    ? null
+                    : () {
+                        final box = ctx.findRenderObject() as RenderBox?;
+                        final origin = box != null
+                            ? box.localToGlobal(Offset.zero) & box.size
+                            : null;
+                        _export.exportAndShare(_result, origin: origin);
+                      },
+              ),
             ),
           ],
         ),

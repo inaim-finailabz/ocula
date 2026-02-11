@@ -1,0 +1,14 @@
+{
+	"backtraceGraph" : 
+	{
+		"commands" : [],
+		"files" : [],
+		"nodes" : []
+	},
+	"installers" : [],
+	"paths" : 
+	{
+		"build" : "build-llama/src",
+		"source" : "/Volumes/ExternalDisk/projects/Ocula/ocula_app/plugins/flutter_llama/llama.cpp/src"
+	}
+}

@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'package:flutter/material.dart';
 import 'package:pdf/widgets.dart' as pw;
 import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
@@ -6,7 +7,9 @@ import 'package:share_plus/share_plus.dart';
 /// Handles PDF generation and sharing (Pro tier feature).
 class ExportService {
   /// Generate a PDF from AI analysis content and open the system share sheet.
-  Future<void> exportAndShare(String aiContent, {String title = 'AI Research Report'}) async {
+  ///
+  /// [origin] is required on iPad for the share-sheet popover anchor.
+  Future<void> exportAndShare(String aiContent, {String title = 'AI Research Report', Rect? origin}) async {
     final pdf = pw.Document();
 
     pdf.addPage(
@@ -30,6 +33,7 @@ class ExportService {
     await Share.shareXFiles(
       [XFile(file.path)],
       text: title,
+      sharePositionOrigin: origin ?? const Rect.fromLTWH(0, 0, 100, 100),
     );
   }
 }

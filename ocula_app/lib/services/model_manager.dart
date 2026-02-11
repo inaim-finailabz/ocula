@@ -92,15 +92,15 @@ class OculaModelManager {
     ),
     // ── THINKER: Reasoning with chain-of-thought ──
     ModelInfo(
-      fileName: 'Qwen3-VL-2B-Thinking-Q4_K_M.gguf',
-      downloadUrl: 'http://localhost:8080/models/Qwen3-VL-2B-Thinking-Q4_K_M.gguf',
-      sizeBytes: 1400 * 1024 * 1024, // ~1.4 GB
+      fileName: 'Qwen3VL-2B-Thinking-Q4_K_M.gguf',
+      downloadUrl: 'http://localhost:8080/models/Qwen3VL-2B-Thinking-Q4_K_M.gguf',
+      sizeBytes: 1110 * 1024 * 1024, // ~1.11 GB
       tier: AITier.pro,
     ),
     ModelInfo(
-      fileName: 'mmproj-Qwen3-VL-2B-Thinking-F16.gguf',
-      downloadUrl: 'http://localhost:8080/models/mmproj-Qwen3-VL-2B-Thinking-F16.gguf',
-      sizeBytes: 600 * 1024 * 1024, // ~600 MB
+      fileName: 'mmproj-Qwen3VL-2B-Thinking-F16.gguf',
+      downloadUrl: 'http://localhost:8080/models/mmproj-Qwen3VL-2B-Thinking-F16.gguf',
+      sizeBytes: 819 * 1024 * 1024, // ~819 MB
       tier: AITier.pro,
       isVisionProjector: true,
     ),
@@ -135,44 +135,72 @@ class OculaModelManager {
     }
   }
 
-  /// Download the free-tier model only. Returns true when it's ready.
+  /// Download the free-tier main model only. Returns true when it's ready.
   /// Intended to run during the splash screen so the user can interact ASAP.
-  /// First tries to copy bundled models, then downloads if needed.
+  /// First tries to copy bundled model, then downloads if needed.
+  /// Vision projector is fetched in the background — not required for text chat.
   Future<bool> ensureFreeModelReady({
     DownloadProgress? onProgress,
   }) async {
-    final freeModels = modelsForTier(AITier.free);
-    
-    for (final model in freeModels) {
-      // Step 1: Try to copy bundled model first (instant)
-      onProgress?.call(0.1, 'Checking for bundled AI engine...');
-      if (await _ensureBundledModelCopied(model.fileName)) {
-        onProgress?.call(1.0, 'Bundled AI engine ready!');
-        continue;
-      }
-      
-      // Step 2: If not bundled, check if already downloaded
-      if (await isDownloaded(model.fileName)) {
-        onProgress?.call(1.0, 'AI engine ready!');
-        continue;
-      }
-      
+    // Only the main model (not the projector) is required to start
+    final mainModel = models
+        .where((m) => m.tier == AITier.free && !m.isVisionProjector)
+        .first;
+
+    // Step 1: Try to copy bundled model first (instant)
+    onProgress?.call(0.1, 'Checking for bundled AI engine...');
+    if (await _ensureBundledModelCopied(mainModel.fileName)) {
+      onProgress?.call(1.0, 'Bundled AI engine ready!');
+    } else if (await isDownloaded(mainModel.fileName)) {
+      // Step 2: Already downloaded
+      onProgress?.call(1.0, 'AI engine ready!');
+    } else {
       // Step 3: Download as fallback
       onProgress?.call(0.0, 'Downloading AI engine...');
-      final ok = await download(model, onProgress: onProgress);
+      final ok = await download(mainModel, onProgress: onProgress);
       if (!ok) return false;
     }
+
+    // Try to copy the vision projector too, but don't block on it
+    final projector = models
+        .where((m) => m.tier == AITier.free && m.isVisionProjector)
+        .firstOrNull;
+    if (projector != null) {
+      // Best-effort: copy bundled projector in background, don't fail splash
+      _ensureBundledModelCopied(projector.fileName).catchError((_) => false);
+    }
+
     return true;
   }
 
-  /// Download remaining (non-free) models in the background.
+  /// Download remaining models in the background.
+  /// Includes: free-tier projector (not required for splash) + all plus/pro models.
   /// Emits feature-ready notifications as each tier completes.
   Future<void> downloadRemainingInBackground() async {
+    // First, ensure the free-tier projector is copied/downloaded
+    final freeProjector = models
+        .where((m) => m.tier == AITier.free && m.isVisionProjector)
+        .firstOrNull;
+    if (freeProjector != null && !await isDownloaded(freeProjector.fileName)) {
+      // Try bundled copy first, then download
+      final copied = await _ensureBundledModelCopied(freeProjector.fileName);
+      if (!copied) {
+        await download(freeProjector, onProgress: (progress, status) {
+          _downloadProgress[freeProjector.fileName] = progress;
+          _downloadProgressStreamController.add(_downloadProgress);
+        });
+      }
+    }
+
+    // Then copy/download plus/pro tier models
     for (final tier in [AITier.plus, AITier.pro]) {
       final tierModels = modelsForTier(tier);
       bool allReady = true;
       for (final model in tierModels) {
         if (await isDownloaded(model.fileName)) continue;
+        // Try bundled copy first (instant), then download as fallback
+        final copied = await _ensureBundledModelCopied(model.fileName);
+        if (copied) continue;
         final ok = await download(model, onProgress: (progress, status) {
           _downloadProgress[model.fileName] = progress;
           _downloadProgressStreamController.add(_downloadProgress);
@@ -218,7 +246,10 @@ class OculaModelManager {
     return '$dir/$fileName';
   }
 
-  /// Check if a model is already downloaded or bundled.
+  /// Check if a model file exists in local storage and is valid.
+  /// Does NOT check the app bundle — models must be copied to local
+  /// storage before use because llama.cpp needs mmap-able files and
+  /// the iOS app bundle is code-signed / read-only.
   Future<bool> isDownloaded(String fileName) async {
     final path = await modelPath(fileName);
     final file = File(path);
@@ -229,67 +260,183 @@ class OculaModelManager {
         return true;
       }
     }
-    
-    // Check if valid model is bundled with the app
-    return await _isValidBundledModel(fileName);
+    return false;
   }
   
+  /// Resolve the physical file path of a Flutter asset on disk.
+  /// Avoids rootBundle.load() which loads the entire file into RAM.
+  /// Returns null if the asset can't be found on disk.
+  ///
+  /// iOS/macOS: assets live as real files inside the .app bundle
+  /// Android:   assets are inside the APK zip — no physical path available
+  Future<String?> _findBundledAssetPath(String assetKey) async {
+    // Android assets are packed inside the APK; no filesystem path exists.
+    if (Platform.isAndroid) return null;
+
+    try {
+      // On iOS & macOS, Flutter assets are physically on disk inside the app bundle.
+      // iOS:   <bundle>/Frameworks/App.framework/flutter_assets/<assetKey>
+      // macOS: <bundle>/Contents/Frameworks/App.framework/Resources/flutter_assets/<assetKey>
+      final exe = Platform.resolvedExecutable;
+      final bundleDir = File(exe).parent.path;
+
+      final candidates = [
+        // iOS
+        '$bundleDir/Frameworks/App.framework/flutter_assets/$assetKey',
+        // macOS
+        '$bundleDir/Contents/Frameworks/App.framework/Resources/flutter_assets/$assetKey',
+        // macOS alternate
+        '$bundleDir/../Frameworks/App.framework/Resources/flutter_assets/$assetKey',
+      ];
+
+      for (final path in candidates) {
+        final file = File(path);
+        if (await file.exists()) {
+          debugPrint('[ModelManager] Found bundled asset at: $path');
+          return path;
+        }
+      }
+
+      debugPrint('[ModelManager] Bundled asset not found on disk for: $assetKey');
+      debugPrint('[ModelManager] Searched: $candidates');
+      return null;
+    } catch (e) {
+      debugPrint('[ModelManager] Error finding bundled asset path: $e');
+      return null;
+    }
+  }
+
   /// Check if a valid model is bundled as an asset with the app.
+  /// Uses physical file path to avoid loading entire model into RAM.
+  /// On Android (no physical path), we check if the asset exists at all
+  /// by loading only the first few KB via rootBundle.
   Future<bool> _isValidBundledModel(String fileName) async {
     try {
+      // Strategy 1: zero-copy physical path check (iOS/macOS)
+      final physicalPath = await _findBundledAssetPath('assets/models/$fileName');
+      if (physicalPath != null) {
+        final file = File(physicalPath);
+        final size = await file.length();
+        if (size < 1024 * 1024) return false;
+
+        // Read just the first 4 bytes to check GGUF header
+        final raf = await file.open(mode: FileMode.read);
+        try {
+          final header = await raf.read(4);
+          final magic = String.fromCharCodes(header);
+          return magic == 'GGUF';
+        } finally {
+          await raf.close();
+        }
+      }
+
+      // Strategy 2 (Android / other): rootBundle.load loads everything into RAM.
+      // Instead, just try to load the asset — if it throws, it doesn't exist.
+      // We accept the OOM risk here only for the *check* call; the actual
+      // copy (_ensureBundledModelCopied) uses chunked writing.
+      // On Android the asset exists inside the APK; rootBundle is the only way.
+      debugPrint('[ModelManager] Falling back to rootBundle for $fileName');
       final bundledData = await rootBundle.load('assets/models/$fileName');
       final bytes = bundledData.buffer.asUint8List();
-      
-      // Check size and GGUF header to ensure it's a real model
-      if (bytes.length < 1024 * 1024) return false; // Too small
-      
+      if (bytes.length < 1024 * 1024) return false;
       if (bytes.length > 4) {
         final header = String.fromCharCodes(bytes.take(4));
         return header == 'GGUF';
       }
-      
       return false;
     } catch (e) {
+      debugPrint('[ModelManager] _isValidBundledModel failed for $fileName: $e');
       return false;
     }
   }
   
   /// Copy a bundled model to local storage if it doesn't exist.
-  /// Validates the bundled model size to ensure it's not a placeholder.
+  /// Uses streamed file copy from the physical asset path to avoid OOM.
+  /// Falls back to rootBundle.load() only on platforms where physical path
+  /// is unavailable (should not happen on iOS/macOS/Android).
   Future<bool> _ensureBundledModelCopied(String fileName) async {
     final localPath = await modelPath(fileName);
     final localFile = File(localPath);
-    
-    // Already exists locally
-    if (localFile.existsSync()) return true;
-    
-    // Try to copy from bundle
+
+    // Already exists locally and is valid
+    if (localFile.existsSync() && await localFile.length() > 1024 * 1024) {
+      debugPrint('[ModelManager] $fileName already in local storage, skipping copy');
+      return true;
+    }
+
     try {
+      // ── Strategy 1: Streamed file copy from physical asset path ──
+      // This avoids loading the entire model (100MB+) into RAM.
+      final physicalPath = await _findBundledAssetPath('assets/models/$fileName');
+
+      if (physicalPath != null) {
+        final sourceFile = File(physicalPath);
+        final sourceSize = await sourceFile.length();
+
+        if (sourceSize < 1024 * 1024) {
+          debugPrint('[ModelManager] Bundled $fileName too small (${sourceSize} bytes)');
+          return false;
+        }
+
+        // Validate GGUF header (read only 4 bytes)
+        final raf = await sourceFile.open(mode: FileMode.read);
+        final header = await raf.read(4);
+        await raf.close();
+        if (String.fromCharCodes(header) != 'GGUF') {
+          debugPrint('[ModelManager] Bundled $fileName has invalid GGUF header');
+          return false;
+        }
+
+        // Streamed copy — constant memory usage regardless of file size
+        debugPrint('[ModelManager] Copying bundled $fileName (${(sourceSize / (1024 * 1024)).toStringAsFixed(1)} MB) via streamed file copy...');
+        await localFile.create(recursive: true);
+        await sourceFile.copy(localPath);
+        debugPrint('[ModelManager] ✓ Copied $fileName to local storage');
+        return true;
+      }
+
+      // ── Strategy 2: Android / other — chunked write via rootBundle ──
+      // On Android, assets are inside the APK and can only be read via rootBundle.
+      // We load into an ImmutableBuffer (native heap, not Dart heap) when possible,
+      // then write in chunks to avoid Dart GC pressure.
+      debugPrint('[ModelManager] Physical path not found, falling back to rootBundle for $fileName');
+
       final bundledData = await rootBundle.load('assets/models/$fileName');
       final bytes = bundledData.buffer.asUint8List();
-      
-      // Validate that this is actually a model file, not a placeholder
-      // GGUF files should be at least 1MB, placeholders are much smaller
+
       if (bytes.length < 1024 * 1024) {
-        debugPrint('Bundled model $fileName is too small (${bytes.length} bytes), downloading from backend instead');
+        debugPrint('[ModelManager] Bundled $fileName too small (${bytes.length} bytes)');
         return false;
       }
-      
-      // Check for GGUF magic header (first 4 bytes should be 'GGUF')
       if (bytes.length > 4) {
         final header = String.fromCharCodes(bytes.take(4));
         if (header != 'GGUF') {
-          debugPrint('Bundled model $fileName does not have valid GGUF header');
+          debugPrint('[ModelManager] Bundled $fileName has invalid GGUF header');
           return false;
         }
       }
-      
+
+      // Write in 4MB chunks to reduce peak Dart heap pressure
+      debugPrint('[ModelManager] Writing $fileName in chunks (${(bytes.length / (1024 * 1024)).toStringAsFixed(1)} MB)...');
       await localFile.create(recursive: true);
-      await localFile.writeAsBytes(bytes);
-      debugPrint('Successfully copied bundled model $fileName (${bytes.length} bytes)');
+      final sink = localFile.openWrite();
+      const chunkSize = 4 * 1024 * 1024; // 4 MB
+      for (int offset = 0; offset < bytes.length; offset += chunkSize) {
+        final end = (offset + chunkSize).clamp(0, bytes.length);
+        sink.add(bytes.sublist(offset, end));
+        // Yield to event loop between chunks
+        await sink.flush();
+      }
+      await sink.close();
+      debugPrint('[ModelManager] ✓ Copied $fileName via rootBundle (${(bytes.length / (1024 * 1024)).toStringAsFixed(1)} MB)');
       return true;
-    } catch (e) {
-      debugPrint('Failed to copy bundled model $fileName: $e');
+    } catch (e, stack) {
+      debugPrint('[ModelManager] Failed to copy bundled model $fileName: $e');
+      debugPrint('[ModelManager] Stack: $stack');
+      // Clean up partial file
+      if (await localFile.exists()) {
+        await localFile.delete();
+      }
       return false;
     }
   }
@@ -317,6 +464,9 @@ class OculaModelManager {
   }
 
   /// Get the main model path for a tier (not the vision projector).
+  /// Only returns paths in local storage (writable, mmap-able).
+  /// The app bundle is NOT usable because llama.cpp needs mmap and
+  /// the iOS bundle is code-signed / read-only → SIGSEGV.
   Future<String?> mainModelPath(AITier tier) async {
     if (tier == AITier.enterprise) {
       return await enterpriseModelPath;
@@ -324,15 +474,18 @@ class OculaModelManager {
     
     final model = models.where((m) => m.tier == tier && !m.isVisionProjector).firstOrNull;
     if (model == null) return null;
+
     final path = await modelPath(model.fileName);
     if (File(path).existsSync()) return path;
     return null;
   }
 
   /// Get vision projector path for a tier (if any).
+  /// Only returns paths in local storage (writable, mmap-able).
   Future<String?> visionProjectorPath(AITier tier) async {
     final model = models.where((m) => m.tier == tier && m.isVisionProjector).firstOrNull;
     if (model == null) return null;
+
     final path = await modelPath(model.fileName);
     if (File(path).existsSync()) return path;
     return null;
@@ -365,6 +518,15 @@ class OculaModelManager {
     }
   }
 
+  /// Resolve download URL for the current platform.
+  /// Android emulator uses 10.0.2.2 to reach the host machine's localhost.
+  String _resolveUrl(String url) {
+    if (Platform.isAndroid) {
+      return url.replaceFirst('://localhost:', '://10.0.2.2:');
+    }
+    return url;
+  }
+
   /// Download a model with progress tracking.
   /// Supports resume via Range header if partial file exists.
   Future<bool> download(
@@ -386,7 +548,9 @@ class OculaModelManager {
 
     try {
       _httpClient ??= HttpClient();
-      final request = await _httpClient!.getUrl(Uri.parse(model.downloadUrl));
+      final resolvedUrl = _resolveUrl(model.downloadUrl);
+      debugPrint('[ModelManager] Downloading from: $resolvedUrl');
+      final request = await _httpClient!.getUrl(Uri.parse(resolvedUrl));
 
       // Resume support — if partial file exists, request remaining bytes
       int existingBytes = 0;
