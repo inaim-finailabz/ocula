@@ -460,10 +460,11 @@ int32_t llama_get_embedding(
         return 0;
     }
     
-    // Detect model type once
-    bool has_encoder = llama_model_has_encoder(g_model);
-    
-    // Lazily create embedding context
+    // Lazily create embedding context.
+    // All our models (SmolVLM2, Moondream2, Qwen3VL) are decoder-based for text,
+    // even if has_encoder=true (vision encoder). We MUST use:
+    //   POOLING_TYPE_NONE  — so KV cache is allocated (MEAN skips it → crash)
+    //   llama_decode       — llama_encode is for BERT-style text encoders
     if (!g_embed_ctx) {
         llama_context_params ctx_params = llama_context_default_params();
         ctx_params.n_ctx       = 512;
@@ -471,21 +472,15 @@ int32_t llama_get_embedding(
         ctx_params.n_threads   = 4;
         ctx_params.n_threads_batch = 4;
         ctx_params.embeddings  = true;
-        
-        // Decoder-only models (SmolVLM, Moondream, Qwen): MUST use POOLING_TYPE_NONE
-        // so that KV cache is allocated (MEAN pooling skips KV cache → crash).
-        // Encoder models (BERT, etc.): can use MEAN pooling.
-        ctx_params.pooling_type = has_encoder
-            ? LLAMA_POOLING_TYPE_MEAN
-            : LLAMA_POOLING_TYPE_NONE;
+        ctx_params.pooling_type = LLAMA_POOLING_TYPE_NONE;
         
         g_embed_ctx = llama_init_from_model(g_model, ctx_params);
         if (!g_embed_ctx) {
             NSLog(@"[llama_cpp_bridge] getEmbedding: failed to create embedding context");
             return 0;
         }
-        NSLog(@"[llama_cpp_bridge] Embedding context created (n_embd=%d, encoder=%d)",
-              llama_model_n_embd(g_model), has_encoder);
+        NSLog(@"[llama_cpp_bridge] Embedding context created (n_embd=%d)",
+              llama_model_n_embd(g_model));
     }
     
     // Tokenize
@@ -510,34 +505,18 @@ int32_t llama_get_embedding(
         llama_memory_clear(mem, true);
     }
     
-    // Process batch:
-    // - Encoder models: llama_encode (no KV cache needed)
-    // - Decoder models: llama_decode (uses KV cache)
+    // Always use llama_decode for text — our models are all decoder-based
     llama_batch batch = llama_batch_get_one(tokens.data(), (int32_t)tokens.size());
-    int rc;
-    if (has_encoder) {
-        rc = llama_encode(g_embed_ctx, batch);
-    } else {
-        rc = llama_decode(g_embed_ctx, batch);
-    }
-    if (rc != 0) {
-        NSLog(@"[llama_cpp_bridge] getEmbedding: %s failed (rc=%d)",
-              has_encoder ? "encode" : "decode", rc);
+    if (llama_decode(g_embed_ctx, batch) != 0) {
+        NSLog(@"[llama_cpp_bridge] getEmbedding: decode failed");
         return 0;
     }
     
     // Get embedding dimension
     int n_embd = llama_model_n_embd(g_model);
     
-    // Encoder models with MEAN pooling → sequence-level embedding.
-    // Decoder models with NONE pooling → last-token hidden state.
-    const float* embd = nullptr;
-    if (has_encoder) {
-        embd = llama_get_embeddings_seq(g_embed_ctx, 0);
-    }
-    if (!embd) {
-        embd = llama_get_embeddings_ith(g_embed_ctx, -1);
-    }
+    // With POOLING_TYPE_NONE, use last-token hidden state as embedding
+    const float* embd = llama_get_embeddings_ith(g_embed_ctx, -1);
     if (!embd) {
         NSLog(@"[llama_cpp_bridge] getEmbedding: no embeddings available");
         return 0;
