@@ -37,7 +37,6 @@ class AIManager {
   final OculaModelManager _models = OculaModelManager();
 
   AITier? _activeTier;
-  bool _isVisionMode = false;
   bool _isSwitching = false;
   final AppLanguage _appLang = AppLanguage();
   int? _deviceRamMB;
@@ -163,24 +162,24 @@ class AIManager {
   // unloadMultimodalModel() calls are forbidden outside of here.
   // ════════════════════════════════════════════════════════════════════
 
-  /// Safely unload whatever model (text or vision) is currently loaded.
+  /// Safely unload the text model if one is loaded.
   ///
-  /// - Handles both text and vision engines
+  /// - Only acts if a model is actually loaded (isModelLoaded check)
   /// - Swallows errors so callers never crash on unload
-  /// - Resets _activeTier and _isVisionMode
+  /// - Resets _activeTier
   /// - Waits for Metal GPU drain on iOS/macOS if [waitForMetal] is true
   Future<void> _safeUnload({bool waitForMetal = true}) async {
+    if (!_textEngine.isModelLoaded) {
+      debugPrint('[AIManager] _safeUnload: no model loaded — skipping');
+      _activeTier = null;
+      return;
+    }
     try {
-      if (_isVisionMode) {
-        await _visionEngine.unloadMultimodalModel();
-      } else if (_textEngine.isModelLoaded) {
-        await _textEngine.unloadModel();
-      }
+      await _textEngine.unloadModel();
     } catch (e) {
       debugPrint('[AIManager] _safeUnload failed (non-fatal): $e');
     }
     _activeTier = null;
-    _isVisionMode = false;
 
     if (waitForMetal && (Platform.isIOS || Platform.isMacOS)) {
       debugPrint('[AIManager] Waiting for Metal GPU cleanup...');
@@ -215,18 +214,12 @@ class AIManager {
         throw Exception('Enterprise model file not found: $modelPath');
       }
 
-      // If in vision mode, must explicitly unload vision first.
-      // For text→text, let native llama_init_model handle the atomic swap.
-      if (_isVisionMode) {
-        await _safeUnload();
-      }
-
+      // Native llama_init_model handles atomic free+load
       await _textEngine.loadModel(LlamaConfig(
         modelPath: modelPath,
         nGpuLayers: -1,
         useGpu: true,
       ));
-      _isVisionMode = false;
     } else {
       // Remote API — unload any loaded model to free RAM
       await _safeUnload();
@@ -330,19 +323,14 @@ class AIManager {
       }
 
       // ── ATOMIC SWAP: let native handle cleanup + load in one call ──
-      // The native llama_init_model() already:
+      // The native llama_init_model() handles:
       //   1. Frees old contexts in @autoreleasepool (Metal objects drain)
       //   2. Validates g_model with is_plausible_heap_ptr before freeing
-      //   3. Waits for Metal GPU drain between context free and model free
+      //   3. Waits 500ms for Metal GPU drain between context and model free
       //   4. Loads the new model
       //
-      // By NOT calling unloadModel() separately from Dart, we avoid the
-      // crash where g_model is corrupt (0x1) — the native safety check
-      // handles it. Only exception: vision mode requires explicit unload
-      // because it's a different native engine.
-      if (_isVisionMode && _activeTier != null) {
-        await _safeUnload();
-      }
+      // We NEVER call unloadModel() from Dart for text→text switches.
+      // The native code does it atomically and safely.
 
       // ── Load the new model ──
       // Tier-appropriate settings:
@@ -367,7 +355,6 @@ class AIManager {
           useGpu: gpuLayers != 0,
           contextSize: contextSize,
         ));
-        _isVisionMode = false;
         _activeTier = tier;
         debugPrint('[AIManager] switchEngine: ${tier.name} loaded ✓');
       } catch (e) {
@@ -383,7 +370,6 @@ class AIManager {
                 useGpu: true,
               ));
               _activeTier = AITier.free;
-              _isVisionMode = false;
               debugPrint('[AIManager] Recovered to free tier');
               return;
             } catch (_) {}
@@ -442,7 +428,8 @@ class AIManager {
 
   /// The main entry point. Full pipeline:
   /// 1. Build ChatML-formatted prompt with system + context + user message
-  /// 2. If image attached, hot-swap to vision engine
+  /// 2. If image attached, use vision engine (separate native bridge, no
+  ///    need to unload text engine — they have independent global state)
   /// 3. Generate response
   Future<String> ask(String prompt, {
     String context = '',
@@ -462,59 +449,33 @@ class AIManager {
         '<|im_start|>user\n$userMsg<|im_end|>\n'
         '<|im_start|>assistant\n';
 
-    // Generate — if image is attached, try to hot-swap to vision engine.
-    // Hold _isSwitching to prevent switchEngine / applyPendingUpgrade from
-    // racing with this unload→load cycle.
+    // ── Vision path ──
+    // The multimodal bridge (mm_model) is separate from the text bridge
+    // (g_model). They don't share Metal buffers. So we can load the vision
+    // model without touching the text model. After describing the image we
+    // unload only the vision model to free RAM.
     if (imagePath != null) {
       final projPath = await _models.visionProjectorPath(_activeTier ?? AITier.free);
       if (projPath != null) {
-        _isSwitching = true;
+        final mainPath = await _models.mainModelPath(_activeTier ?? AITier.free) ?? '';
         try {
-          final mainPath = await _models.mainModelPath(_activeTier ?? AITier.free) ?? '';
-          // Unload text engine via centralized path, load vision engine
-          await _safeUnload();
           final loaded = await _visionEngine.loadMultimodalModel(
             MultimodalConfig.textAndImage(mainPath, projPath),
           );
           if (loaded) {
-            _isVisionMode = true;
             final response = await _visionEngine.describeImage(imagePath, fullPrompt);
-            // Swap back to text engine for next query
-            await _safeUnload();
-            await _textEngine.loadModel(LlamaConfig(
-              modelPath: mainPath,
-              nGpuLayers: -1,
-              useGpu: true,
-            ));
-            _activeTier = _activeTier; // restore
-            _isVisionMode = false;
+            // Free vision model RAM — text engine is untouched
+            try { await _visionEngine.unloadMultimodalModel(); } catch (_) {}
             return response.text;
           }
-          // Vision engine failed to load — reload text engine and fall through
-          await _textEngine.loadModel(LlamaConfig(
-            modelPath: mainPath,
-            nGpuLayers: -1,
-            useGpu: true,
-          ));
-          _isVisionMode = false;
         } catch (e) {
-          // Vision engine not available — fall through to text-only
-          final mainPath = await _models.mainModelPath(_activeTier ?? AITier.free) ?? '';
-          if (!_textEngine.isModelLoaded) {
-            await _textEngine.loadModel(LlamaConfig(
-              modelPath: mainPath,
-              nGpuLayers: -1,
-              useGpu: true,
-            ));
-          }
-          _isVisionMode = false;
-        } finally {
-          _isSwitching = false;
+          debugPrint('[AIManager] Vision failed: $e — falling through to text');
+          try { await _visionEngine.unloadMultimodalModel(); } catch (_) {}
         }
       }
     }
 
-    // Text-only generation
+    // ── Text path ──
     final response = await _textEngine.generate(GenerationParams(
       prompt: fullPrompt,
       maxTokens: 512,
@@ -523,7 +484,6 @@ class AIManager {
       stopSequences: ['<|im_end|>', '<|im_start|>'],
     ));
 
-    // Strip any trailing template tokens the model might emit
     var text = response.text;
     text = text.replaceAll('<|im_end|>', '').replaceAll('<|im_start|>', '').trim();
     return text;
