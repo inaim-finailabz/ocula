@@ -151,13 +151,16 @@ Java_net_nativemind_flutter_1llama_FlutterLlamaPlugin_nativeGenerate(
         return nullptr;
     }
     
-    // Create batch
-    llama_batch batch = llama_batch_get_one(prompt_tokens.data(), prompt_tokens.size());
-    
-    // Decode prompt
-    if (llama_decode(g_context, batch) != 0) {
-        LOGE("Failed to decode prompt");
-        return nullptr;
+    // Decode prompt in batches (prompt may exceed n_batch)
+    const int32_t n_batch_size = llama_n_batch(g_context);
+    llama_batch batch;
+    for (size_t i = 0; i < prompt_tokens.size(); i += n_batch_size) {
+        int n_eval = std::min((int)(prompt_tokens.size() - i), (int)n_batch_size);
+        batch = llama_batch_get_one(prompt_tokens.data() + i, n_eval);
+        if (llama_decode(g_context, batch) != 0) {
+            LOGE("Failed to decode prompt at pos %zu", i);
+            return nullptr;
+        }
     }
     
     // Update sampler with new parameters
@@ -271,13 +274,16 @@ Java_net_nativemind_flutter_1llama_FlutterLlamaPlugin_nativeGenerateStreamInit(
         return;
     }
     
-    // Create batch
-    llama_batch batch = llama_batch_get_one(prompt_tokens.data(), prompt_tokens.size());
-    
-    // Decode prompt
-    if (llama_decode(g_context, batch) != 0) {
-        LOGE("Failed to decode prompt");
-        return;
+    // Decode prompt in batches (prompt may exceed n_batch)
+    const int32_t n_batch_size = llama_n_batch(g_context);
+    llama_batch batch;
+    for (size_t i = 0; i < prompt_tokens.size(); i += n_batch_size) {
+        int n_eval = std::min((int)(prompt_tokens.size() - i), (int)n_batch_size);
+        batch = llama_batch_get_one(prompt_tokens.data() + i, n_eval);
+        if (llama_decode(g_context, batch) != 0) {
+            LOGE("Failed to decode prompt at pos %zu", i);
+            return;
+        }
     }
     
     // Update sampler
@@ -387,7 +393,7 @@ Java_net_nativemind_flutter_1llama_FlutterLlamaPlugin_nativeGetModelInfo(
     return model_info;
 }
 
-// Free model
+// Free model — no-op if nothing is loaded
 JNIEXPORT void JNICALL
 Java_net_nativemind_flutter_1llama_FlutterLlamaPlugin_nativeFreeModel(
     JNIEnv* env,
@@ -395,30 +401,42 @@ Java_net_nativemind_flutter_1llama_FlutterLlamaPlugin_nativeFreeModel(
 ) {
     std::lock_guard<std::mutex> lock(g_mutex);
     
-    LOGI("Freeing model");
+    // Guard: don't run any free logic when nothing is loaded
+    if (!g_model && !g_context && !g_sampler && !g_embed_ctx) {
+        LOGI("free_model called but nothing loaded — skipping");
+        return;
+    }
     
-    // Free embedding context first (shares g_model)
+    LOGI("Freeing model — g_model=%p g_context=%p g_sampler=%p",
+         (void*)g_model, (void*)g_context, (void*)g_sampler);
+    
+    // Null pointers BEFORE freeing to prevent use-after-free
     if (g_embed_ctx) {
-        llama_free(g_embed_ctx);
+        llama_context* ectx = g_embed_ctx;
         g_embed_ctx = nullptr;
+        llama_free(ectx);
     }
     
     if (g_sampler) {
-        llama_sampler_free(g_sampler);
+        llama_sampler* s = g_sampler;
         g_sampler = nullptr;
+        llama_sampler_free(s);
     }
     
     if (g_context) {
-        llama_free(g_context);
+        llama_context* ctx = g_context;
         g_context = nullptr;
+        llama_free(ctx);
     }
     
     if (g_model) {
-        llama_free_model(g_model);
+        llama_model* mdl = g_model;
         g_model = nullptr;
+        g_vocab = nullptr;
+        llama_free_model(mdl);
+    } else {
+        g_vocab = nullptr;
     }
-    
-    g_vocab = nullptr;
     
     LOGI("Model freed successfully");
 }
@@ -452,7 +470,8 @@ Java_net_nativemind_flutter_1llama_FlutterLlamaPlugin_nativeGetEmbedding(
         return nullptr;
     }
     
-    // Lazily create embedding context
+    // All our models are decoder-based for text (even VLMs with vision encoders).
+    // POOLING_TYPE_NONE ensures KV cache is allocated. llama_decode for decoder path.
     if (!g_embed_ctx) {
         llama_context_params ctx_params = llama_context_default_params();
         ctx_params.n_ctx       = 512;
@@ -460,7 +479,7 @@ Java_net_nativemind_flutter_1llama_FlutterLlamaPlugin_nativeGetEmbedding(
         ctx_params.n_threads   = 4;
         ctx_params.n_threads_batch = 4;
         ctx_params.embeddings  = true;
-        ctx_params.pooling_type = LLAMA_POOLING_TYPE_MEAN;
+        ctx_params.pooling_type = LLAMA_POOLING_TYPE_NONE;
         
         g_embed_ctx = llama_init_from_model(g_model, ctx_params);
         if (!g_embed_ctx) {
@@ -486,20 +505,23 @@ Java_net_nativemind_flutter_1llama_FlutterLlamaPlugin_nativeGetEmbedding(
     llama_tokenize(g_vocab, text_cpp.c_str(), text_cpp.size(), tokens.data(), tokens.size(), true, true);
     if (n_use < n_tokens) tokens.resize(n_use);
     
-    // Clear KV cache
-    llama_memory_clear(llama_get_memory(g_embed_ctx), true);
+    // Clear KV cache (only exists for decoder-only contexts with POOLING_TYPE_NONE)
+    llama_memory_t mem = llama_get_memory(g_embed_ctx);
+    if (mem) {
+        llama_memory_clear(mem, true);
+    }
     
-    // Encode
+    // Always use llama_decode for text — our models are all decoder-based
     llama_batch batch = llama_batch_get_one(tokens.data(), (int32_t)tokens.size());
-    if (llama_encode(g_embed_ctx, batch) != 0) {
-        LOGE("getEmbedding: encode failed");
+    if (llama_decode(g_embed_ctx, batch) != 0) {
+        LOGE("getEmbedding: decode failed");
         return nullptr;
     }
     
     int n_embd = llama_model_n_embd(g_model);
     
-    const float* embd = llama_get_embeddings_seq(g_embed_ctx, 0);
-    if (!embd) embd = llama_get_embeddings_ith(g_embed_ctx, -1);
+    // With POOLING_TYPE_NONE, use last-token hidden state as embedding
+    const float* embd = llama_get_embeddings_ith(g_embed_ctx, -1);
     if (!embd) {
         LOGE("getEmbedding: no embeddings available");
         return nullptr;

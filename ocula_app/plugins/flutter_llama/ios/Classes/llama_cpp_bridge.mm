@@ -208,13 +208,16 @@ bool llama_generate(
         return false;
     }
     
-    // Create batch
-    llama_batch batch = llama_batch_get_one(prompt_tokens.data(), prompt_tokens.size());
-    
-    // Decode prompt
-    if (llama_decode(g_context, batch) != 0) {
-        NSLog(@"[llama_cpp_bridge] Failed to decode prompt");
-        return false;
+    // Decode prompt in batches (prompt may exceed n_batch)
+    const int32_t n_batch_size = llama_n_batch(g_context);
+    llama_batch batch;
+    for (size_t i = 0; i < prompt_tokens.size(); i += n_batch_size) {
+        int n_eval = std::min((int)(prompt_tokens.size() - i), (int)n_batch_size);
+        batch = llama_batch_get_one(prompt_tokens.data() + i, n_eval);
+        if (llama_decode(g_context, batch) != 0) {
+            NSLog(@"[llama_cpp_bridge] Failed to decode prompt at pos %zu", i);
+            return false;
+        }
     }
     
     // Update sampler with new parameters
@@ -316,13 +319,16 @@ void llama_generate_stream_init(
         return;
     }
     
-    // Create batch
-    llama_batch batch = llama_batch_get_one(prompt_tokens.data(), prompt_tokens.size());
-    
-    // Decode prompt
-    if (llama_decode(g_context, batch) != 0) {
-        NSLog(@"[llama_cpp_bridge] Failed to decode prompt");
-        return;
+    // Decode prompt in batches (prompt may exceed n_batch)
+    const int32_t n_batch_size = llama_n_batch(g_context);
+    llama_batch batch;
+    for (size_t i = 0; i < prompt_tokens.size(); i += n_batch_size) {
+        int n_eval = std::min((int)(prompt_tokens.size() - i), (int)n_batch_size);
+        batch = llama_batch_get_one(prompt_tokens.data() + i, n_eval);
+        if (llama_decode(g_context, batch) != 0) {
+            NSLog(@"[llama_cpp_bridge] Failed to decode prompt at pos %zu", i);
+            return;
+        }
     }
     
     // Update sampler

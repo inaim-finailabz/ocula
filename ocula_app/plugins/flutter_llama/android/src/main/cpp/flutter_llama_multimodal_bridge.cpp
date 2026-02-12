@@ -491,19 +491,27 @@ Java_net_nativemind_flutter_1llama_FlutterLlamaMultimodalPlugin_nativeGetMultimo
                           supports_vision, supports_audio);
 }
 
-// ---- Free everything ------------------------------------------------------
+// ---- Free everything — no-op if nothing loaded --------------------------
 JNIEXPORT void JNICALL
 Java_net_nativemind_flutter_1llama_FlutterLlamaMultimodalPlugin_nativeFreeMultimodalModel(
     JNIEnv* env,
     jobject thiz
 ) {
     std::lock_guard<std::mutex> lock(mm_mutex);
-    LOGI("Freeing multimodal model");
 
-    if (mm_sampler)  { llama_sampler_free(mm_sampler); mm_sampler = nullptr; }
-    if (mm_mtmd)     { mtmd_free(mm_mtmd);             mm_mtmd    = nullptr; }
-    if (mm_context)  { llama_free(mm_context);          mm_context = nullptr; }
-    if (mm_model)    { llama_model_free(mm_model);      mm_model   = nullptr; }
+    // Guard: don't run free logic when nothing is loaded
+    if (!mm_model && !mm_context && !mm_sampler && !mm_mtmd) {
+        LOGI("free multimodal called but nothing loaded — skipping");
+        return;
+    }
+
+    LOGI("Freeing multimodal model — mm_model=%p mm_context=%p", (void*)mm_model, (void*)mm_context);
+
+    // Null pointers BEFORE freeing to prevent use-after-free
+    if (mm_sampler)  { llama_sampler* s = mm_sampler; mm_sampler = nullptr; llama_sampler_free(s); }
+    if (mm_mtmd)     { mtmd_context* m  = mm_mtmd;    mm_mtmd    = nullptr; mtmd_free(m); }
+    if (mm_context)  { llama_context* c = mm_context;  mm_context = nullptr; llama_free(c); }
+    if (mm_model)    { llama_model* mdl = mm_model;    mm_model   = nullptr; llama_model_free(mdl); }
     mm_vocab = nullptr;
 
     mm_stream_tokens.clear();
