@@ -144,8 +144,15 @@ class FlutterLlama {
     }
   }
 
-  /// Unload the current model and free resources
+  /// Unload the current model and free resources.
+  /// No-op if no model is currently loaded.
   Future<void> unloadModel() async {
+    if (!_isModelLoaded) {
+      if (kDebugMode) {
+        print('[FlutterLlama] unloadModel called but no model loaded — skipping');
+      }
+      return;
+    }
     try {
       if (kDebugMode) {
         print('[FlutterLlama] Unloading model');

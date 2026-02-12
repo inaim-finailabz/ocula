@@ -502,6 +502,53 @@ class OculaModelManager {
         : models.where((m) => m.tier == tier).toList();
   }
 
+  /// Validate that a local file is a plausible GGUF model.
+  ///
+  /// Checks:
+  /// 1. File exists
+  /// 2. No `.partial` sibling (download still in progress)
+  /// 3. Size ≥ [minBytes] (default 1 MB — rejects stubs / error pages)
+  /// 4. First 4 bytes == 'GGUF' magic header
+  ///
+  /// If [expectedSizeBytes] is provided, also checks that the file is at
+  /// least 95% of the expected size (allows minor metadata differences
+  /// between quantisation runs but catches truncated downloads).
+  Future<bool> isValidLocalModel(
+    String path, {
+    int minBytes = 1024 * 1024,
+    int? expectedSizeBytes,
+  }) async {
+    try {
+      final file = File(path);
+      if (!file.existsSync()) return false;
+
+      // Reject if a .partial sibling exists — download is still in flight
+      if (File('$path.partial').existsSync()) return false;
+
+      final size = file.lengthSync();
+      if (size < minBytes) return false;
+
+      // Expected-size gate: reject files that are < 95% of the expected size.
+      // This catches downloads that completed HTTP-wise but were truncated
+      // (e.g. CDN timeout, partial Range response treated as full).
+      if (expectedSizeBytes != null && size < (expectedSizeBytes * 0.95).round()) {
+        return false;
+      }
+
+      // GGUF magic header check (4 bytes, no RAM cost)
+      final raf = file.openSync(mode: FileMode.read);
+      try {
+        final header = raf.readSync(4);
+        if (header.length < 4) return false;
+        return String.fromCharCodes(header) == 'GGUF';
+      } finally {
+        raf.closeSync();
+      }
+    } catch (_) {
+      return false;
+    }
+  }
+
   /// Get the main model path for a tier (not the vision projector).
   /// Only returns paths in local storage (writable, mmap-able).
   /// The app bundle is NOT usable because llama.cpp needs mmap and
@@ -576,10 +623,16 @@ class OculaModelManager {
     final file = File(path);
     final partialFile = File('$path.partial');
 
-    // Already downloaded
+    // Already downloaded — but validate it's actually a good GGUF file.
+    // A previous interrupted download or CDN error could have left a bad file.
     if (await file.exists()) {
-      onProgress?.call(1.0, 'Ready');
-      return true;
+      if (await isValidLocalModel(path, expectedSizeBytes: model.sizeBytes)) {
+        onProgress?.call(1.0, 'Ready');
+        return true;
+      }
+      // Bad file at final path — delete and re-download
+      debugPrint('[ModelManager] ${model.fileName} exists but failed validation — re-downloading');
+      await file.delete().catchError((_) {});
     }
 
     final prefs = await SharedPreferences.getInstance();
@@ -634,6 +687,20 @@ class OculaModelManager {
 
       // Move partial → final
       await partialFile.rename(path);
+
+      // Post-download GGUF validation — catch corrupt / truncated files
+      // before signalling "ready" to the rest of the system.
+      final valid = await isValidLocalModel(
+        path,
+        expectedSizeBytes: model.sizeBytes,
+      );
+      if (!valid) {
+        debugPrint('[ModelManager] ✗ ${model.fileName} failed GGUF validation after download — deleting');
+        await File(path).delete().catchError((_) {});
+        await prefs.setBool('downloading_${model.fileName}', false);
+        onProgress?.call(0.0, 'Error: downloaded file is not a valid GGUF model');
+        return false;
+      }
 
       await prefs.setBool('downloading_${model.fileName}', false);
       onProgress?.call(1.0, 'Ready');

@@ -157,57 +157,70 @@ class AIManager {
     return _deviceRamMB!;
   }
 
+  // ════════════════════════════════════════════════════════════════════
+  // CENTRALIZED UNLOAD — every path that needs to release the current
+  // model MUST go through this method. Direct unloadModel() /
+  // unloadMultimodalModel() calls are forbidden outside of here.
+  // ════════════════════════════════════════════════════════════════════
+
+  /// Safely unload whatever model (text or vision) is currently loaded.
+  ///
+  /// - Handles both text and vision engines
+  /// - Swallows errors so callers never crash on unload
+  /// - Resets _activeTier and _isVisionMode
+  /// - Waits for Metal GPU drain on iOS/macOS if [waitForMetal] is true
+  Future<void> _safeUnload({bool waitForMetal = true}) async {
+    try {
+      if (_isVisionMode) {
+        await _visionEngine.unloadMultimodalModel();
+      } else if (_textEngine.isModelLoaded) {
+        await _textEngine.unloadModel();
+      }
+    } catch (e) {
+      debugPrint('[AIManager] _safeUnload failed (non-fatal): $e');
+    }
+    _activeTier = null;
+    _isVisionMode = false;
+
+    if (waitForMetal && (Platform.isIOS || Platform.isMacOS)) {
+      debugPrint('[AIManager] Waiting for Metal GPU cleanup...');
+      await Future.delayed(const Duration(milliseconds: 1500));
+    }
+  }
+
   /// Clear all models from memory (for advanced users).
   /// This will dispose loaded models and free up RAM.
   Future<void> clearMemory() async {
-    try {
-      if (_textEngine.isModelLoaded) {
-        await _textEngine.unloadModel();
-      }
-      // Note: FlutterLlamaMultimodal may not have unloadModel method
-      // We reset the state and let garbage collection handle it
-      _activeTier = null;
-      _isVisionMode = false;
-    } catch (e) {
-      // Ignore disposal errors, just ensure we reset state
-      _activeTier = null;
-      _isVisionMode = false;
-    }
+    await _safeUnload();
   }
 
   /// Switch to enterprise model based on configured settings.
   Future<void> _switchToEnterpriseModel() async {
     final prefs = await SharedPreferences.getInstance();
     final isEnabled = prefs.getBool('enterprise_enabled') ?? false;
-    
+
     if (!isEnabled) {
       throw Exception('Enterprise mode is not enabled');
     }
 
     final useLocal = prefs.getBool('enterprise_use_local') ?? true;
-    
-    // 1. Flush RAM — unload whatever is currently loaded
-    if (_activeTier != null) {
-      if (_isVisionMode) {
-        await _visionEngine.unloadMultimodalModel();
-      } else {
-        await _textEngine.unloadModel();
-      }
-    }
 
     if (useLocal) {
-      // Load local enterprise model
       final modelPath = prefs.getString('enterprise_model_path') ?? '';
       if (modelPath.isEmpty) {
         throw Exception('Enterprise model path not configured');
       }
-      
       final modelFile = File(modelPath);
       if (!await modelFile.exists()) {
         throw Exception('Enterprise model file not found: $modelPath');
       }
 
-      // Load the enterprise model (assuming it's a text model for now)
+      // If in vision mode, must explicitly unload vision first.
+      // For text→text, let native llama_init_model handle the atomic swap.
+      if (_isVisionMode) {
+        await _safeUnload();
+      }
+
       await _textEngine.loadModel(LlamaConfig(
         modelPath: modelPath,
         nGpuLayers: -1,
@@ -215,9 +228,8 @@ class AIManager {
       ));
       _isVisionMode = false;
     } else {
-      // For remote API models, we don't load anything into memory
-      // The actual API calls would be handled in the query methods
-      // This is just to mark that enterprise mode is active
+      // Remote API — unload any loaded model to free RAM
+      await _safeUnload();
     }
 
     _activeTier = AITier.enterprise;
@@ -274,21 +286,40 @@ class AIManager {
         return;
       }
 
-      // ── SAFETY: Verify the target model is downloaded BEFORE touching anything ──
+      // ══════════════════════════════════════════════════════════════════
+      // VIRTUAL-MEMORY PRINCIPLE: validate the replacement model FULLY
+      // before touching the currently-loaded model. Never evict a working
+      // model unless the replacement is downloaded, on-disk, and valid.
+      // ══════════════════════════════════════════════════════════════════
+
+      // 1. Resolve path — null means "not downloaded at all"
       final mainPath = await _models.mainModelPath(tier);
       if (mainPath == null) {
+        debugPrint('[AIManager] switchEngine: ${tier.name} model path is null — not downloaded');
         throw ModelNotReadyException(tier);
       }
 
-      // Verify the file actually exists and is > 1MB (not a corrupt stub)
-      final targetFile = File(mainPath);
-      if (!targetFile.existsSync() || targetFile.lengthSync() < 1024 * 1024) {
+      // 2. Look up the expected file size from the model registry
+      final modelInfo = OculaModelManager.models
+          .where((m) => m.tier == tier && !m.isVisionProjector)
+          .firstOrNull;
+      final expectedSize = modelInfo?.sizeBytes;
+
+      // 3. Full GGUF validation: exists + no .partial + size + magic header
+      final isValid = await _models.isValidLocalModel(
+        mainPath,
+        expectedSizeBytes: expectedSize,
+      );
+      if (!isValid) {
+        debugPrint('[AIManager] switchEngine: ${tier.name} model at $mainPath '
+            'failed GGUF validation — not switching');
         throw ModelNotReadyException(tier);
       }
 
-      debugPrint('[AIManager] switchEngine: ${_activeTier?.name ?? "none"} → ${tier.name}');
-      // ── Hardware gate: check RAM before committing to the switch ──
-      // If the device doesn't have enough RAM, refuse the switch entirely.
+      debugPrint('[AIManager] switchEngine: ${_activeTier?.name ?? "none"} → ${tier.name} '
+          '(model validated ✓)');
+
+      // 4. Hardware gate — check RAM before committing to the switch.
       // This prevents unloading a working model only to fail loading the new one.
       if (!await canDeviceRunTier(tier)) {
         final ram = await deviceRamMB;
@@ -298,35 +329,22 @@ class AIManager {
         throw ModelNotReadyException(tier);
       }
 
-      // ── Step 1: Explicitly unload the current model ──
-      // We MUST separate unload from load so Metal GPU has time to fully
-      // reclaim its buffer pool between the two operations. Doing both
-      // inside a single native call (llama_init_model) causes the new KV
-      // cache allocation to fail because Metal hasn't freed the old buffers.
-      if (_activeTier != null) {
-        try {
-          if (_isVisionMode) {
-            await _visionEngine.unloadMultimodalModel();
-          } else {
-            await _textEngine.unloadModel();
-          }
-        } catch (e) {
-          debugPrint('[AIManager] unload failed (non-fatal): $e');
-        }
-        _activeTier = null;
-        _isVisionMode = false;
-
-        // ── Step 2: Wait for Metal GPU to reclaim its buffer pool ──
-        // The native bridge uses @autoreleasepool + null-before-free, but
-        // Metal command queues drain asynchronously. 1.5s is enough for
-        // the A17 Pro to finish in-flight GPU work and reclaim all buffers.
-        if (Platform.isIOS || Platform.isMacOS) {
-          debugPrint('[AIManager] Waiting for Metal GPU cleanup...');
-          await Future.delayed(const Duration(milliseconds: 1500));
-        }
+      // ── ATOMIC SWAP: let native handle cleanup + load in one call ──
+      // The native llama_init_model() already:
+      //   1. Frees old contexts in @autoreleasepool (Metal objects drain)
+      //   2. Validates g_model with is_plausible_heap_ptr before freeing
+      //   3. Waits for Metal GPU drain between context free and model free
+      //   4. Loads the new model
+      //
+      // By NOT calling unloadModel() separately from Dart, we avoid the
+      // crash where g_model is corrupt (0x1) — the native safety check
+      // handles it. Only exception: vision mode requires explicit unload
+      // because it's a different native engine.
+      if (_isVisionMode && _activeTier != null) {
+        await _safeUnload();
       }
 
-      // ── Step 3: Load the new model ──
+      // ── Load the new model ──
       // Tier-appropriate settings:
       //   free/plus: full GPU (-1) + 2048 context — small models, fit easily
       //   pro:       CPU only (0) + 2048 context — avoids Metal OOM on 2B model
@@ -453,20 +471,23 @@ class AIManager {
         _isSwitching = true;
         try {
           final mainPath = await _models.mainModelPath(_activeTier ?? AITier.free) ?? '';
-          // Unload text engine, load vision engine for this query
-          await _textEngine.unloadModel();
+          // Unload text engine via centralized path, load vision engine
+          await _safeUnload();
           final loaded = await _visionEngine.loadMultimodalModel(
             MultimodalConfig.textAndImage(mainPath, projPath),
           );
           if (loaded) {
+            _isVisionMode = true;
             final response = await _visionEngine.describeImage(imagePath, fullPrompt);
             // Swap back to text engine for next query
-            await _visionEngine.unloadMultimodalModel();
+            await _safeUnload();
             await _textEngine.loadModel(LlamaConfig(
               modelPath: mainPath,
               nGpuLayers: -1,
               useGpu: true,
             ));
+            _activeTier = _activeTier; // restore
+            _isVisionMode = false;
             return response.text;
           }
           // Vision engine failed to load — reload text engine and fall through
@@ -475,8 +496,9 @@ class AIManager {
             nGpuLayers: -1,
             useGpu: true,
           ));
+          _isVisionMode = false;
         } catch (e) {
-          // Vision engine not available on this platform — fall through to text-only
+          // Vision engine not available — fall through to text-only
           final mainPath = await _models.mainModelPath(_activeTier ?? AITier.free) ?? '';
           if (!_textEngine.isModelLoaded) {
             await _textEngine.loadModel(LlamaConfig(
@@ -485,6 +507,7 @@ class AIManager {
               useGpu: true,
             ));
           }
+          _isVisionMode = false;
         } finally {
           _isSwitching = false;
         }
@@ -510,10 +533,7 @@ class AIManager {
   Future<void> dispose() async {
     await _tierReadySub?.cancel();
     _tierReadySub = null;
-    if (_textEngine.isModelLoaded) {
-      await _textEngine.unloadModel();
-    }
-    _activeTier = null;
+    await _safeUnload(waitForMetal: false);
     _pendingUpgradeTier = null;
   }
 }

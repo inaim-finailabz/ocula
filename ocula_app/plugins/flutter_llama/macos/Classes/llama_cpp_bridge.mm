@@ -85,7 +85,7 @@ bool llama_init_model(
     } // Pool drains — Metal context objects deallocated
 
     if (g_model) {
-        usleep(50 * 1000); // 50 ms — let Metal GPU drain
+        usleep(500 * 1000); // 500 ms — let Metal GPU fully drain before model free
         @autoreleasepool {
             llama_model* mdl = g_model;
             g_model = nullptr;
@@ -405,9 +405,15 @@ void llama_get_model_info(
     *context_size = llama_n_ctx(g_context);
 }
 
-// Free model
+// Free model — no-op if nothing is loaded
 void llama_bridge_free_model() {
     std::lock_guard<std::mutex> lock(g_mutex);
+
+    // Guard: don't run any free/drain logic when nothing is loaded
+    if (!g_model && !g_context && !g_sampler && !g_embed_ctx) {
+        NSLog(@"[llama_cpp_bridge] free_model called but nothing loaded — skipping");
+        return;
+    }
 
     NSLog(@"[llama_cpp_bridge] Freeing model — g_model=%p g_context=%p g_sampler=%p",
           (void*)g_model, (void*)g_context, (void*)g_sampler);
