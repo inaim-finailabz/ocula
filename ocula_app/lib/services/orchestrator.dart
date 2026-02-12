@@ -1,13 +1,11 @@
-import 'dart:convert';
 import 'package:flutter/foundation.dart';
-import 'package:path_provider/path_provider.dart';
-import 'dart:io';
 
 import 'ai_manager.dart';
 import 'rag_engine.dart';
 import 'indexer.dart';
 import 'network_permission.dart';
 import 'local_data.dart';
+import 'ocula_db.dart';
 
 /// Lightweight agent orchestrator inspired by LangGraph patterns.
 /// No backend. No MongoDB. Just a local state machine on the phone.
@@ -365,110 +363,53 @@ class Orchestrator {
 }
 
 // ──────────────────────────────────────────
-// Episodic Memory — remembers conversations
+// Episodic Memory — backed by OculaDB (SQLite)
 // ──────────────────────────────────────────
 
-/// Lightweight episodic memory stored as a local JSON file.
-/// No MongoDB. No server. Just a file on the phone.
+/// Episodic memory backed by SQLite via OculaDB.
+/// No more loading entire JSON into memory.
 ///
-/// Stores the last N conversations so Ocula can say:
-/// "You asked about this yesterday — here's what I found then."
+/// Auto-migrates from episodic_memory.json on first DB open.
 class EpisodicMemory {
-  static const _maxEntries = 200;
-  static const _fileName = 'episodic_memory.json';
-
-  List<Map<String, dynamic>> _entries = [];
-  bool _loaded = false;
-
-  /// Load memory from disk.
-  Future<void> _ensureLoaded() async {
-    if (_loaded) return;
-    try {
-      final dir = await getApplicationDocumentsDirectory();
-      final file = File('${dir.path}/$_fileName');
-      if (await file.exists()) {
-        final raw = await file.readAsString();
-        final list = jsonDecode(raw) as List;
-        _entries = list.cast<Map<String, dynamic>>();
-      }
-    } catch (_) {
-      _entries = [];
-    }
-    _loaded = true;
-  }
-
-  /// Save memory to disk.
-  Future<void> _save() async {
-    try {
-      final dir = await getApplicationDocumentsDirectory();
-      final file = File('${dir.path}/$_fileName');
-      await file.writeAsString(jsonEncode(_entries));
-    } catch (_) {
-      // Silent fail — memory is not critical
-    }
-  }
+  final OculaDB _db = OculaDB();
 
   /// Log a completed interaction.
   Future<void> log(AgentState state) async {
-    await _ensureLoaded();
+    await _db.logChat(
+      query: state.query,
+      response: state.response,
+      intent: state.intent.name,
+      modelUsed: state.modelUsed.name,
+      steps: state.stepsCompleted,
+    );
 
-    _entries.add({
-      'query': state.query,
-      'intent': state.intent.name,
-      'model': state.modelUsed.name,
-      'response': state.response.length > 500
-          ? state.response.substring(0, 500)
-          : state.response,
-      'steps': state.stepsCompleted,
-      'timestamp': state.timestamp.toIso8601String(),
-    });
+    // Extract knowledge graph triples from conversation
+    await _db.extractKnowledge(state.query, state.response);
 
-    // Keep only the last N entries
-    if (_entries.length > _maxEntries) {
-      _entries = _entries.sublist(_entries.length - _maxEntries);
+    // Auto-trim at 2000 entries (up from 200 with JSON)
+    final count = await _db.chatCount;
+    if (count > 2200) {
+      await _db.trimChat(maxEntries: 2000);
     }
-
-    await _save();
   }
 
   /// Recall recent conversations relevant to a query.
-  /// Simple keyword matching — fast, no embedding needed.
   Future<String> recall(String query, {int limit = 3}) async {
-    await _ensureLoaded();
-    if (_entries.isEmpty) return '';
+    // Combine keyword recall with knowledge graph context
+    final chatRecall = await _db.recallChat(query, limit: limit);
+    final graphContext = await _db.graphContext(query, limit: 3);
 
-    final keywords = query.toLowerCase().split(RegExp(r'\s+'))
-        .where((w) => w.length > 3)
-        .toList();
-
-    if (keywords.isEmpty) return '';
-
-    // Score each entry by keyword overlap
-    final scored = _entries.map((entry) {
-      final text = '${entry['query']} ${entry['response']}'.toLowerCase();
-      final hits = keywords.where((k) => text.contains(k)).length;
-      return MapEntry(entry, hits);
-    }).where((e) => e.value > 0).toList();
-
-    scored.sort((a, b) => b.value.compareTo(a.value));
-
-    return scored.take(limit).map((e) {
-      final entry = e.key;
-      return 'On ${entry['timestamp']}: User asked "${entry['query']}" → '
-          '${entry['response']}';
-    }).join('\n');
+    final parts = <String>[];
+    if (chatRecall.isNotEmpty) parts.add(chatRecall);
+    if (graphContext.isNotEmpty) {
+      parts.add('[Knowledge graph] $graphContext');
+    }
+    return parts.join('\n');
   }
 
   /// Get total entries count.
-  Future<int> get count async {
-    await _ensureLoaded();
-    return _entries.length;
-  }
+  Future<int> get count async => _db.chatCount;
 
   /// Clear all memory.
-  Future<void> clear() async {
-    _entries = [];
-    _loaded = true;
-    await _save();
-  }
+  Future<void> clear() async => _db.clearChat();
 }

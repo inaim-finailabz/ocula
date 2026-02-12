@@ -142,7 +142,7 @@ class Indexer {
 
         // Check fingerprint — skip unchanged files
         final sourceId = 'file:${file.name}';
-        final check = _rag.checkFingerprint(sourceId, file.fingerprint);
+        final check = await _rag.checkFingerprintAsync(sourceId, file.fingerprint);
         if (check == true) {
           _filesSkipped++;
           continue; // Unchanged — skip

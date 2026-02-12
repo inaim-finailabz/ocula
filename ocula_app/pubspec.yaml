@@ -28,9 +28,9 @@ dependencies:
   # Media
   camera: ^0.11.0                # Vision input from device camera
 
-  # RAG — On-device retrieval
-  objectbox: ^4.0.1              # Vector store with HNSW search
-  objectbox_flutter_libs: any    # Native ObjectBox libs for Flutter
+  # Database — On-device persistence (system SQLite, zero binary bloat)
+  sqflite: ^2.4.1
+  path: ^1.9.0
 
   # Local data access
   flutter_contacts: ^1.1.9       # Read contacts
