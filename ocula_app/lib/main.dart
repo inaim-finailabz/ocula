@@ -273,19 +273,19 @@ class _AssistantScreenState extends State<AssistantScreen>
     _scrollToBottom();
 
     try {
-      final response = await _orchestrator.run(
+      final result = await _orchestrator.run(
         text,
         hasImage: image != null,
         imagePath: image?.path,
       ).timeout(
         const Duration(minutes: 2),
-        onTimeout: () => 'Sorry, I took too long to respond. Please try again.',
+        onTimeout: () => OrchestratorResult('Sorry, I took too long to respond. Please try again.'),
       );
 
       if (!mounted) return;
 
       // Empty response = cancelled by user (stop or new query)
-      if (response.isEmpty) {
+      if (result.response.isEmpty) {
         setState(() {
           _isThinking = false;
           _orbState = OrbState.idle;
@@ -293,14 +293,18 @@ class _AssistantScreenState extends State<AssistantScreen>
         return;
       }
       setState(() {
-        _messages.add(_Message(text: response, isUser: false));
+        _messages.add(_Message(
+          text: result.response,
+          isUser: false,
+          linkedAssets: result.linkedAssets,
+        ));
         _isThinking = false;
         _orbState = OrbState.speaking;
         _isSpeaking = true;
       });
       _scrollToBottom();
 
-      await _speech.speak(response);
+      await _speech.speak(result.response);
       if (mounted) {
         setState(() {
           _orbState = OrbState.idle;
