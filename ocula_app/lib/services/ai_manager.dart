@@ -247,22 +247,23 @@ class AIManager {
 
     debugPrint('[AIManager] switchEngine: ${_activeTier?.name ?? "none"} → ${tier.name}');
 
-    // ── Unload current model ──
-    if (_activeTier != null) {
+    // ── If currently in vision mode, unload the multimodal engine first ──
+    // (it uses separate native globals, so we must explicitly release it)
+    if (_isVisionMode) {
       try {
-        if (_isVisionMode) {
-          await _visionEngine.unloadMultimodalModel();
-        } else {
-          await _textEngine.unloadModel();
-        }
+        await _visionEngine.unloadMultimodalModel();
       } catch (e) {
-        debugPrint('[AIManager] unload failed (non-fatal): $e');
+        debugPrint('[AIManager] multimodal unload failed (non-fatal): $e');
       }
-      _activeTier = null;
       _isVisionMode = false;
     }
 
-    // ── Load new model ──
+    // ── Load new model directly ──
+    // DO NOT call _textEngine.unloadModel() separately — the native
+    // llama_init_model() already frees the previous model internally.
+    // Calling unloadModel + loadModel as two separate calls can crash
+    // if Metal GPU resources are still settling from the free.
+    _activeTier = null;
     try {
       await _textEngine.loadModel(LlamaConfig(
         modelPath: mainPath,

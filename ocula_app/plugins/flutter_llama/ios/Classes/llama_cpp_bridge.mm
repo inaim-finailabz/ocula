@@ -9,6 +9,7 @@
 #include <string>
 #include <vector>
 #include <mutex>
+#include <unistd.h>
 
 // Include llama.cpp headers
 #include "../../llama.cpp/include/llama.h"
@@ -43,18 +44,33 @@ bool llama_init_model(
     NSLog(@"[llama_cpp_bridge] Threads: %d, GPU layers: %d, Context: %d", 
           n_threads, n_gpu_layers, context_size);
     
-    // Free existing model if any
+    // Free existing model if any — null pointers BEFORE freeing to prevent
+    // double-free / use-after-free if another thread checks the pointer.
+    // Also free embed_ctx first since it shares g_model.
+    if (g_embed_ctx) {
+        llama_context* ectx = g_embed_ctx;
+        g_embed_ctx = nullptr;
+        llama_free(ectx);
+    }
     if (g_sampler) {
-        llama_sampler_free(g_sampler);
+        llama_sampler* s = g_sampler;
         g_sampler = nullptr;
+        llama_sampler_free(s);
     }
     if (g_context) {
-        llama_free(g_context);
+        llama_context* ctx = g_context;
         g_context = nullptr;
+        llama_free(ctx);
     }
     if (g_model) {
-        llama_model_free(g_model);
+        llama_model* mdl = g_model;
         g_model = nullptr;
+        g_vocab = nullptr;
+#if !TARGET_OS_SIMULATOR
+        // Let Metal GPU resources settle before destroying the model.
+        usleep(50000); // 50 ms
+#endif
+        llama_model_free(mdl);
     }
     
     // Load dynamic backends (only once per process)
@@ -367,36 +383,45 @@ void llama_cpp_bridge_free_model() {
     NSLog(@"[llama_cpp_bridge] Freeing model — g_model=%p g_context=%p g_sampler=%p",
           (void*)g_model, (void*)g_context, (void*)g_sampler);
     
-    // Free embedding context first (shares g_model)
+    // Null pointers BEFORE freeing to prevent double-free / use-after-free.
+    // Free embedding context first since it shares g_model.
     if (g_embed_ctx) {
         NSLog(@"[llama_cpp_bridge] Freeing embedding context...");
-        llama_free(g_embed_ctx);
+        llama_context* ectx = g_embed_ctx;
         g_embed_ctx = nullptr;
+        llama_free(ectx);
         NSLog(@"[llama_cpp_bridge] Embedding context freed OK");
     }
     
     if (g_sampler) {
         NSLog(@"[llama_cpp_bridge] Freeing sampler...");
-        llama_sampler_free(g_sampler);
+        llama_sampler* s = g_sampler;
         g_sampler = nullptr;
+        llama_sampler_free(s);
         NSLog(@"[llama_cpp_bridge] Sampler freed OK");
     }
     
     if (g_context) {
         NSLog(@"[llama_cpp_bridge] Freeing context...");
-        llama_free(g_context);
+        llama_context* ctx = g_context;
         g_context = nullptr;
+        llama_free(ctx);
         NSLog(@"[llama_cpp_bridge] Context freed OK");
     }
     
+    g_vocab = nullptr;
+    
     if (g_model) {
         NSLog(@"[llama_cpp_bridge] Freeing model pointer %p ...", (void*)g_model);
-        llama_model_free(g_model);
+        llama_model* mdl = g_model;
         g_model = nullptr;
+#if !TARGET_OS_SIMULATOR
+        // Let Metal GPU resources settle before destroying the model.
+        usleep(50000); // 50 ms
+#endif
+        llama_model_free(mdl);
         NSLog(@"[llama_cpp_bridge] Model freed OK");
     }
-    
-    g_vocab = nullptr;
     
     NSLog(@"[llama_cpp_bridge] Model freed successfully");
 }
