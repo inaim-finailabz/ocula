@@ -64,6 +64,13 @@ class Orchestrator {
   final NetworkPermission _network;
   final LocalData _localData;
 
+  /// True while a run() call is in flight.
+  bool _isRunning = false;
+  bool get isRunning => _isRunning;
+
+  /// Set to true to abort the current pipeline mid-flight.
+  bool _cancelled = false;
+
   /// Callback the UI registers to show an "Allow internet?" dialog.
   /// Returns true if user grants permission, false if denied.
   Future<bool> Function()? onAskInternet;
@@ -81,9 +88,36 @@ class Orchestrator {
         _network = network ?? NetworkPermission(),
         _localData = localData ?? LocalData();
 
+  /// Stop the current generation and cancel the pipeline.
+  /// Safe to call even if nothing is running.
+  Future<void> stop() async {
+    _cancelled = true;
+    await _ai.stopGeneration();
+    debugPrint('[Orchestrator] Stop requested');
+  }
+
   /// Run the full pipeline for a user query.
   /// Returns the final response string.
   Future<String> run(String query, {bool hasImage = false, String? imagePath}) async {
+    // If a previous run is still active, stop it first.
+    if (_isRunning) {
+      await stop();
+      // Give the native side a tick to set g_should_stop
+      await Future.delayed(const Duration(milliseconds: 50));
+    }
+
+    _cancelled = false;
+    _isRunning = true;
+
+    try {
+      return await _runPipeline(query, hasImage: hasImage, imagePath: imagePath);
+    } finally {
+      _isRunning = false;
+    }
+  }
+
+  /// Internal pipeline — separated so run() can manage _isRunning flag.
+  Future<String> _runPipeline(String query, {bool hasImage = false, String? imagePath}) async {
     var state = AgentState(query: query, hasImage: hasImage, imagePath: imagePath);
     state.status = StepStatus.running;
 
@@ -94,25 +128,33 @@ class Orchestrator {
       debugPrint('[Orchestrator] ⬆ Auto-upgraded to ${_ai.activeTier?.name}');
     }
 
+    if (_cancelled) return '';
+
     // STEP 1: Detect intent
     state = await _detectIntent(state);
+    if (_cancelled) return '';
 
     // STEP 2: Retrieve context via RAG
     state = await _retrieve(state);
+    if (_cancelled) return '';
 
     // STEP 3: Check episodic memory for recent relevant conversations
     state = await _recallMemory(state);
+    if (_cancelled) return '';
 
     // STEP 4: If web intent, check internet permission
     if (state.intent == QueryIntent.web) {
       state = await _webSearch(state);
+      if (_cancelled) return '';
     }
 
     // STEP 5: Route to the right model
     state = await _routeModel(state);
+    if (_cancelled) return '';
 
     // STEP 6: Generate response
     state = await _generate(state);
+    if (_cancelled) return '';
 
     // STEP 7: Log to episodic memory
     await _memory.log(state);

@@ -489,6 +489,19 @@ class AIManager {
     return text;
   }
 
+  /// Stop any in-flight generation (text or vision).
+  /// Safe to call even if nothing is generating — the native side just
+  /// sets g_should_stop / mm_should_stop to true and returns.
+  Future<void> stopGeneration() async {
+    try {
+      await _textEngine.stopGeneration();
+    } catch (_) {}
+    try {
+      await _visionEngine.stopMultimodalGeneration();
+    } catch (_) {}
+    debugPrint('[AIManager] stopGeneration requested');
+  }
+
   /// Unload everything and free all native memory.
   Future<void> dispose() async {
     await _tierReadySub?.cancel();

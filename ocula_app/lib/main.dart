@@ -235,9 +235,31 @@ class _AssistantScreenState extends State<AssistantScreen>
     }
   }
 
+  Future<void> _stopEverything() async {
+    // Stop generation + TTS + listening — total silence
+    await _orchestrator.stop();
+    await _speech.stopSpeaking();
+    if (_isListening) {
+      _speech.stopListening();
+    }
+    if (mounted) {
+      setState(() {
+        _isThinking = false;
+        _isListening = false;
+        _isSpeaking = false;
+        _orbState = OrbState.idle;
+      });
+    }
+  }
+
   Future<void> _send(String text) async {
     if (text.trim().isEmpty) return;
     _textController.clear();
+
+    // If already generating or speaking, stop that first
+    if (_isThinking || _isSpeaking) {
+      await _stopEverything();
+    }
 
     final image = _attachedImage;
     setState(() {
@@ -261,6 +283,15 @@ class _AssistantScreenState extends State<AssistantScreen>
       );
 
       if (!mounted) return;
+
+      // Empty response = cancelled by user (stop or new query)
+      if (response.isEmpty) {
+        setState(() {
+          _isThinking = false;
+          _orbState = OrbState.idle;
+        });
+        return;
+      }
       setState(() {
         _messages.add(_Message(text: response, isUser: false));
         _isThinking = false;
@@ -581,8 +612,15 @@ class _AssistantScreenState extends State<AssistantScreen>
                               ),
                             ),
                           ),
-                          // Send or Mic — always show stop when listening
-                          _isListening
+                          // Send / Stop / Mic — context-dependent action
+                          _isThinking || _isSpeaking
+                              ? _InputAction(
+                                  icon: Icons.stop_circle,
+                                  label: 'Stop',
+                                  color: const Color(0xFFFF7675),
+                                  onTap: _stopEverything,
+                                )
+                              : _isListening
                               ? _InputAction(
                                   icon: Icons.stop_circle,
                                   label: 'Stop',
