@@ -1,24 +1,37 @@
+import 'dart:async';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/widgets.dart';
 import 'rag_engine.dart';
 import 'local_data.dart';
+import 'ocula_db.dart';
 
-/// Background indexer v2 — crawls local data into the RAG engine.
+/// Background indexer v3 — lifecycle-aware, asset-linking, all-platform.
 ///
-/// Improvements:
-/// - Fingerprint-based change detection: only re-indexes modified files
-/// - Batch saves: persists once at end, not after every file
-/// - Progress reporting with file counts
-/// - Incremental updates: new/changed files only
-/// - Resilient: individual file errors don't abort the run
-class Indexer {
+/// Improvements over v2:
+/// - WidgetsBindingObserver: re-indexes on app resume
+/// - Periodic timer: re-indexes every 15 minutes while app is active
+/// - Asset linking: detects phone numbers, emails, file paths, URLs in
+///   indexed content and stores them as asset_links for surfacing in chat
+/// - Identical behavior on iOS, Android, macOS, Linux, Windows
+class Indexer with WidgetsBindingObserver {
+  static final Indexer _instance = Indexer._internal();
+  factory Indexer() => _instance;
+
   final RAGEngine _rag;
   final LocalData _local;
+  final OculaDB _db;
 
   bool _isRunning = false;
   double _progress = 0.0;
   int _filesIndexed = 0;
   int _filesSkipped = 0;
   int _filesErrored = 0;
+  Timer? _periodicTimer;
+  bool _lifecycleRegistered = false;
+  DateTime? _lastFullIndex;
+
+  /// Minimum interval between full index runs (avoid battery drain).
+  static const _minIndexInterval = Duration(minutes: 15);
 
   bool get isRunning => _isRunning;
   double get progress => _progress;
@@ -28,16 +41,64 @@ class Indexer {
   /// Optional progress callback for UI updates.
   void Function(double progress, String status)? onProgress;
 
-  Indexer({RAGEngine? rag, LocalData? local, this.onProgress})
+  Indexer._internal({RAGEngine? rag, LocalData? local, OculaDB? db})
       : _rag = rag ?? RAGEngine(),
-        _local = local ?? LocalData();
+        _local = local ?? LocalData(),
+        _db = db ?? OculaDB();
+
+  /// Start lifecycle-aware background indexing.
+  /// Call once from initState. Safe to call multiple times.
+  void startBackgroundIndexing() {
+    if (!_lifecycleRegistered) {
+      WidgetsBinding.instance.addObserver(this);
+      _lifecycleRegistered = true;
+    }
+
+    // Kick off the first index
+    runFullIndex();
+
+    // Periodic re-index while app is foregrounded
+    _periodicTimer?.cancel();
+    _periodicTimer = Timer.periodic(_minIndexInterval, (_) {
+      runFullIndex();
+    });
+  }
+
+  /// Stop background indexing (call from dispose).
+  void stopBackgroundIndexing() {
+    _periodicTimer?.cancel();
+    _periodicTimer = null;
+    if (_lifecycleRegistered) {
+      WidgetsBinding.instance.removeObserver(this);
+      _lifecycleRegistered = false;
+    }
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      // App came back to foreground — re-index if enough time has passed
+      if (_lastFullIndex == null ||
+          DateTime.now().difference(_lastFullIndex!) > _minIndexInterval) {
+        runFullIndex();
+      }
+    }
+  }
 
   /// Run a full index pass with smart incremental updates.
   ///
   /// Files are checked by fingerprint (mtime + size). Only new or changed
   /// files are actually re-indexed. Unchanged files are skipped instantly.
+  /// Links phone numbers, emails, file paths found in content.
   Future<IndexResult> runFullIndex() async {
     if (_isRunning) return IndexResult.skipped();
+
+    // Throttle: don't re-index too frequently
+    if (_lastFullIndex != null &&
+        DateTime.now().difference(_lastFullIndex!) < const Duration(minutes: 5)) {
+      return IndexResult.skipped();
+    }
+
     _isRunning = true;
     _progress = 0.0;
     _filesIndexed = 0;
@@ -71,6 +132,7 @@ class Indexer {
 
     stopwatch.stop();
     _isRunning = false;
+    _lastFullIndex = DateTime.now();
 
     final result = IndexResult(
       filesIndexed: _filesIndexed,
@@ -152,6 +214,7 @@ class Indexer {
         try {
           final content = await _local.readFileContent(file.path);
           if (content != null && content.isNotEmpty) {
+            final sourceIdFull = 'file:${file.name}';
             final indexed = await _rag.indexFile(
               fileName: file.name,
               textContent: content,
@@ -161,6 +224,15 @@ class Indexer {
 
             if (indexed) {
               _filesIndexed++;
+              // Link the file itself as an openable asset
+              await _db.linkAsset(
+                sourceId: sourceIdFull,
+                assetType: 'file',
+                assetRef: file.path,
+                label: file.name,
+              );
+              // Detect phone numbers, emails, URLs in content
+              await _db.linkDetectedAssets(content, 'file', sourceIdFull);
             } else {
               _filesSkipped++;
             }
@@ -181,12 +253,31 @@ class Indexer {
     try {
       final emails = await _local.recentEmails(limit: 50);
       for (final email in emails) {
+        final sourceId = 'email:${email.subject}:${email.date.toIso8601String()}';
         await _rag.indexEmail(
           from: email.from,
           subject: email.subject,
           body: email.body,
           date: email.date,
         );
+        // Link sender as contact
+        await _db.linkAsset(
+          sourceId: sourceId,
+          assetType: 'email',
+          assetRef: 'mailto:${email.from}',
+          label: '${email.from} — ${email.subject}',
+        );
+        // Link attachments
+        for (final att in email.attachments) {
+          await _db.linkAsset(
+            sourceId: sourceId,
+            assetType: 'file',
+            assetRef: att,
+            label: att.split('/').last,
+          );
+        }
+        // Detect phone numbers, emails, URLs in body
+        await _db.linkDetectedAssets(email.body, 'email', sourceId);
       }
     } catch (e) {
       if (kDebugMode) print('[Indexer] Email indexing skipped: $e');

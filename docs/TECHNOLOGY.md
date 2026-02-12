@@ -47,7 +47,7 @@ Ocula employs a tiered strategy of different models for different tasks.
 
 ### On-Device Search (RAG)
 
-*   **[objectbox](https://pub.dev/packages/objectbox):** A high-performance, on-device NoSQL database and vector store. It is used to store embeddings for the Retrieval-Augmented Generation (RAG) system, enabling fast, local search over the user's data.
+*   **[sqflite](https://pub.dev/packages/sqflite):** A Flutter plugin for SQLite, a self-contained, high-reliability, embedded, full-featured, public-domain, SQL database engine. It will be used to store embeddings for the Retrieval-Augmented Generation (RAG) system.
 
 ## Development & Tooling
 

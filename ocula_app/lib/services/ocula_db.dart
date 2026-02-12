@@ -25,7 +25,7 @@ class OculaDB {
   OculaDB._();
 
   static const _dbName = 'ocula.db';
-  static const _dbVersion = 1;
+  static const _dbVersion = 2;
 
   Database? _db;
   bool _migrated = false;
@@ -156,11 +156,40 @@ class OculaDB {
     ''');
     batch.execute('CREATE INDEX idx_assets_type ON assets(type)');
 
+    // ── Asset links (entity → linked phone asset) ──
+    batch.execute('''
+      CREATE TABLE asset_links (
+        id         INTEGER PRIMARY KEY AUTOINCREMENT,
+        source_id  TEXT NOT NULL,
+        asset_type TEXT NOT NULL,
+        asset_ref  TEXT NOT NULL,
+        label      TEXT,
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      )
+    ''');
+    batch.execute('CREATE INDEX idx_alink_source ON asset_links(source_id)');
+    batch.execute('CREATE INDEX idx_alink_type ON asset_links(asset_type)');
+
     await batch.commit(noResult: true);
   }
 
   Future<void> _onUpgrade(Database db, int oldVersion, int newVersion) async {
-    // Future migrations go here
+    if (oldVersion < 2) {
+      await db.execute('''
+        CREATE TABLE IF NOT EXISTS asset_links (
+          id         INTEGER PRIMARY KEY AUTOINCREMENT,
+          source_id  TEXT NOT NULL,
+          asset_type TEXT NOT NULL,
+          asset_ref  TEXT NOT NULL,
+          label      TEXT,
+          created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+      ''');
+      await db.execute(
+          'CREATE INDEX IF NOT EXISTS idx_alink_source ON asset_links(source_id)');
+      await db.execute(
+          'CREATE INDEX IF NOT EXISTS idx_alink_type ON asset_links(asset_type)');
+    }
   }
 
   // ════════════════════════════════════════════════════════════════════
@@ -861,6 +890,113 @@ class OculaDB {
     };
   }
 
+  // ════════════════════════════════════════════════════════════════════
+  // ASSET LINKS — connect RAG sources to openable phone assets
+  // ════════════════════════════════════════════════════════════════════
+
+  /// Link a RAG source to a phone asset.
+  /// [assetType]: 'file', 'photo', 'email', 'contact', 'calendar', 'video'
+  /// [assetRef]:  the path, URI, or identifier to open the asset
+  /// [label]:     display name (e.g. filename, contact name)
+  Future<void> linkAsset({
+    required String sourceId,
+    required String assetType,
+    required String assetRef,
+    String? label,
+  }) async {
+    final d = await db;
+    // Deduplicate
+    final existing = await d.query('asset_links',
+        where: 'source_id = ? AND asset_ref = ?',
+        whereArgs: [sourceId, assetRef],
+        limit: 1);
+    if (existing.isNotEmpty) return;
+
+    await d.insert('asset_links', {
+      'source_id': sourceId,
+      'asset_type': assetType,
+      'asset_ref': assetRef,
+      'label': label,
+      'created_at': DateTime.now().toIso8601String(),
+    });
+  }
+
+  /// Find all linked assets for a set of RAG source IDs.
+  /// Returns them grouped: each source_id maps to a list of linked assets.
+  Future<List<LinkedAsset>> findLinkedAssets(List<String> sourceIds) async {
+    if (sourceIds.isEmpty) return [];
+    final d = await db;
+    final placeholders = List.filled(sourceIds.length, '?').join(',');
+    final rows = await d.rawQuery(
+      'SELECT * FROM asset_links WHERE source_id IN ($placeholders) '
+      'ORDER BY created_at DESC',
+      sourceIds,
+    );
+    return rows.map((r) => LinkedAsset(
+      sourceId: r['source_id'] as String,
+      assetType: r['asset_type'] as String,
+      assetRef: r['asset_ref'] as String,
+      label: r['label'] as String?,
+    )).toList();
+  }
+
+  /// Extract asset links from indexed content text.
+  /// Detects phone numbers, emails, file paths, URLs, etc.
+  List<_DetectedAsset> detectAssetsInText(String text, String source, String sourceId) {
+    final assets = <_DetectedAsset>[];
+
+    // Phone numbers (international + US formats)
+    for (final m in RegExp(r'(?:\+\d{1,3}[\s-]?)?(?:\(?\d{2,4}\)?[\s.-]?){1,3}\d{3,4}'
+        ).allMatches(text)) {
+      final num = m.group(0)!.replaceAll(RegExp(r'[^\d+]'), '');
+      if (num.length >= 7 && num.length <= 15) {
+        assets.add(_DetectedAsset('contact', 'tel:$num', num));
+      }
+    }
+
+    // Email addresses
+    for (final m in RegExp(r'[\w.+-]+@[\w-]+\.[\w.]+').allMatches(text)) {
+      final email = m.group(0)!;
+      assets.add(_DetectedAsset('email', 'mailto:$email', email));
+    }
+
+    // File paths (absolute or relative with extension)
+    for (final m in RegExp(r'(?:/[\w.-]+)+\.\w{1,6}').allMatches(text)) {
+      final path = m.group(0)!;
+      assets.add(_DetectedAsset('file', path, path.split('/').last));
+    }
+
+    // URLs
+    for (final m in RegExp(r'https?://[^\s<>"]+').allMatches(text)) {
+      final url = m.group(0)!;
+      assets.add(_DetectedAsset('link', url, Uri.tryParse(url)?.host ?? url));
+    }
+
+    // Photo references (from photo indexing pattern)
+    if (source == 'photo') {
+      final pathMatch = RegExp(r'Location:\s*(.+?)$', multiLine: true).firstMatch(text);
+      if (pathMatch != null) {
+        final path = pathMatch.group(1)!.trim();
+        assets.add(_DetectedAsset('photo', path, path.split('/').last));
+      }
+    }
+
+    return assets;
+  }
+
+  /// Store detected assets as links for a source.
+  Future<void> linkDetectedAssets(String text, String source, String sourceId) async {
+    final detected = detectAssetsInText(text, source, sourceId);
+    for (final a in detected) {
+      await linkAsset(
+        sourceId: sourceId,
+        assetType: a.type,
+        assetRef: a.ref,
+        label: a.label,
+      );
+    }
+  }
+
   /// Close the database.
   Future<void> close() async {
     await _db?.close();
@@ -902,4 +1038,41 @@ class KGTriple {
     this.source,
     this.confidence = 1.0,
   });
+}
+
+/// A linked phone asset attached to a RAG source.
+class LinkedAsset {
+  final String sourceId;
+  final String assetType; // 'file', 'photo', 'email', 'contact', 'calendar', 'video', 'link'
+  final String assetRef;  // path, URI, or identifier
+  final String? label;    // display name
+
+  LinkedAsset({
+    required this.sourceId,
+    required this.assetType,
+    required this.assetRef,
+    this.label,
+  });
+
+  /// Icon name for this asset type.
+  String get iconName {
+    switch (assetType) {
+      case 'photo': return 'image';
+      case 'video': return 'videocam';
+      case 'file': return 'description';
+      case 'email': return 'email';
+      case 'contact': return 'person';
+      case 'calendar': return 'event';
+      case 'link': return 'link';
+      default: return 'attachment';
+    }
+  }
+}
+
+/// Internal: a detected asset reference in text.
+class _DetectedAsset {
+  final String type;
+  final String ref;
+  final String label;
+  _DetectedAsset(this.type, this.ref, this.label);
 }

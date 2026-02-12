@@ -74,7 +74,7 @@ The `AIManager` is the heart of the AI system. Its key responsibilities are:
 
 *   **`SpeechService`:** Integrates the `speech_to_text` and `flutter_tts` plugins to provide a seamless voice interface.
 *   **`ExportService`:** Uses the `pdf` and `share_plus` plugins to generate PDF reports of conversations and share them with other apps.
-*   **`Indexer` & `RAGEngine`:** These services will power the on-device search. `Indexer` runs in the background to process and embed local data (contacts, files) into a vector store (`ObjectBox`), and `RAGEngine` provides a search interface for the `Orchestrator`.
+*   **`Indexer` & `RAGEngine`:** These services will power the on-device search. `Indexer` runs in the background to process and embed local data (contacts, files) into a vector store (`SQLite`), and `RAGEngine` provides a search interface for the `Orchestrator`.
 *   **`OculaModelManager`:** A utility service that knows where all the model files are located, tracks their download status, and provides paths to the `AIManager`.
 
 ## 3. Native Layer
