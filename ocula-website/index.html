@@ -1,0 +1,294 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Ocula - AI Vision Models Download</title>
+    <meta name="description" content="Download AI vision models for Ocula - On-device AI with vision, reasoning, and voice capabilities">
+    <link rel="stylesheet" href="styles.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <meta name="robots" content="index, follow">
+    <meta property="og:title" content="Ocula - AI Vision Models">
+    <meta property="og:description" content="Download pre-trained AI models for on-device vision analysis">
+    <meta property="og:type" content="website">
+</head>
+<body>
+    <!-- Navigation -->
+    <nav class="navbar">
+        <div class="container">
+            <div class="nav-brand">
+                <i class="fas fa-eye"></i>
+                <span>Ocula</span>
+            </div>
+            <div class="nav-links">
+                <a href="#models">Models</a>
+                <a href="#features">Features</a>
+                <a href="#pricing">Pricing</a>
+                <a href="#docs">Documentation</a>
+            </div>
+            <button class="mobile-menu-btn" id="mobileMenuBtn">
+                <i class="fas fa-bars"></i>
+            </button>
+        </div>
+    </nav>
+
+    <!-- Hero Section -->
+    <section class="hero">
+        <div class="container">
+            <div class="hero-content">
+                <h1>AI Vision Models<br><span class="gradient-text">For On-Device Intelligence</span></h1>
+                <p class="hero-subtitle">Download powerful GGUF models optimized for mobile devices. Run AI vision, reasoning, and voice capabilities entirely offline.</p>
+                <div class="hero-cta">
+                    <a href="#models" class="btn btn-primary">
+                        <i class="fas fa-download"></i> Browse Models
+                    </a>
+                    <a href="#features" class="btn btn-secondary">
+                        <i class="fas fa-info-circle"></i> Learn More
+                    </a>
+                </div>
+            </div>
+            <div class="hero-visual">
+                <div class="floating-card">
+                    <i class="fas fa-brain"></i>
+                    <div class="card-pulse"></div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Features Section -->
+    <section id="features" class="features">
+        <div class="container">
+            <div class="section-header">
+                <h2>Why Choose Ocula Models?</h2>
+                <p>Optimized for performance, privacy, and efficiency</p>
+            </div>
+            <div class="features-grid">
+                <div class="feature-card">
+                    <div class="feature-icon">
+                        <i class="fas fa-bolt"></i>
+                    </div>
+                    <h3>Lightning Fast</h3>
+                    <p>Quantized 4-bit models run efficiently on mobile NPU/GPU hardware</p>
+                </div>
+                <div class="feature-card">
+                    <div class="feature-icon">
+                        <i class="fas fa-shield-alt"></i>
+                    </div>
+                    <h3>Privacy First</h3>
+                    <p>Complete offline processing. Your data never leaves your device</p>
+                </div>
+                <div class="feature-card">
+                    <div class="feature-icon">
+                        <i class="fas fa-microchip"></i>
+                    </div>
+                    <h3>Optimized Hardware</h3>
+                    <p>Tuned for Apple Silicon, Android NPU, and desktop GPUs</p>
+                </div>
+                <div class="feature-card">
+                    <div class="feature-icon">
+                        <i class="fas fa-expand-arrows-alt"></i>
+                    </div>
+                    <h3>Multiple Tiers</h3>
+                    <p>From 256M instant recognition to 7B complex reasoning models</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Models Section -->
+    <section id="models" class="models-section">
+        <div class="container">
+            <div class="section-header">
+                <h2>Available Models</h2>
+                <p>Choose the right model for your use case</p>
+            </div>
+            
+            <!-- Filter Controls -->
+            <div class="filter-controls">
+                <button class="filter-btn active" data-filter="all">All Models</button>
+                <button class="filter-btn" data-filter="free">Free</button>
+                <button class="filter-btn" data-filter="plus">Plus</button>
+                <button class="filter-btn" data-filter="pro">Pro</button>
+            </div>
+
+            <!-- Models Grid -->
+            <div class="models-grid" id="modelsGrid">
+                <!-- Models will be dynamically loaded here -->
+            </div>
+
+            <!-- Loading State -->
+            <div class="loading-state" id="loadingState">
+                <div class="spinner"></div>
+                <p>Loading models...</p>
+            </div>
+
+            <!-- Error State -->
+            <div class="error-state" id="errorState" style="display: none;">
+                <i class="fas fa-exclamation-triangle"></i>
+                <h3>Failed to Load Models</h3>
+                <p>Unable to fetch models from the server. Please try again later.</p>
+                <button class="btn btn-primary" onclick="loadModels()">
+                    <i class="fas fa-redo"></i> Retry
+                </button>
+            </div>
+        </div>
+    </section>
+
+    <!-- Pricing Section -->
+    <section id="pricing" class="pricing">
+        <div class="container">
+            <div class="section-header">
+                <h2>Model Tiers</h2>
+                <p>Choose the right tier for your needs</p>
+            </div>
+            <div class="pricing-grid">
+                <div class="pricing-card free">
+                    <div class="pricing-header">
+                        <h3>Free</h3>
+                        <div class="price">$0</div>
+                        <span class="tier-label">Always Available</span>
+                    </div>
+                    <ul class="pricing-features">
+                        <li><i class="fas fa-check"></i> SmolVLM-256M Model</li>
+                        <li><i class="fas fa-check"></i> Instant Object ID</li>
+                        <li><i class="fas fa-check"></i> Basic Recognition</li>
+                        <li><i class="fas fa-check"></i> ~150MB Download</li>
+                    </ul>
+                    <a href="#models" class="btn btn-outline">Get Started</a>
+                </div>
+                <div class="pricing-card plus featured">
+                    <div class="pricing-header">
+                        <span class="popular-badge">Most Popular</span>
+                        <h3>Plus</h3>
+                        <div class="price">$2.99</div>
+                        <span class="tier-label">One-time Purchase</span>
+                    </div>
+                    <ul class="pricing-features">
+                        <li><i class="fas fa-check"></i> Everything in Free</li>
+                        <li><i class="fas fa-check"></i> Moondream 3 (0.5B)</li>
+                        <li><i class="fas fa-check"></i> Object Detail & Counting</li>
+                        <li><i class="fas fa-check"></i> Receipt Analysis</li>
+                        <li><i class="fas fa-check"></i> PDF Export</li>
+                        <li><i class="fas fa-check"></i> ~300MB Download</li>
+                    </ul>
+                    <a href="#models" class="btn btn-primary">Upgrade Now</a>
+                </div>
+                <div class="pricing-card pro">
+                    <div class="pricing-header">
+                        <h3>Pro</h3>
+                        <div class="price">$4.99<span>/mo</span></div>
+                        <span class="tier-label">Monthly Subscription</span>
+                    </div>
+                    <ul class="pricing-features">
+                        <li><i class="fas fa-check"></i> Everything in Plus</li>
+                        <li><i class="fas fa-check"></i> Qwen2-VL-2B & LLaVA-v1.6-7B</li>
+                        <li><i class="fas fa-check"></i> Document OCR</li>
+                        <li><i class="fas fa-check"></i> Complex Reasoning</li>
+                        <li><i class="fas fa-check"></i> Batch Processing</li>
+                        <li><i class="fas fa-check"></i> ~2-7GB Download</li>
+                    </ul>
+                    <a href="#models" class="btn btn-outline">Subscribe</a>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Documentation Section -->
+    <section id="docs" class="docs">
+        <div class="container">
+            <div class="section-header">
+                <h2>Documentation</h2>
+                <p>Get started with Ocula models</p>
+            </div>
+            <div class="docs-grid">
+                <div class="doc-card">
+                    <div class="doc-icon">
+                        <i class="fas fa-book"></i>
+                    </div>
+                    <h3>Quick Start Guide</h3>
+                    <p>Learn how to download and integrate models into your Ocula app</p>
+                    <a href="#" class="doc-link">Read Guide <i class="fas fa-arrow-right"></i></a>
+                </div>
+                <div class="doc-card">
+                    <div class="doc-icon">
+                        <i class="fas fa-code"></i>
+                    </div>
+                    <h3>API Reference</h3>
+                    <p>Complete API documentation for model integration</p>
+                    <a href="#" class="doc-link">View API <i class="fas fa-arrow-right"></i></a>
+                </div>
+                <div class="doc-card">
+                    <div class="doc-icon">
+                        <i class="fas fa-rocket"></i>
+                    </div>
+                    <h3>Performance Tips</h3>
+                    <p>Optimize model performance for your hardware</p>
+                    <a href="#" class="doc-link">Learn More <i class="fas fa-arrow-right"></i></a>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Footer -->
+    <footer class="footer">
+        <div class="container">
+            <div class="footer-content">
+                <div class="footer-brand">
+                    <div class="nav-brand">
+                        <i class="fas fa-eye"></i>
+                        <span>Ocula</span>
+                    </div>
+                    <p>On-device AI with vision, reasoning, and voice capabilities.</p>
+                </div>
+                <div class="footer-links">
+                    <h4>Quick Links</h4>
+                    <a href="#models">Models</a>
+                    <a href="#features">Features</a>
+                    <a href="#pricing">Pricing</a>
+                    <a href="#docs">Documentation</a>
+                </div>
+                <div class="footer-links">
+                    <h4>Support</h4>
+                    <a href="#">Help Center</a>
+                    <a href="#">Contact Us</a>
+                    <a href="#">Status</a>
+                    <a href="#">GitHub</a>
+                </div>
+                <div class="footer-links">
+                    <h4>Legal</h4>
+                    <a href="#">Privacy Policy</a>
+                    <a href="#">Terms of Service</a>
+                    <a href="#">License</a>
+                </div>
+            </div>
+            <div class="footer-bottom">
+                <p>&copy; 2024 Ocula. All rights reserved.</p>
+            </div>
+        </div>
+    </footer>
+
+    <!-- Download Modal -->
+    <div class="modal" id="downloadModal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3 id="modalTitle">Download Model</h3>
+                <button class="close-btn" onclick="closeModal()">
+                    <i class="fas fa-times"></i>
+                </button>
+            </div>
+            <div class="modal-body" id="modalBody">
+                <!-- Dynamic content -->
+            </div>
+        </div>
+    </div>
+
+    <!-- Toast Notification -->
+    <div class="toast" id="toast">
+        <i class="fas fa-check-circle"></i>
+        <span id="toastMessage">Download started!</span>
+    </div>
+
+    <script src="script.js"></script>
+</body>
+</html>

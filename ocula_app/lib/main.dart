@@ -9,6 +9,7 @@ import 'services/export_service.dart';
 import 'services/indexer.dart';
 import 'services/model_manager.dart';
 import 'services/orchestrator.dart';
+import 'services/ocula_db.dart';
 import 'screens/splash_screen.dart';
 import 'screens/onboarding_screen.dart';
 import 'screens/settings_screen.dart';
@@ -104,7 +105,7 @@ class _AssistantScreenState extends State<AssistantScreen>
     // Free-tier model already loaded during splash — no need to call switchEngine here.
 
     _orchestrator.onAskInternet = _showInternetDialog;
-    Indexer().runFullIndex();
+    Indexer().startBackgroundIndexing();
     _textController.addListener(() => setState(() {}));
 
     _orbSizeController = AnimationController(
@@ -416,6 +417,7 @@ class _AssistantScreenState extends State<AssistantScreen>
 
   @override
   void dispose() {
+    Indexer().stopBackgroundIndexing();
     _ai.dispose();
     _textController.dispose();
     _scrollController.dispose();
@@ -747,8 +749,14 @@ class _Message {
   final String text;
   final bool isUser;
   final File? image;
+  final List<LinkedAsset> linkedAssets;
 
-  _Message({required this.text, required this.isUser, this.image});
+  _Message({
+    required this.text,
+    required this.isUser,
+    this.image,
+    this.linkedAssets = const [],
+  });
 }
 
 /// Chat bubble with long-press copy and selectable text.
@@ -822,8 +830,78 @@ class _MessageBubble extends StatelessWidget {
                   height: 1.45,
                 ),
               ),
+              // Linked asset chips
+              if (!isUser && message.linkedAssets.isNotEmpty) ...[
+                const SizedBox(height: 8),
+                Wrap(
+                  spacing: 6,
+                  runSpacing: 4,
+                  children: message.linkedAssets.take(5).map((asset) {
+                    return _AssetChip(asset: asset);
+                  }).toList(),
+                ),
+              ],
             ],
           ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Tappable chip for a linked asset (file, photo, email, contact, calendar, URL).
+class _AssetChip extends StatelessWidget {
+  final LinkedAsset asset;
+
+  const _AssetChip({required this.asset});
+
+  IconData get _icon {
+    switch (asset.assetType) {
+      case 'file':    return Icons.insert_drive_file_outlined;
+      case 'photo':   return Icons.photo_outlined;
+      case 'email':   return Icons.email_outlined;
+      case 'contact': return Icons.person_outline;
+      case 'calendar':return Icons.calendar_today_outlined;
+      case 'phone':   return Icons.phone_outlined;
+      case 'link':    return Icons.link;
+      default:        return Icons.attach_file;
+    }
+  }
+
+  void _onTap() {
+    debugPrint('[AssetChip] Tapped: ${asset.assetType} → ${asset.assetRef}');
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    return GestureDetector(
+      onTap: _onTap,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+        decoration: BoxDecoration(
+          color: colors.primaryContainer.withAlpha(80),
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: colors.primary.withAlpha(40)),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(_icon, size: 14, color: colors.primary),
+            const SizedBox(width: 4),
+            Flexible(
+              child: Text(
+                asset.label ?? asset.assetRef.split('/').last,
+                style: TextStyle(
+                  color: colors.primary,
+                  fontSize: 12,
+                  fontWeight: FontWeight.w500,
+                ),
+                overflow: TextOverflow.ellipsis,
+                maxLines: 1,
+              ),
+            ),
+          ],
         ),
       ),
     );

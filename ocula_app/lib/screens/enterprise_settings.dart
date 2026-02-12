@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../services/ai_manager.dart';
+import '../services/model_manager.dart';
 
 /// Enterprise settings for configuring custom AI models on-device.
 /// Allows enterprise clients to deploy their own models directly.
@@ -19,20 +20,31 @@ class _EnterpriseSettingsState extends State<EnterpriseSettings> {
   bool _useLocalModel = true;
   bool _loading = true;
 
+  late TextEditingController _serverUrlController;
+
   @override
   void initState() {
     super.initState();
+    _serverUrlController = TextEditingController();
     _loadEnterpriseSettings();
+  }
+
+  @override
+  void dispose() {
+    _serverUrlController.dispose();
+    super.dispose();
   }
 
   Future<void> _loadEnterpriseSettings() async {
     final prefs = await SharedPreferences.getInstance();
+    final serverUrl = await OculaModelManager().getModelServerUrl();
     setState(() {
       _isEnterpriseEnabled = prefs.getBool('enterprise_enabled') ?? false;
       _modelPath = prefs.getString('enterprise_model_path') ?? '';
       _modelUrl = prefs.getString('enterprise_model_url') ?? '';
       _apiKey = prefs.getString('enterprise_api_key') ?? '';
       _useLocalModel = prefs.getBool('enterprise_use_local') ?? true;
+      _serverUrlController.text = serverUrl;
       _loading = false;
     });
   }
@@ -44,6 +56,12 @@ class _EnterpriseSettingsState extends State<EnterpriseSettings> {
     await prefs.setString('enterprise_model_url', _modelUrl);
     await prefs.setString('enterprise_api_key', _apiKey);
     await prefs.setBool('enterprise_use_local', _useLocalModel);
+
+    // Save model server URL
+    final url = _serverUrlController.text.trim();
+    await OculaModelManager().setModelServerUrl(
+      url.isEmpty ? OculaModelManager.defaultModelServerUrl : url,
+    );
     
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -142,6 +160,38 @@ class _EnterpriseSettingsState extends State<EnterpriseSettings> {
             const SizedBox(height: 10),
             Text(
               'Configure custom AI models for enterprise deployment',
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                color: Colors.grey[600],
+              ),
+            ),
+            const SizedBox(height: 20),
+
+            // ── Model Server URL (always visible) ──
+            Text(
+              'Model Server',
+              style: Theme.of(context).textTheme.titleSmall,
+            ),
+            const SizedBox(height: 8),
+            TextField(
+              controller: _serverUrlController,
+              decoration: InputDecoration(
+                hintText: OculaModelManager.defaultModelServerUrl,
+                border: const OutlineInputBorder(),
+                prefixIcon: const Icon(Icons.dns_outlined),
+                labelText: 'Server URL',
+                suffixIcon: IconButton(
+                  icon: const Icon(Icons.restore, size: 20),
+                  tooltip: 'Reset to default',
+                  onPressed: () {
+                    _serverUrlController.text = OculaModelManager.defaultModelServerUrl;
+                  },
+                ),
+              ),
+              keyboardType: TextInputType.url,
+            ),
+            const SizedBox(height: 4),
+            Text(
+              'Where AI modes are downloaded from',
               style: Theme.of(context).textTheme.bodySmall?.copyWith(
                 color: Colors.grey[600],
               ),
