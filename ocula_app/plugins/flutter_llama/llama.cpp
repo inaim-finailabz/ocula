@@ -1,1 +1,0 @@
-/Volumes/ExternalDisk/projects/Ocula/llama.cpp
