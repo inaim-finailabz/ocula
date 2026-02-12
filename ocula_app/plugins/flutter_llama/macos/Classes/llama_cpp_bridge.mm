@@ -467,7 +467,7 @@ int32_t llama_get_embedding(
     llama_tokenize(g_vocab, text_str.c_str(), text_str.size(), tokens.data(), tokens.size(), true, true);
     if (n_use < n_tokens) tokens.resize(n_use);
     
-    llama_memory* mem = llama_get_memory(g_embed_ctx);
+    llama_memory_t mem = llama_get_memory(g_embed_ctx);
     if (mem) {
         llama_memory_clear(mem, true);
     }

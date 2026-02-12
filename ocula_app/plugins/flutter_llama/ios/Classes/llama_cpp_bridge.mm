@@ -496,7 +496,7 @@ int32_t llama_get_embedding(
     }
     
     // Clear KV cache
-    llama_memory* mem = llama_get_memory(g_embed_ctx);
+    llama_memory_t mem = llama_get_memory(g_embed_ctx);
     if (mem) {
         llama_memory_clear(mem, true);
     }
