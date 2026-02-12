@@ -38,6 +38,7 @@ class AIManager {
 
   AITier? _activeTier;
   bool _isVisionMode = false;
+  bool _isSwitching = false;
   final AppLanguage _appLang = AppLanguage();
   int? _deviceRamMB;
 
@@ -259,110 +260,121 @@ class AIManager {
   Future<void> switchEngine(AITier tier) async {
     if (_activeTier == tier) return;
 
-    if (tier == AITier.enterprise) {
-      await _switchToEnterpriseModel();
+    // Prevent re-entrant calls — if a switch is already in progress
+    // (e.g. from a concurrent applyPendingUpgrade or autoRoute), bail out.
+    if (_isSwitching) {
+      debugPrint('[AIManager] switchEngine: already switching — ignoring ${tier.name}');
       return;
     }
 
-    // ── SAFETY: Verify the target model is downloaded BEFORE touching anything ──
-    final mainPath = await _models.mainModelPath(tier);
-    if (mainPath == null) {
-      throw ModelNotReadyException(tier);
-    }
-
-    // Verify the file actually exists and is > 1MB (not a corrupt stub)
-    final targetFile = File(mainPath);
-    if (!targetFile.existsSync() || targetFile.lengthSync() < 1024 * 1024) {
-      throw ModelNotReadyException(tier);
-    }
-
-    debugPrint('[AIManager] switchEngine: ${_activeTier?.name ?? "none"} → ${tier.name}');
-
-    // ── Hardware gate: check RAM before committing to the switch ──
-    // If the device doesn't have enough RAM, refuse the switch entirely.
-    // This prevents unloading a working model only to fail loading the new one.
-    if (!await canDeviceRunTier(tier)) {
-      final ram = await deviceRamMB;
-      final required = _tierRamRequirementMB[tier] ?? 8000;
-      debugPrint('[AIManager] ⚠ ${tier.name} rejected — device RAM '
-          'too low ($ram MB < $required MB)');
-      throw ModelNotReadyException(tier);
-    }
-
-    // ── Step 1: Explicitly unload the current model ──
-    // We MUST separate unload from load so Metal GPU has time to fully
-    // reclaim its buffer pool between the two operations. Doing both
-    // inside a single native call (llama_init_model) causes the new KV
-    // cache allocation to fail because Metal hasn't freed the old buffers.
-    if (_activeTier != null) {
-      try {
-        if (_isVisionMode) {
-          await _visionEngine.unloadMultimodalModel();
-        } else {
-          await _textEngine.unloadModel();
-        }
-      } catch (e) {
-        debugPrint('[AIManager] unload failed (non-fatal): $e');
-      }
-      _activeTier = null;
-      _isVisionMode = false;
-
-      // ── Step 2: Wait for Metal GPU to reclaim its buffer pool ──
-      // The native bridge uses @autoreleasepool + null-before-free, but
-      // Metal command queues drain asynchronously. 1.5s is enough for
-      // the A17 Pro to finish in-flight GPU work and reclaim all buffers.
-      if (Platform.isIOS || Platform.isMacOS) {
-        debugPrint('[AIManager] Waiting for Metal GPU cleanup...');
-        await Future.delayed(const Duration(milliseconds: 1500));
-      }
-    }
-
-    // ── Step 3: Load the new model ──
-    // Tier-appropriate settings:
-    //   free/plus: full GPU (-1) + 2048 context — small models, fit easily
-    //   pro:       CPU only (0) + 2048 context — avoids Metal OOM on 2B model
-    // Using CPU for pro is safe: A17 Pro handles Qwen3-VL-2B Q4_K_M at
-    // ~8-12 tok/s on CPU, which is perfectly usable.
-    final int gpuLayers;
-    final int contextSize;
-    if (tier == AITier.pro) {
-      gpuLayers = 0;       // CPU-only — no Metal contention
-      contextSize = 2048;
-    } else {
-      gpuLayers = -1;      // all layers on GPU
-      contextSize = 2048;
-    }
-
+    _isSwitching = true;
     try {
-      await _textEngine.loadModel(LlamaConfig(
-        modelPath: mainPath,
-        nGpuLayers: gpuLayers,
-        useGpu: gpuLayers != 0,
-        contextSize: contextSize,
-      ));
-      _isVisionMode = false;
-      _activeTier = tier;
-      debugPrint('[AIManager] switchEngine: ${tier.name} loaded ✓');
-    } catch (e) {
-      debugPrint('[AIManager] loadModel(${tier.name}) failed: $e');
-      // Recovery: try to reload free model so we're never stuck with nothing
-      if (tier != AITier.free) {
-        final freePath = await _models.mainModelPath(AITier.free);
-        if (freePath != null) {
-          try {
-            await _textEngine.loadModel(LlamaConfig(
-              modelPath: freePath,
-              nGpuLayers: -1,
-              useGpu: true,
-            ));
-            _activeTier = AITier.free;
-            _isVisionMode = false;
-            debugPrint('[AIManager] Recovered to free tier');
-            return;
-          } catch (_) {}
+      if (tier == AITier.enterprise) {
+        await _switchToEnterpriseModel();
+        return;
+      }
+
+      // ── SAFETY: Verify the target model is downloaded BEFORE touching anything ──
+      final mainPath = await _models.mainModelPath(tier);
+      if (mainPath == null) {
+        throw ModelNotReadyException(tier);
+      }
+
+      // Verify the file actually exists and is > 1MB (not a corrupt stub)
+      final targetFile = File(mainPath);
+      if (!targetFile.existsSync() || targetFile.lengthSync() < 1024 * 1024) {
+        throw ModelNotReadyException(tier);
+      }
+
+      debugPrint('[AIManager] switchEngine: ${_activeTier?.name ?? "none"} → ${tier.name}');
+      // ── Hardware gate: check RAM before committing to the switch ──
+      // If the device doesn't have enough RAM, refuse the switch entirely.
+      // This prevents unloading a working model only to fail loading the new one.
+      if (!await canDeviceRunTier(tier)) {
+        final ram = await deviceRamMB;
+        final required = _tierRamRequirementMB[tier] ?? 8000;
+        debugPrint('[AIManager] ⚠ ${tier.name} rejected — device RAM '
+            'too low ($ram MB < $required MB)');
+        throw ModelNotReadyException(tier);
+      }
+
+      // ── Step 1: Explicitly unload the current model ──
+      // We MUST separate unload from load so Metal GPU has time to fully
+      // reclaim its buffer pool between the two operations. Doing both
+      // inside a single native call (llama_init_model) causes the new KV
+      // cache allocation to fail because Metal hasn't freed the old buffers.
+      if (_activeTier != null) {
+        try {
+          if (_isVisionMode) {
+            await _visionEngine.unloadMultimodalModel();
+          } else {
+            await _textEngine.unloadModel();
+          }
+        } catch (e) {
+          debugPrint('[AIManager] unload failed (non-fatal): $e');
+        }
+        _activeTier = null;
+        _isVisionMode = false;
+
+        // ── Step 2: Wait for Metal GPU to reclaim its buffer pool ──
+        // The native bridge uses @autoreleasepool + null-before-free, but
+        // Metal command queues drain asynchronously. 1.5s is enough for
+        // the A17 Pro to finish in-flight GPU work and reclaim all buffers.
+        if (Platform.isIOS || Platform.isMacOS) {
+          debugPrint('[AIManager] Waiting for Metal GPU cleanup...');
+          await Future.delayed(const Duration(milliseconds: 1500));
         }
       }
-      rethrow;
+
+      // ── Step 3: Load the new model ──
+      // Tier-appropriate settings:
+      //   free/plus: full GPU (-1) + 2048 context — small models, fit easily
+      //   pro:       CPU only (0) + 2048 context — avoids Metal OOM on 2B model
+      // Using CPU for pro is safe: A17 Pro handles Qwen3-VL-2B Q4_K_M at
+      // ~8-12 tok/s on CPU, which is perfectly usable.
+      final int gpuLayers;
+      final int contextSize;
+      if (tier == AITier.pro) {
+        gpuLayers = 0;       // CPU-only — no Metal contention
+        contextSize = 2048;
+      } else {
+        gpuLayers = -1;      // all layers on GPU
+        contextSize = 2048;
+      }
+
+      try {
+        await _textEngine.loadModel(LlamaConfig(
+          modelPath: mainPath,
+          nGpuLayers: gpuLayers,
+          useGpu: gpuLayers != 0,
+          contextSize: contextSize,
+        ));
+        _isVisionMode = false;
+        _activeTier = tier;
+        debugPrint('[AIManager] switchEngine: ${tier.name} loaded ✓');
+      } catch (e) {
+        debugPrint('[AIManager] loadModel(${tier.name}) failed: $e');
+        // Recovery: try to reload free model so we're never stuck with nothing
+        if (tier != AITier.free) {
+          final freePath = await _models.mainModelPath(AITier.free);
+          if (freePath != null) {
+            try {
+              await _textEngine.loadModel(LlamaConfig(
+                modelPath: freePath,
+                nGpuLayers: -1,
+                useGpu: true,
+              ));
+              _activeTier = AITier.free;
+              _isVisionMode = false;
+              debugPrint('[AIManager] Recovered to free tier');
+              return;
+            } catch (_) {}
+          }
+        }
+        rethrow;
+      }
+    } finally {
+      _isSwitching = false;
     }
   }
 
@@ -432,10 +444,13 @@ class AIManager {
         '<|im_start|>user\n$userMsg<|im_end|>\n'
         '<|im_start|>assistant\n';
 
-    // Generate — if image is attached, try to hot-swap to vision engine
+    // Generate — if image is attached, try to hot-swap to vision engine.
+    // Hold _isSwitching to prevent switchEngine / applyPendingUpgrade from
+    // racing with this unload→load cycle.
     if (imagePath != null) {
       final projPath = await _models.visionProjectorPath(_activeTier ?? AITier.free);
       if (projPath != null) {
+        _isSwitching = true;
         try {
           final mainPath = await _models.mainModelPath(_activeTier ?? AITier.free) ?? '';
           // Unload text engine, load vision engine for this query
@@ -470,6 +485,8 @@ class AIManager {
               useGpu: true,
             ));
           }
+        } finally {
+          _isSwitching = false;
         }
       }
     }

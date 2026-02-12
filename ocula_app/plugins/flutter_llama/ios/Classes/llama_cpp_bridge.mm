@@ -10,6 +10,7 @@
 #include <vector>
 #include <mutex>
 #include <unistd.h>
+#include <mach/mach.h>
 
 // Include llama.cpp headers
 #include "../../llama.cpp/include/llama.h"
@@ -25,6 +26,28 @@ static std::vector<std::string> g_stream_tokens;
 static size_t g_stream_pos = 0;
 static bool g_backends_loaded = false;
 static llama_context* g_embed_ctx = nullptr;  // Embedding context (for RAG)
+
+/// Check whether a pointer looks like it lives in a valid heap region.
+/// Catches obviously-bogus values like 0x1 that pass a simple != nullptr check.
+static bool is_plausible_heap_ptr(const void* ptr) {
+    if (!ptr) return false;
+    uintptr_t addr = (uintptr_t)ptr;
+    // Heap pointers on arm64 Darwin are page-aligned or at least > 4 KB.
+    // Anything below the first page is a corrupt/sentinel value.
+    if (addr < 0x1000) return false;
+    // Probe with vm_region to confirm the address is mapped.
+    vm_address_t region_addr = (vm_address_t)addr;
+    vm_size_t region_size = 0;
+    vm_region_basic_info_data_64_t info;
+    mach_msg_type_number_t count = VM_REGION_BASIC_INFO_COUNT_64;
+    mach_port_t object_name = MACH_PORT_NULL;
+    kern_return_t kr = vm_region_64(mach_task_self(), &region_addr, &region_size,
+                                     VM_REGION_BASIC_INFO_64,
+                                     (vm_region_info_t)&info, &count, &object_name);
+    if (kr != KERN_SUCCESS) return false;
+    // The pointer must fall within the returned region.
+    return addr >= region_addr && addr < (region_addr + region_size);
+}
 
 extern "C" {
 
@@ -47,7 +70,7 @@ bool llama_init_model(
     // Free existing model if any — null pointers BEFORE freeing to prevent
     // double-free / use-after-free if another thread checks the pointer.
     // Also free embed_ctx first since it shares g_model.
-    // Wrap in @autoreleasepool to force immediate Metal/ObjC object deallocation.
+    // Split into two pools so Metal objects drain between context and model frees.
     @autoreleasepool {
         if (g_embed_ctx) {
             llama_context* ectx = g_embed_ctx;
@@ -64,13 +87,23 @@ bool llama_init_model(
             g_context = nullptr;
             llama_free(ctx);
         }
-        if (g_model) {
+    } // Pool drains — Metal context objects deallocated
+
+    if (g_model) {
+        usleep(50 * 1000); // 50 ms — let Metal GPU drain
+        @autoreleasepool {
             llama_model* mdl = g_model;
             g_model = nullptr;
             g_vocab = nullptr;
-            llama_model_free(mdl);
+            if (is_plausible_heap_ptr(mdl)) {
+                llama_model_free(mdl);
+            } else {
+                NSLog(@"[llama_cpp_bridge] ⚠ CORRUPT model pointer %p in init — skipping free", (void*)mdl);
+            }
         }
-    } // @autoreleasepool — Metal buffers released here
+    } else {
+        g_vocab = nullptr;
+    }
     
     // Load dynamic backends (only once per process)
     if (!g_backends_loaded) {
@@ -387,13 +420,16 @@ void llama_get_model_info(
 // Free model
 void llama_cpp_bridge_free_model() {
     std::lock_guard<std::mutex> lock(g_mutex);
-    
+
     NSLog(@"[llama_cpp_bridge] Freeing model — g_model=%p g_context=%p g_sampler=%p",
           (void*)g_model, (void*)g_context, (void*)g_sampler);
-    
+
     // Null pointers BEFORE freeing to prevent double-free / use-after-free.
     // Free embedding context first since it shares g_model.
-    // Wrap in @autoreleasepool to force immediate Metal/ObjC object deallocation.
+
+    // ── Pool 1: free contexts + sampler ──
+    // The @autoreleasepool drain at the closing brace forces Metal/ObjC
+    // objects (command buffers, encoders) to be deallocated immediately.
     @autoreleasepool {
         if (g_embed_ctx) {
             NSLog(@"[llama_cpp_bridge] Freeing embedding context...");
@@ -402,7 +438,7 @@ void llama_cpp_bridge_free_model() {
             llama_free(ectx);
             NSLog(@"[llama_cpp_bridge] Embedding context freed OK");
         }
-        
+
         if (g_sampler) {
             NSLog(@"[llama_cpp_bridge] Freeing sampler...");
             llama_sampler* s = g_sampler;
@@ -410,7 +446,7 @@ void llama_cpp_bridge_free_model() {
             llama_sampler_free(s);
             NSLog(@"[llama_cpp_bridge] Sampler freed OK");
         }
-        
+
         if (g_context) {
             NSLog(@"[llama_cpp_bridge] Freeing context...");
             llama_context* ctx = g_context;
@@ -418,18 +454,32 @@ void llama_cpp_bridge_free_model() {
             llama_free(ctx);
             NSLog(@"[llama_cpp_bridge] Context freed OK");
         }
-        
+
         g_vocab = nullptr;
-        
+    } // Pool 1 drains here — Metal context objects are deallocated
+
+    // ── Metal sync barrier ──
+    // Metal command buffers freed above may still have in-flight GPU work
+    // referencing model weight buffers. Give the GPU time to finish before
+    // we tear down the model. 50ms covers typical A-series GPU drain.
+    usleep(50 * 1000); // 50 ms
+
+    // ── Pool 2: free model ──
+    @autoreleasepool {
         if (g_model) {
-            NSLog(@"[llama_cpp_bridge] Freeing model pointer %p ...", (void*)g_model);
             llama_model* mdl = g_model;
             g_model = nullptr;
-            llama_model_free(mdl);
-            NSLog(@"[llama_cpp_bridge] Model freed OK");
+
+            if (!is_plausible_heap_ptr(mdl)) {
+                NSLog(@"[llama_cpp_bridge] ⚠ CORRUPT model pointer %p — skipping free to avoid crash", (void*)mdl);
+            } else {
+                NSLog(@"[llama_cpp_bridge] Freeing model pointer %p ...", (void*)mdl);
+                llama_model_free(mdl);
+                NSLog(@"[llama_cpp_bridge] Model freed OK");
+            }
         }
-    } // @autoreleasepool — Metal buffers released here
-    
+    } // Pool 2 drains here — Metal model buffers released
+
     NSLog(@"[llama_cpp_bridge] Model freed successfully");
 }
 
@@ -542,6 +592,7 @@ int32_t llama_get_embedding(
 
 /// Get the embedding dimension of the currently loaded model.
 int32_t llama_get_embedding_dim() {
+    std::lock_guard<std::mutex> lock(g_mutex);
     if (!g_model) return 0;
     return llama_model_n_embd(g_model);
 }
