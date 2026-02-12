@@ -440,6 +440,8 @@ int32_t llama_get_embedding(
         return 0;
     }
     
+    bool has_encoder = llama_model_has_encoder(g_model);
+    
     if (!g_embed_ctx) {
         llama_context_params ctx_params = llama_context_default_params();
         ctx_params.n_ctx       = 512;
@@ -447,15 +449,18 @@ int32_t llama_get_embedding(
         ctx_params.n_threads   = 4;
         ctx_params.n_threads_batch = 4;
         ctx_params.embeddings  = true;
-        ctx_params.pooling_type = LLAMA_POOLING_TYPE_MEAN;
+        // Decoder-only: NONE pooling (keeps KV cache). Encoder: MEAN pooling.
+        ctx_params.pooling_type = has_encoder
+            ? LLAMA_POOLING_TYPE_MEAN
+            : LLAMA_POOLING_TYPE_NONE;
         
         g_embed_ctx = llama_init_from_model(g_model, ctx_params);
         if (!g_embed_ctx) {
             NSLog(@"[llama_cpp_bridge] getEmbedding: failed to create embedding context");
             return 0;
         }
-        NSLog(@"[llama_cpp_bridge] Embedding context created (n_embd=%d)",
-              llama_model_n_embd(g_model));
+        NSLog(@"[llama_cpp_bridge] Embedding context created (n_embd=%d, encoder=%d)",
+              llama_model_n_embd(g_model), has_encoder);
     }
     
     std::string text_str(text);
@@ -472,12 +477,15 @@ int32_t llama_get_embedding(
         llama_memory_clear(mem, true);
     }
     
-    // Decode (our models are decoder-only; llama_encode is for encoder-only models)
     llama_batch batch = llama_batch_get_one(tokens.data(), (int32_t)tokens.size());
-    if (llama_decode(g_embed_ctx, batch) != 0) return 0;
+    int rc = has_encoder ? llama_encode(g_embed_ctx, batch) : llama_decode(g_embed_ctx, batch);
+    if (rc != 0) return 0;
     
     int n_embd = llama_model_n_embd(g_model);
-    const float* embd = llama_get_embeddings_seq(g_embed_ctx, 0);
+    const float* embd = nullptr;
+    if (has_encoder) {
+        embd = llama_get_embeddings_seq(g_embed_ctx, 0);
+    }
     if (!embd) embd = llama_get_embeddings_ith(g_embed_ctx, -1);
     if (!embd) return 0;
     

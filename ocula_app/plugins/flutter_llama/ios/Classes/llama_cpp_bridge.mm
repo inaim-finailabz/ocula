@@ -460,6 +460,9 @@ int32_t llama_get_embedding(
         return 0;
     }
     
+    // Detect model type once
+    bool has_encoder = llama_model_has_encoder(g_model);
+    
     // Lazily create embedding context
     if (!g_embed_ctx) {
         llama_context_params ctx_params = llama_context_default_params();
@@ -468,15 +471,21 @@ int32_t llama_get_embedding(
         ctx_params.n_threads   = 4;
         ctx_params.n_threads_batch = 4;
         ctx_params.embeddings  = true;
-        ctx_params.pooling_type = LLAMA_POOLING_TYPE_MEAN;
+        
+        // Decoder-only models (SmolVLM, Moondream, Qwen): MUST use POOLING_TYPE_NONE
+        // so that KV cache is allocated (MEAN pooling skips KV cache → crash).
+        // Encoder models (BERT, etc.): can use MEAN pooling.
+        ctx_params.pooling_type = has_encoder
+            ? LLAMA_POOLING_TYPE_MEAN
+            : LLAMA_POOLING_TYPE_NONE;
         
         g_embed_ctx = llama_init_from_model(g_model, ctx_params);
         if (!g_embed_ctx) {
             NSLog(@"[llama_cpp_bridge] getEmbedding: failed to create embedding context");
             return 0;
         }
-        NSLog(@"[llama_cpp_bridge] Embedding context created (n_embd=%d)",
-              llama_model_n_embd(g_model));
+        NSLog(@"[llama_cpp_bridge] Embedding context created (n_embd=%d, encoder=%d)",
+              llama_model_n_embd(g_model), has_encoder);
     }
     
     // Tokenize
@@ -495,25 +504,37 @@ int32_t llama_get_embedding(
         tokens.resize(n_use);
     }
     
-    // Clear KV cache
+    // Clear KV cache (only exists for decoder-only contexts with POOLING_TYPE_NONE)
     llama_memory_t mem = llama_get_memory(g_embed_ctx);
     if (mem) {
         llama_memory_clear(mem, true);
     }
     
-    // Decode (our models are decoder-only; llama_encode is for encoder-only models
-    // like BERT and would crash on decoder architectures)
+    // Process batch:
+    // - Encoder models: llama_encode (no KV cache needed)
+    // - Decoder models: llama_decode (uses KV cache)
     llama_batch batch = llama_batch_get_one(tokens.data(), (int32_t)tokens.size());
-    if (llama_decode(g_embed_ctx, batch) != 0) {
-        NSLog(@"[llama_cpp_bridge] getEmbedding: decode failed");
+    int rc;
+    if (has_encoder) {
+        rc = llama_encode(g_embed_ctx, batch);
+    } else {
+        rc = llama_decode(g_embed_ctx, batch);
+    }
+    if (rc != 0) {
+        NSLog(@"[llama_cpp_bridge] getEmbedding: %s failed (rc=%d)",
+              has_encoder ? "encode" : "decode", rc);
         return 0;
     }
     
     // Get embedding dimension
     int n_embd = llama_model_n_embd(g_model);
     
-    // Try sequence-level pooled embedding first, then fall back to last token
-    const float* embd = llama_get_embeddings_seq(g_embed_ctx, 0);
+    // Encoder models with MEAN pooling → sequence-level embedding.
+    // Decoder models with NONE pooling → last-token hidden state.
+    const float* embd = nullptr;
+    if (has_encoder) {
+        embd = llama_get_embeddings_seq(g_embed_ctx, 0);
+    }
     if (!embd) {
         embd = llama_get_embeddings_ith(g_embed_ctx, -1);
     }
