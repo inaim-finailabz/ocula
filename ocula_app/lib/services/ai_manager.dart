@@ -263,12 +263,18 @@ class AIManager {
     // llama_init_model() already frees the previous model internally.
     // Calling unloadModel + loadModel as two separate calls can crash
     // if Metal GPU resources are still settling from the free.
+    //
+    // Use tier-appropriate context size to avoid Metal OOM on larger models.
+    // free/plus (≤ 900 MB) → 2048 context
+    // pro (> 1 GB)         → 1024 context (less KV cache pressure)
+    final contextSize = (tier == AITier.pro) ? 1024 : 2048;
     _activeTier = null;
     try {
       await _textEngine.loadModel(LlamaConfig(
         modelPath: mainPath,
         nGpuLayers: -1,
         useGpu: true,
+        contextSize: contextSize,
       ));
       _isVisionMode = false;
       _activeTier = tier;
