@@ -12,6 +12,17 @@ import 'ocula_db.dart';
 ///
 /// Pipeline: Intent → Retrieve → Route Model → Generate → Log
 
+/// Result from an orchestrator run — response text + linked assets.
+class OrchestratorResult {
+  final String response;
+  final List<LinkedAsset> linkedAssets;
+
+  const OrchestratorResult(this.response, [this.linkedAssets = const []]);
+
+  /// Empty / cancelled result.
+  static const empty = OrchestratorResult('');
+}
+
 // ──────────────────────────────────────────
 // State
 // ──────────────────────────────────────────
@@ -29,6 +40,7 @@ class AgentState {
   StepStatus status;
   List<String> stepsCompleted;
   DateTime timestamp;
+  List<LinkedAsset> linkedAssets;
 
   AgentState({
     required this.query,
@@ -41,8 +53,10 @@ class AgentState {
     this.status = StepStatus.pending,
     List<String>? stepsCompleted,
     DateTime? timestamp,
+    List<LinkedAsset>? linkedAssets,
   })  : stepsCompleted = stepsCompleted ?? [],
-        timestamp = timestamp ?? DateTime.now();
+        timestamp = timestamp ?? DateTime.now(),
+        linkedAssets = linkedAssets ?? [];
 }
 
 // ──────────────────────────────────────────
@@ -95,8 +109,8 @@ class Orchestrator {
   }
 
   /// Run the full pipeline for a user query.
-  /// Returns the final response string.
-  Future<String> run(String query, {bool hasImage = false, String? imagePath}) async {
+  /// Returns an [OrchestratorResult] with the response + any linked assets.
+  Future<OrchestratorResult> run(String query, {bool hasImage = false, String? imagePath}) async {
     // If a previous run is still active, stop it first.
     if (_isRunning) {
       await stop();
@@ -115,7 +129,7 @@ class Orchestrator {
   }
 
   /// Internal pipeline — separated so run() can manage _isRunning flag.
-  Future<String> _runPipeline(String query, {bool hasImage = false, String? imagePath}) async {
+  Future<OrchestratorResult> _runPipeline(String query, {bool hasImage = false, String? imagePath}) async {
     var state = AgentState(query: query, hasImage: hasImage, imagePath: imagePath);
     state.status = StepStatus.running;
 
@@ -126,33 +140,33 @@ class Orchestrator {
       debugPrint('[Orchestrator] ⬆ Auto-upgraded to ${_ai.activeTier?.name}');
     }
 
-    if (_cancelled) return '';
+    if (_cancelled) return OrchestratorResult.empty;
 
     // STEP 1: Detect intent
     state = await _detectIntent(state);
-    if (_cancelled) return '';
+    if (_cancelled) return OrchestratorResult.empty;
 
-    // STEP 2: Retrieve context via RAG
+    // STEP 2: Retrieve context via RAG (also collects linked assets)
     state = await _retrieve(state);
-    if (_cancelled) return '';
+    if (_cancelled) return OrchestratorResult.empty;
 
     // STEP 3: Check episodic memory for recent relevant conversations
     state = await _recallMemory(state);
-    if (_cancelled) return '';
+    if (_cancelled) return OrchestratorResult.empty;
 
     // STEP 4: If web intent, check internet permission
     if (state.intent == QueryIntent.web) {
       state = await _webSearch(state);
-      if (_cancelled) return '';
+      if (_cancelled) return OrchestratorResult.empty;
     }
 
     // STEP 5: Route to the right model
     state = await _routeModel(state);
-    if (_cancelled) return '';
+    if (_cancelled) return OrchestratorResult.empty;
 
     // STEP 6: Generate response
     state = await _generate(state);
-    if (_cancelled) return '';
+    if (_cancelled) return OrchestratorResult.empty;
 
     // STEP 7: Log to episodic memory
     await _memory.log(state);
@@ -164,7 +178,7 @@ class Orchestrator {
     _network.revokeTemp();
 
     state.status = StepStatus.completed;
-    return state.response;
+    return OrchestratorResult(state.response, state.linkedAssets);
   }
 
   /// Node 1: Detect what the user wants.
@@ -193,6 +207,8 @@ class Orchestrator {
 
   /// Node 2: RAG retrieval from local vector store.
   /// Passes intent-based source hint to boost relevant result types.
+  /// Also collects any linked assets (files, photos, emails, contacts) from
+  /// matched RAG sources for surfacing in the chat UI.
   Future<AgentState> _retrieve(AgentState state) async {
     // Map intent to a source hint for the hybrid search
     String? sourceHint;
@@ -215,6 +231,18 @@ class Orchestrator {
 
     final context = await _rag.getContext(state.query, sourceHint: sourceHint);
     state.ragContext = context;
+
+    // Collect linked assets from RAG source IDs
+    try {
+      final results = await _rag.search(state.query, sourceHint: sourceHint);
+      final sourceIds = results.map((r) => r.sourceId).toList();
+      if (sourceIds.isNotEmpty) {
+        state.linkedAssets = await OculaDB().findLinkedAssets(sourceIds);
+      }
+    } catch (e) {
+      if (kDebugMode) print('[Orchestrator] Asset linking skipped: $e');
+    }
+
     state.stepsCompleted.add('retrieve');
     return state;
   }

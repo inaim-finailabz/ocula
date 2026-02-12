@@ -150,14 +150,20 @@ class Indexer with WidgetsBindingObserver {
   }
 
   /// Index a single chat conversation turn (call after each AI response).
-  /// Does NOT save immediately — relies on periodic/app-lifecycle saves.
+  /// Also detects and links phone numbers, emails, URLs mentioned in chat.
   Future<void> indexChatTurn(String userMessage, String assistantResponse) async {
     await _rag.init();
+    final sourceId = 'chat:${DateTime.now().millisecondsSinceEpoch}';
     await _rag.indexChat(
       userMessage: userMessage,
       assistantResponse: assistantResponse,
     );
-    // Defer save — will be persisted on next runFullIndex or app pause
+    // Detect phone numbers, emails, URLs in both user and assistant text
+    await _db.linkDetectedAssets(
+      '$userMessage\n$assistantResponse',
+      'chat',
+      sourceId,
+    );
     await _rag.save();
   }
 
@@ -289,10 +295,18 @@ class Indexer with WidgetsBindingObserver {
       final photos = await _local.recentPhotos(limit: 100);
       for (final photo in photos) {
         if (photo.label != null) {
+          final sourceId = 'photo:${photo.path}';
           await _rag.indexPhoto(
             path: photo.path,
             label: photo.label!,
             date: photo.date,
+          );
+          // Link photo file for inline display
+          await _db.linkAsset(
+            sourceId: sourceId,
+            assetType: 'photo',
+            assetRef: photo.path,
+            label: photo.label ?? photo.path.split('/').last,
           );
         }
       }
@@ -309,13 +323,25 @@ class Indexer with WidgetsBindingObserver {
         now.add(const Duration(days: 7)),
       );
       for (final event in events) {
+        final sourceId = 'cal:${event.title}:${event.start.toIso8601String()}';
+        final content = '${event.title} at ${event.location ?? "no location"} '
+            'on ${event.start}';
         await _rag.index(
-          content: '${event.title} at ${event.location ?? "no location"} '
-              'on ${event.start}',
+          content: content,
           source: 'calendar',
-          sourceId: 'cal:${event.title}:${event.start.toIso8601String()}',
+          sourceId: sourceId,
           timestamp: event.start,
         );
+        // Link calendar event
+        await _db.linkAsset(
+          sourceId: sourceId,
+          assetType: 'calendar',
+          assetRef: 'cal:${event.title}',
+          label: '${event.title} — ${event.start.toLocal().toString().substring(0, 16)}',
+        );
+        // Detect phone/email/URL in event details
+        final details = '${event.title} ${event.location ?? ''}';
+        await _db.linkDetectedAssets(details, 'calendar', sourceId);
       }
     } catch (e) {
       if (kDebugMode) print('[Indexer] Calendar indexing skipped: $e');
