@@ -496,12 +496,16 @@ int32_t llama_get_embedding(
     }
     
     // Clear KV cache
-    llama_memory_clear(llama_get_memory(g_embed_ctx), true);
+    llama_memory* mem = llama_get_memory(g_embed_ctx);
+    if (mem) {
+        llama_memory_clear(mem, true);
+    }
     
-    // Encode (processes batch for embeddings, no autoregressive KV)
+    // Decode (our models are decoder-only; llama_encode is for encoder-only models
+    // like BERT and would crash on decoder architectures)
     llama_batch batch = llama_batch_get_one(tokens.data(), (int32_t)tokens.size());
-    if (llama_encode(g_embed_ctx, batch) != 0) {
-        NSLog(@"[llama_cpp_bridge] getEmbedding: encode failed");
+    if (llama_decode(g_embed_ctx, batch) != 0) {
+        NSLog(@"[llama_cpp_bridge] getEmbedding: decode failed");
         return 0;
     }
     

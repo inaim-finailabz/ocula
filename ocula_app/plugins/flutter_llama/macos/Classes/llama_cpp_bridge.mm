@@ -467,10 +467,14 @@ int32_t llama_get_embedding(
     llama_tokenize(g_vocab, text_str.c_str(), text_str.size(), tokens.data(), tokens.size(), true, true);
     if (n_use < n_tokens) tokens.resize(n_use);
     
-    llama_memory_clear(llama_get_memory(g_embed_ctx), true);
+    llama_memory* mem = llama_get_memory(g_embed_ctx);
+    if (mem) {
+        llama_memory_clear(mem, true);
+    }
     
+    // Decode (our models are decoder-only; llama_encode is for encoder-only models)
     llama_batch batch = llama_batch_get_one(tokens.data(), (int32_t)tokens.size());
-    if (llama_encode(g_embed_ctx, batch) != 0) return 0;
+    if (llama_decode(g_embed_ctx, batch) != 0) return 0;
     
     int n_embd = llama_model_n_embd(g_model);
     const float* embd = llama_get_embeddings_seq(g_embed_ctx, 0);
