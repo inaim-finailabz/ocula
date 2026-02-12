@@ -71,12 +71,6 @@ bool llama_init_model(
             llama_model_free(mdl);
         }
     } // @autoreleasepool — Metal buffers released here
-#if !TARGET_OS_SIMULATOR
-    // Give Metal GPU time to fully reclaim resources before allocating new ones.
-    // Without this, the new model's KV cache allocation can fail (NULL kv_cache
-    // → EXC_BAD_ACCESS in graph_reserve → llama_kv_cache_context::get_n_kv).
-    usleep(500000); // 500 ms
-#endif
     
     // Load dynamic backends (only once per process)
     if (!g_backends_loaded) {

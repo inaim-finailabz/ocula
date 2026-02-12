@@ -58,17 +58,40 @@ class AIManager {
     AITier.enterprise: 3,
   };
 
+  /// Minimum RAM (MB) required to safely run each tier.
+  /// Includes model weight + KV cache + system overhead headroom.
+  static const _tierRamRequirementMB = {
+    AITier.free: 1500,       // 175 MB model + context → ~1 GB total, 500 MB headroom
+    AITier.plus: 3500,       // 900 MB model + context → ~2.5 GB, 1 GB headroom
+    AITier.pro: 5000,        // 1.1 GB model + context → ~3.5 GB, 1.5 GB headroom
+    AITier.enterprise: 4000, // variable, conservative default
+  };
+
+  /// Check if this device has enough RAM for the given tier.
+  Future<bool> canDeviceRunTier(AITier tier) async {
+    final ram = await deviceRamMB;
+    final required = _tierRamRequirementMB[tier] ?? 8000;
+    return ram >= required;
+  }
+
   /// Called when a tier finishes downloading in the background.
-  /// Only records it as pending if it's better than what's currently loaded.
-  void _onTierReady(AITier tier) {
+  /// Only records it as pending if it's better than what's currently loaded
+  /// AND the device has enough RAM to run it.
+  void _onTierReady(AITier tier) async {
     final currentRank = _tierRank[_activeTier] ?? -1;
     final pendingRank = _tierRank[_pendingUpgradeTier] ?? -1;
     final newRank = _tierRank[tier] ?? -1;
 
     if (newRank > currentRank && newRank > pendingRank) {
+      // Hardware gate: don't queue upgrades the device can't handle
+      if (!await canDeviceRunTier(tier)) {
+        debugPrint('[AIManager] ⚠ ${tier.name} downloaded but device RAM '
+            'too low (${await deviceRamMB} MB < ${_tierRamRequirementMB[tier]} MB) — skipping');
+        return;
+      }
       _pendingUpgradeTier = tier;
       debugPrint('[AIManager] 🏁 Pending upgrade queued: ${tier.name} '
-          '(current: ${_activeTier?.name ?? "none"})');
+          '(current: ${_activeTier?.name ?? "none"}, RAM: ${await deviceRamMB} MB)');
     }
   }
 
@@ -91,6 +114,14 @@ class AIManager {
 
     debugPrint('[AIManager] ⬆ Applying pending upgrade: '
         '${_activeTier?.name ?? "none"} → ${target.name}');
+
+    // Hardware gate: double-check RAM before committing to the switch.
+    // RAM availability may have changed since the upgrade was queued.
+    if (!await canDeviceRunTier(target)) {
+      debugPrint('[AIManager] ⬆ ${target.name} upgrade cancelled — device RAM '
+          'too low (${await deviceRamMB} MB < ${_tierRamRequirementMB[target]} MB)');
+      return false;
+    }
 
     try {
       await switchEngine(target);
@@ -247,33 +278,66 @@ class AIManager {
 
     debugPrint('[AIManager] switchEngine: ${_activeTier?.name ?? "none"} → ${tier.name}');
 
-    // ── If currently in vision mode, unload the multimodal engine first ──
-    // (it uses separate native globals, so we must explicitly release it)
-    if (_isVisionMode) {
-      try {
-        await _visionEngine.unloadMultimodalModel();
-      } catch (e) {
-        debugPrint('[AIManager] multimodal unload failed (non-fatal): $e');
-      }
-      _isVisionMode = false;
+    // ── Hardware gate: check RAM before committing to the switch ──
+    // If the device doesn't have enough RAM, refuse the switch entirely.
+    // This prevents unloading a working model only to fail loading the new one.
+    if (!await canDeviceRunTier(tier)) {
+      final ram = await deviceRamMB;
+      final required = _tierRamRequirementMB[tier] ?? 8000;
+      debugPrint('[AIManager] ⚠ ${tier.name} rejected — device RAM '
+          'too low ($ram MB < $required MB)');
+      throw ModelNotReadyException(tier);
     }
 
-    // ── Load new model directly ──
-    // DO NOT call _textEngine.unloadModel() separately — the native
-    // llama_init_model() already frees the previous model internally.
-    // Calling unloadModel + loadModel as two separate calls can crash
-    // if Metal GPU resources are still settling from the free.
-    //
-    // Use tier-appropriate context size to avoid Metal OOM on larger models.
-    // free/plus (≤ 900 MB) → 2048 context
-    // pro (> 1 GB)         → 1024 context (less KV cache pressure)
-    final contextSize = (tier == AITier.pro) ? 1024 : 2048;
-    _activeTier = null;
+    // ── Step 1: Explicitly unload the current model ──
+    // We MUST separate unload from load so Metal GPU has time to fully
+    // reclaim its buffer pool between the two operations. Doing both
+    // inside a single native call (llama_init_model) causes the new KV
+    // cache allocation to fail because Metal hasn't freed the old buffers.
+    if (_activeTier != null) {
+      try {
+        if (_isVisionMode) {
+          await _visionEngine.unloadMultimodalModel();
+        } else {
+          await _textEngine.unloadModel();
+        }
+      } catch (e) {
+        debugPrint('[AIManager] unload failed (non-fatal): $e');
+      }
+      _activeTier = null;
+      _isVisionMode = false;
+
+      // ── Step 2: Wait for Metal GPU to reclaim its buffer pool ──
+      // The native bridge uses @autoreleasepool + null-before-free, but
+      // Metal command queues drain asynchronously. 1.5s is enough for
+      // the A17 Pro to finish in-flight GPU work and reclaim all buffers.
+      if (Platform.isIOS || Platform.isMacOS) {
+        debugPrint('[AIManager] Waiting for Metal GPU cleanup...');
+        await Future.delayed(const Duration(milliseconds: 1500));
+      }
+    }
+
+    // ── Step 3: Load the new model ──
+    // Tier-appropriate settings:
+    //   free/plus: full GPU (-1) + 2048 context — small models, fit easily
+    //   pro:       CPU only (0) + 2048 context — avoids Metal OOM on 2B model
+    // Using CPU for pro is safe: A17 Pro handles Qwen3-VL-2B Q4_K_M at
+    // ~8-12 tok/s on CPU, which is perfectly usable.
+    final int gpuLayers;
+    final int contextSize;
+    if (tier == AITier.pro) {
+      gpuLayers = 0;       // CPU-only — no Metal contention
+      contextSize = 2048;
+    } else {
+      gpuLayers = -1;      // all layers on GPU
+      contextSize = 2048;
+    }
+
     try {
       await _textEngine.loadModel(LlamaConfig(
         modelPath: mainPath,
-        nGpuLayers: -1,
-        useGpu: true,
+        nGpuLayers: gpuLayers,
+        useGpu: gpuLayers != 0,
         contextSize: contextSize,
       ));
       _isVisionMode = false;

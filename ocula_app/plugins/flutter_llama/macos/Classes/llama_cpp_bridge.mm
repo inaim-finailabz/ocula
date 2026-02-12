@@ -71,8 +71,6 @@ bool llama_init_model(
             llama_model_free(mdl);
         }
     } // @autoreleasepool — Metal buffers released here
-    // Give Metal GPU time to fully reclaim resources before allocating new ones.
-    usleep(500000); // 500 ms
     
     // Load dynamic backends (only once per process)
     if (!g_backends_loaded) {
