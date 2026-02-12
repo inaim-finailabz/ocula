@@ -1,0 +1,61 @@
+name: ocula_app
+description: "Multi-agent on-device AI app with vision, reasoning, and voice."
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.10.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  cupertino_icons: ^1.0.8
+
+  # AI Core - Local fork with iOS @_silgen_name fix (String → UnsafePointer<CChar>)
+  flutter_llama:
+    path: plugins/flutter_llama
+
+  # Assistant Features
+  speech_to_text: ^7.0.0         # STT — voice input
+  flutter_tts: ^4.2.0            # TTS — voice output
+
+  # Document & Communication
+  pdf: ^3.11.0                   # Generate PDF reports
+  share_plus: ^10.0.0            # Send to Email/WhatsApp/Slack
+  path_provider: ^2.1.2          # Manage model storage on device
+  url_launcher: ^6.2.5           # Open links in Settings/About
+
+  # Media
+  camera: ^0.11.0                # Vision input from device camera
+
+  # Database — On-device persistence (system SQLite, zero binary bloat)
+  sqflite: ^2.4.1
+  path: ^1.9.0
+
+  # Local data access
+  flutter_contacts: ^1.1.9       # Read contacts
+  image_picker: ^1.1.2           # Pick photos from gallery
+  enough_mail: any               # IMAP email access (local)
+  lottie: ^3.3.2
+  shared_preferences: ^2.5.4
+  device_info_plus: ^11.0.0      # RAM detection for model routing
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+  flutter_native_splash: ^2.4.7
+
+flutter_native_splash:
+  color: "#0a0a0a"
+  image: assets/images/splash_static_core.png
+  android_12:
+    image: assets/images/splash_static_core.png
+    color: "#0a0a0a"
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/models/
+    - assets/animations/
+    - assets/images/

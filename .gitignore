@@ -1,0 +1,59 @@
+# Dart/Flutter
+.dart_tool/
+.packages
+.pub/
+.pub-cache/
+build/
+*.log
+
+# IDEs/editors
+.idea/
+.vscode/
+*.iml
+*.ipr
+*.iws
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Android
+android/.gradle/
+android/local.properties
+android/.idea/
+
+# iOS
+ios/Pods/
+ios/.symlinks/
+ios/Flutter/Flutter.framework/
+ios/Flutter/Flutter.podspec
+ios/Flutter/Generated.xcconfig
+ios/Flutter/ephemeral/
+ios/Runner/GeneratedPluginRegistrant.*
+ios/Runner.xcworkspace/
+
+# macOS
+macos/Flutter/ephemeral/
+macos/Pods/
+
+# Windows
+windows/flutter/ephemeral/
+
+# Linux
+linux/flutter/ephemeral/
+
+# Web
+.web/
+
+# Firebase
+firebase_options.dart
+
+# Build & release artifacts
+build/
+**/build/
+**/.cxx/
+**/Release/
+**/Debug/
+
+# Large model files
+*.gguf
