@@ -24,6 +24,7 @@ import 'ai_manager.dart';
 
 class ModelInfo {
   final String fileName;
+  final String displayName;
   final String downloadUrl;
   final int sizeBytes;
   final AITier tier;
@@ -31,6 +32,7 @@ class ModelInfo {
 
   const ModelInfo({
     required this.fileName,
+    required this.displayName,
     required this.downloadUrl,
     required this.sizeBytes,
     required this.tier,
@@ -73,27 +75,30 @@ class OculaModelManager {
     // ── SENSOR: Always-on, fast & tiny ──
     ModelInfo(
       fileName: 'SmolVLM2-256M-Video-Instruct-Q8_0.gguf',
+      displayName: 'Sensor Engine',
       downloadUrl: 'https://backend-ocula.finailabz.com/models/SmolVLM2-256M-Video-Instruct-Q8_0.gguf',
       sizeBytes: 175 * 1024 * 1024, // ~175 MB
       tier: AITier.free,
     ),
     ModelInfo(
       fileName: 'mmproj-SmolVLM2-256M-Video-Instruct-f16.gguf',
+      displayName: 'Sensor Vision',
       downloadUrl: 'https://backend-ocula.finailabz.com/models/mmproj-SmolVLM2-256M-Video-Instruct-f16.gguf',
       sizeBytes: 181 * 1024 * 1024, // ~181 MB
       tier: AITier.free,
       isVisionProjector: true,
     ),
     // ── SPECIALIST: Spatial tasks, pointing & counting ──
-    // Moondream 2 (April 2025) — quantized from f16 to Q4_K_M
     ModelInfo(
       fileName: 'moondream2-text-model-Q4_K_M.gguf',
+      displayName: 'Specialist Engine',
       downloadUrl: 'https://backend-ocula.finailabz.com/models/moondream2-text-model-Q4_K_M.gguf',
       sizeBytes: 900 * 1024 * 1024, // ~900 MB (Q4_K_M quantized)
       tier: AITier.plus,
     ),
     ModelInfo(
       fileName: 'moondream2-mmproj-f16-20250414.gguf',
+      displayName: 'Specialist Vision',
       downloadUrl: 'https://backend-ocula.finailabz.com/models/moondream2-mmproj-f16-20250414.gguf',
       sizeBytes: 910 * 1024 * 1024, // ~910 MB
       tier: AITier.plus,
@@ -102,12 +107,14 @@ class OculaModelManager {
     // ── THINKER: Reasoning with chain-of-thought ──
     ModelInfo(
       fileName: 'Qwen3VL-2B-Thinking-Q4_K_M.gguf',
+      displayName: 'Thinker Engine',
       downloadUrl: 'https://backend-ocula.finailabz.com/models/Qwen3VL-2B-Thinking-Q4_K_M.gguf',
       sizeBytes: 1110 * 1024 * 1024, // ~1.11 GB
       tier: AITier.pro,
     ),
     ModelInfo(
       fileName: 'mmproj-Qwen3VL-2B-Thinking-F16.gguf',
+      displayName: 'Thinker Vision',
       downloadUrl: 'https://backend-ocula.finailabz.com/models/mmproj-Qwen3VL-2B-Thinking-F16.gguf',
       sizeBytes: 819 * 1024 * 1024, // ~819 MB
       tier: AITier.pro,
@@ -879,6 +886,7 @@ class OculaModelManager {
       
       _enterpriseModels.add(ModelInfo(
         fileName: fileName,
+        displayName: 'Enterprise Model',
         downloadUrl: '', // Local file, no download URL
         sizeBytes: sizeBytes,
         tier: AITier.enterprise,
@@ -887,6 +895,7 @@ class OculaModelManager {
       // Create a virtual ModelInfo for the remote API
       _enterpriseModels.add(ModelInfo(
         fileName: 'enterprise-api',
+        displayName: 'Enterprise API',
         downloadUrl: modelUrl,
         sizeBytes: 0, // API, no local size
         tier: AITier.enterprise,

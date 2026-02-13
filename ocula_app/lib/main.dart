@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:file_picker/file_picker.dart';
 import 'package:image_picker/image_picker.dart';
 import 'services/ai_manager.dart';
 import 'services/speech_service.dart';
@@ -10,6 +11,7 @@ import 'services/indexer.dart';
 import 'services/model_manager.dart';
 import 'services/orchestrator.dart';
 import 'services/ocula_db.dart';
+import 'services/share_receiver.dart';
 import 'screens/splash_screen.dart';
 import 'screens/onboarding_screen.dart';
 import 'screens/settings_screen.dart';
@@ -79,6 +81,7 @@ class _AssistantScreenState extends State<AssistantScreen>
   final _ai = AIManager();
   final _orchestrator = Orchestrator();
   final _export = ExportService();
+  final _shareReceiver = ShareReceiver();
   late final SpeechService _speech;
   final _textController = TextEditingController();
   final _scrollController = ScrollController();
@@ -92,6 +95,8 @@ class _AssistantScreenState extends State<AssistantScreen>
   bool _isSpeaking = false;
   OrbState _orbState = OrbState.idle;
   File? _attachedImage;
+  File? _attachedDocument;
+  String? _attachedDocName;
 
   bool _orbExpanded = true;
 
@@ -112,6 +117,19 @@ class _AssistantScreenState extends State<AssistantScreen>
       vsync: this,
       duration: const Duration(milliseconds: 400),
     );
+
+    // Listen for shared content from other apps (share sheet).
+    _shareReceiver.onSharedContent = (displayText, query) {
+      if (mounted) {
+        // Show what was shared and auto-send to assistant
+        setState(() {
+          _messages.add(_Message(text: displayText, isUser: true));
+        });
+        _scrollToBottom();
+        _send(query);
+      }
+    };
+    _shareReceiver.init();
 
     // Listen for feature-ready notifications (user-friendly, no model names).
     _featureReadySubscription =
@@ -227,6 +245,34 @@ class _AssistantScreenState extends State<AssistantScreen>
     );
   }
 
+  Future<void> _pickDocument() async {
+    try {
+      final result = await FilePicker.platform.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: [
+          'txt', 'md', 'csv', 'json', 'xml', 'html', 'pdf',
+          'py', 'js', 'ts', 'dart', 'java', 'swift', 'yaml',
+        ],
+      );
+      if (result != null && result.files.single.path != null) {
+        final path = result.files.single.path!;
+        final name = result.files.single.name;
+        setState(() {
+          _attachedDocument = File(path);
+          _attachedDocName = name;
+        });
+
+        // Index the file immediately so RAG can use it
+        final indexed = await Indexer().indexFilePath(path);
+        if (indexed) {
+          _showSnackbar('Indexed "$name" — you can ask about it now');
+        }
+      }
+    } catch (e) {
+      _showSnackbar('Could not pick file: $e');
+    }
+  }
+
   void _toggleOrb() {
     setState(() => _orbExpanded = !_orbExpanded);
     if (_orbExpanded) {
@@ -263,9 +309,32 @@ class _AssistantScreenState extends State<AssistantScreen>
     }
 
     final image = _attachedImage;
+    final doc = _attachedDocument;
+    final docName = _attachedDocName;
+
+    // If a document is attached, prepend its content to the query
+    String queryText = text;
+    if (doc != null && docName != null) {
+      try {
+        final content = await doc.readAsString();
+        if (content.isNotEmpty) {
+          // Truncate to avoid overflowing context
+          final truncated = content.length > 4000
+              ? content.substring(0, 4000)
+              : content;
+          queryText = '[Attached file: $docName]\n$truncated\n\nUser question: $text';
+        }
+      } catch (_) {
+        // Binary file — just reference the name
+        queryText = '[Attached file: $docName] $text';
+      }
+    }
+
     setState(() {
       _messages.add(_Message(text: text, isUser: true, image: image));
       _attachedImage = null;
+      _attachedDocument = null;
+      _attachedDocName = null;
       _isThinking = true;
       _orbState = OrbState.thinking;
       _orbExpanded = true;
@@ -275,7 +344,7 @@ class _AssistantScreenState extends State<AssistantScreen>
 
     try {
       final result = await _orchestrator.run(
-        text,
+        queryText,
         hasImage: image != null,
         imagePath: image?.path,
       ).timeout(
@@ -418,6 +487,7 @@ class _AssistantScreenState extends State<AssistantScreen>
   @override
   void dispose() {
     Indexer().stopBackgroundIndexing();
+    _shareReceiver.dispose();
     _ai.dispose();
     _textController.dispose();
     _scrollController.dispose();
@@ -564,6 +634,44 @@ class _AssistantScreenState extends State<AssistantScreen>
                       ),
                     ),
 
+                  // ── Attached document preview ──
+                  if (_attachedDocument != null)
+                    Container(
+                      padding: const EdgeInsets.fromLTRB(16, 6, 16, 0),
+                      child: Row(
+                        children: [
+                          Container(
+                            width: 40,
+                            height: 40,
+                            decoration: BoxDecoration(
+                              color: colors.primary.withAlpha(30),
+                              borderRadius: BorderRadius.circular(8),
+                            ),
+                            child: Icon(Icons.description,
+                                size: 22, color: colors.primary),
+                          ),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Text(
+                              _attachedDocName ?? 'Document attached',
+                              style: TextStyle(
+                                color: colors.onSurface.withAlpha(150),
+                                fontSize: 13,
+                              ),
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
+                          IconButton(
+                            icon: const Icon(Icons.close, size: 18),
+                            onPressed: () => setState(() {
+                              _attachedDocument = null;
+                              _attachedDocName = null;
+                            }),
+                          ),
+                        ],
+                      ),
+                    ),
+
                   // ── Enhanced input bar ──
                   Container(
                     padding: const EdgeInsets.fromLTRB(6, 8, 6, 8),
@@ -589,6 +697,12 @@ class _AssistantScreenState extends State<AssistantScreen>
                             icon: Icons.camera_alt_outlined,
                             label: 'Camera',
                             onTap: _pickImage,
+                          ),
+                          // Document attach button
+                          _InputAction(
+                            icon: Icons.attach_file,
+                            label: 'File',
+                            onTap: _pickDocument,
                           ),
                           // Text input
                           Expanded(

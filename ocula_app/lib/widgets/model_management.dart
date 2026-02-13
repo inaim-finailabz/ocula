@@ -74,13 +74,14 @@ class _ModelManagementState extends State<ModelManagement> {
 
   Widget _buildTierSection(AITier tier, ColorScheme colors) {
     final tierModels = _modelManager.modelsForTier(tier);
+    if (tierModels.isEmpty) return const SizedBox.shrink();
     return Padding(
       padding: const EdgeInsets.only(bottom: 16.0),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(
-            '${tier.toString().split('.').last.toUpperCase()} Tier',
+            OculaModelManager.featureLabel(tier),
             style: TextStyle(
               fontSize: 14,
               fontWeight: FontWeight.bold,
@@ -103,8 +104,8 @@ class _ModelManagementState extends State<ModelManagement> {
       margin: const EdgeInsets.symmetric(vertical: 4),
       color: colors.surfaceContainerHighest,
       child: ListTile(
-        title: Text(model.fileName),
-        subtitle: Text('Size: ${model.sizeLabel}'),
+        title: Text(model.displayName),
+        subtitle: Text(model.sizeLabel),
         trailing: _buildActionWidget(model, status, progress),
       ),
     );

@@ -210,13 +210,27 @@ class RAGEngine {
   }
 
   /// Build a context string from RAG results for the LLM prompt.
+  /// Formats each source type clearly so the model cites specific details.
   Future<String> getContext(String query, {String? sourceHint}) async {
     final results = await search(query, sourceHint: sourceHint);
     if (results.isEmpty) return '';
 
-    return results
-        .map((r) => '[${r.source}] ${r.text}')
-        .join('\n---\n');
+    return results.map((r) {
+      final label = _sourceLabel(r.source);
+      return '$label: ${r.text}';
+    }).join('\n\n');
+  }
+
+  String _sourceLabel(String source) {
+    switch (source) {
+      case 'contact': return 'CONTACT';
+      case 'calendar': return 'CALENDAR EVENT';
+      case 'photo': return 'PHOTO';
+      case 'file': return 'FILE';
+      case 'email': return 'EMAIL';
+      case 'chat': return 'PREVIOUS CONVERSATION';
+      default: return source.toUpperCase();
+    }
   }
 
   /// Get stats about what's been indexed.

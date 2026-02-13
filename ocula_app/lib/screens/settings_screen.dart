@@ -7,6 +7,9 @@ import '../services/network_permission.dart';
 import '../services/app_language.dart';
 import '../services/ai_manager.dart';
 import '../services/model_manager.dart';
+import '../services/local_data.dart';
+import '../services/indexer.dart';
+import '../services/ocula_db.dart';
 
 /// Settings screen — voice customisation + privacy controls.
 class SettingsScreen extends StatefulWidget {
@@ -169,6 +172,22 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 const SizedBox(height: 32),
 
                 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+                // YOUR DATA — what's been indexed
+                // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+                const _SectionHeader(title: 'Your Data'),
+                const SizedBox(height: 4),
+                Text(
+                  'What Ocula has indexed and can search for you.',
+                  style: TextStyle(
+                    fontSize: 13,
+                    color: colors.onSurface.withAlpha(120),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                const _IndexStatsCard(),
+                const SizedBox(height: 32),
+
+                // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
                 // INTERNET ACCESS
                 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
                 const _SectionHeader(title: 'Internet Access'),
@@ -203,6 +222,24 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   value: InternetAccess.always,
                   colors: colors,
                 ),
+
+                const SizedBox(height: 32),
+
+                // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+                // EMAIL (IMAP) SETTINGS
+                // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+                const _SectionHeader(title: 'Email Integration'),
+                const SizedBox(height: 4),
+                Text(
+                  'Connect your email to let Ocula search your inbox. '
+                  'Credentials stay on-device — emails are fetched directly via IMAP.',
+                  style: TextStyle(
+                    fontSize: 13,
+                    color: colors.onSurface.withAlpha(120),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                _EmailConfigTile(),
 
                 const SizedBox(height: 32),
 
@@ -1137,6 +1174,427 @@ class _VoicePreset {
 }
 
 // ── Section Header ──
+
+/// Email IMAP configuration tile with presets for common providers.
+class _EmailConfigTile extends StatefulWidget {
+  @override
+  State<_EmailConfigTile> createState() => _EmailConfigTileState();
+}
+
+class _EmailConfigTileState extends State<_EmailConfigTile> {
+  final _local = LocalData();
+  final _hostController = TextEditingController();
+  final _portController = TextEditingController(text: '993');
+  final _userController = TextEditingController();
+  final _passController = TextEditingController();
+  bool _configured = false;
+  bool _testing = false;
+
+  static const _presets = {
+    'iCloud Mail': ('imap.mail.me.com', 993),
+    'Gmail': ('imap.gmail.com', 993),
+    'Outlook': ('outlook.office365.com', 993),
+    'Yahoo': ('imap.mail.yahoo.com', 993),
+  };
+
+  @override
+  void initState() {
+    super.initState();
+    _checkConfigured();
+  }
+
+  Future<void> _checkConfigured() async {
+    final ok = await _local.isEmailConfigured;
+    if (mounted) setState(() => _configured = ok);
+  }
+
+  @override
+  void dispose() {
+    _hostController.dispose();
+    _portController.dispose();
+    _userController.dispose();
+    _passController.dispose();
+    super.dispose();
+  }
+
+  void _applyPreset(String name) {
+    final preset = _presets[name]!;
+    _hostController.text = preset.$1;
+    _portController.text = preset.$2.toString();
+  }
+
+  Future<void> _save() async {
+    final host = _hostController.text.trim();
+    final port = int.tryParse(_portController.text.trim()) ?? 993;
+    final user = _userController.text.trim();
+    final pass = _passController.text;
+
+    if (host.isEmpty || user.isEmpty || pass.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Please fill in all fields')),
+      );
+      return;
+    }
+
+    setState(() => _testing = true);
+
+    await _local.saveEmailConfig(
+      host: host,
+      port: port,
+      user: user,
+      password: pass,
+    );
+
+    // Test fetch
+    final emails = await _local.recentEmails(limit: 5);
+    setState(() => _testing = false);
+
+    if (emails.isNotEmpty) {
+      // Trigger re-index to pick up emails
+      Indexer().runFullIndex();
+      if (mounted) {
+        setState(() => _configured = true);
+        Navigator.pop(context); // Close dialog
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Connected! Found ${emails.length} emails. Indexing...')),
+        );
+      }
+    } else {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Could not fetch emails. Check credentials.')),
+        );
+      }
+    }
+  }
+
+  void _showConfigDialog() {
+    showDialog(
+      context: context,
+      builder: (ctx) {
+        return StatefulBuilder(
+          builder: (ctx, setDialogState) {
+            final colors = Theme.of(ctx).colorScheme;
+            return AlertDialog(
+              title: const Text('Email (IMAP) Setup'),
+              content: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    // Provider presets
+                    Wrap(
+                      spacing: 8,
+                      runSpacing: 8,
+                      children: _presets.keys.map((name) {
+                        return ActionChip(
+                          label: Text(name, style: const TextStyle(fontSize: 12)),
+                          onPressed: () {
+                            _applyPreset(name);
+                            setDialogState(() {});
+                          },
+                        );
+                      }).toList(),
+                    ),
+                    const SizedBox(height: 16),
+                    TextField(
+                      controller: _hostController,
+                      decoration: const InputDecoration(
+                        labelText: 'IMAP Server',
+                        hintText: 'imap.mail.me.com',
+                        border: OutlineInputBorder(),
+                        isDense: true,
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    TextField(
+                      controller: _portController,
+                      decoration: const InputDecoration(
+                        labelText: 'Port',
+                        hintText: '993',
+                        border: OutlineInputBorder(),
+                        isDense: true,
+                      ),
+                      keyboardType: TextInputType.number,
+                    ),
+                    const SizedBox(height: 12),
+                    TextField(
+                      controller: _userController,
+                      decoration: const InputDecoration(
+                        labelText: 'Email',
+                        hintText: 'you@icloud.com',
+                        border: OutlineInputBorder(),
+                        isDense: true,
+                      ),
+                      keyboardType: TextInputType.emailAddress,
+                    ),
+                    const SizedBox(height: 12),
+                    TextField(
+                      controller: _passController,
+                      decoration: const InputDecoration(
+                        labelText: 'Password / App Password',
+                        border: OutlineInputBorder(),
+                        isDense: true,
+                      ),
+                      obscureText: true,
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      'For iCloud/Gmail, use an App-Specific Password. '
+                      'Credentials are stored only on this device.',
+                      style: TextStyle(
+                        fontSize: 11,
+                        color: colors.onSurface.withAlpha(100),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(ctx),
+                  child: const Text('Cancel'),
+                ),
+                FilledButton(
+                  onPressed: _testing ? null : _save,
+                  child: _testing
+                      ? const SizedBox(
+                          width: 16,
+                          height: 16,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Text('Connect & Test'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    return Material(
+      color: colors.surfaceContainerHighest,
+      borderRadius: BorderRadius.circular(12),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(12),
+        onTap: _showConfigDialog,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+          child: Row(
+            children: [
+              Icon(
+                _configured ? Icons.check_circle : Icons.email_outlined,
+                size: 22,
+                color: _configured ? Colors.greenAccent : colors.onSurface,
+              ),
+              const SizedBox(width: 14),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      _configured ? 'Email connected' : 'Connect email account',
+                      style: TextStyle(
+                        fontWeight: FontWeight.w500,
+                        color: _configured ? Colors.greenAccent : colors.onSurface,
+                      ),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      _configured
+                          ? 'Tap to change IMAP settings'
+                          : 'iCloud, Gmail, Outlook, Yahoo',
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: colors.onSurface.withAlpha(100),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              Icon(Icons.chevron_right, color: colors.onSurface.withAlpha(60)),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Shows what Ocula has indexed — contacts, photos, calendar, files, emails.
+class _IndexStatsCard extends StatefulWidget {
+  const _IndexStatsCard();
+
+  @override
+  State<_IndexStatsCard> createState() => _IndexStatsCardState();
+}
+
+class _IndexStatsCardState extends State<_IndexStatsCard> {
+  Map<String, int>? _sources;
+  int _totalChunks = 0;
+  int _knowledgeTriples = 0;
+  bool _reindexing = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadStats();
+  }
+
+  Future<void> _loadStats() async {
+    final db = OculaDB();
+    final sources = await db.sourceBreakdown();
+    final stats = await db.stats();
+    if (mounted) {
+      setState(() {
+        _sources = sources;
+        _totalChunks = stats['rag_chunks'] ?? 0;
+        _knowledgeTriples = stats['knowledge_triples'] ?? 0;
+      });
+    }
+  }
+
+  Future<void> _reindex() async {
+    setState(() => _reindexing = true);
+    await Indexer().runFullIndex();
+    await _loadStats();
+    if (mounted) setState(() => _reindexing = false);
+  }
+
+  static const _sourceConfig = <String, (IconData, String)>{
+    'contact': (Icons.people, 'Contacts'),
+    'photo': (Icons.photo_library, 'Photos'),
+    'calendar': (Icons.event, 'Calendar Events'),
+    'file': (Icons.insert_drive_file, 'Files'),
+    'email': (Icons.email, 'Emails'),
+    'chat': (Icons.chat_bubble, 'Conversations'),
+  };
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+
+    if (_sources == null) {
+      return const Center(child: CircularProgressIndicator());
+    }
+
+    final entries = _sourceConfig.entries.where((e) {
+      return (_sources![e.key] ?? 0) > 0;
+    }).toList();
+
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: colors.surfaceContainerHighest,
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // Source rows
+          if (entries.isEmpty)
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 8),
+              child: Text(
+                'No data indexed yet. Ocula will index your phone assets automatically.',
+                style: TextStyle(
+                  fontSize: 13,
+                  color: colors.onSurface.withAlpha(120),
+                ),
+              ),
+            )
+          else
+            for (final entry in entries)
+              _statRow(
+                icon: entry.value.$1,
+                label: entry.value.$2,
+                count: _sources![entry.key] ?? 0,
+                colors: colors,
+              ),
+
+          if (_totalChunks > 0) ...[
+            const Divider(height: 20),
+            Row(
+              children: [
+                Text(
+                  '$_totalChunks indexed items',
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: colors.onSurface.withAlpha(100),
+                  ),
+                ),
+                if (_knowledgeTriples > 0)
+                  Text(
+                    '  ·  $_knowledgeTriples knowledge facts',
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: colors.onSurface.withAlpha(100),
+                    ),
+                  ),
+              ],
+            ),
+          ],
+          const SizedBox(height: 12),
+          SizedBox(
+            width: double.infinity,
+            child: OutlinedButton.icon(
+              onPressed: _reindexing ? null : _reindex,
+              icon: _reindexing
+                  ? const SizedBox(
+                      width: 16, height: 16,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : const Icon(Icons.refresh, size: 18),
+              label: Text(_reindexing ? 'Re-indexing...' : 'Re-index Now'),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _statRow({
+    required IconData icon,
+    required String label,
+    required int count,
+    required ColorScheme colors,
+  }) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 4),
+      child: Row(
+        children: [
+          Icon(icon, size: 18, color: colors.primary),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Text(
+              label,
+              style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w500),
+            ),
+          ),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+            decoration: BoxDecoration(
+              color: colors.primary.withAlpha(25),
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: Text(
+              '$count',
+              style: TextStyle(
+                fontSize: 13,
+                fontWeight: FontWeight.bold,
+                color: colors.primary,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
 
 class _SectionHeader extends StatelessWidget {
   final String title;

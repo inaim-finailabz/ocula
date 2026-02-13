@@ -1,12 +1,17 @@
 // Local data layer — accesses everything on the user's device.
 // NOTHING leaves the phone. All processing is on-device.
 //
-// v2: Broader scanning, file fingerprints for change detection,
-// more file types, platform-aware directory discovery.
+// v3: Real platform integrations for photos, contacts, calendar.
+// All TODO stubs replaced with working implementations.
 
 import 'dart:io';
+import 'package:device_calendar/device_calendar.dart' as cal;
+import 'package:enough_mail/enough_mail.dart' as imap;
 import 'package:flutter/foundation.dart';
+import 'package:flutter_contacts/flutter_contacts.dart';
 import 'package:path_provider/path_provider.dart';
+import 'package:photo_manager/photo_manager.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 class LocalData {
   static final LocalData _instance = LocalData._();
@@ -14,35 +19,349 @@ class LocalData {
   LocalData._();
 
   // ──────────────────────────────────────────
+  // PERMISSIONS — request all at first launch
+  // ──────────────────────────────────────────
+
+  /// Request all asset permissions up front. Returns map of granted states.
+  /// Call once during onboarding or first launch.
+  Future<Map<String, bool>> requestAllPermissions() async {
+    final results = <String, bool>{};
+
+    // Photos
+    final photoState = await PhotoManager.requestPermissionExtend();
+    results['photos'] = photoState.isAuth || photoState == PermissionState.limited;
+
+    // Contacts
+    results['contacts'] = await FlutterContacts.requestPermission(readonly: true);
+
+    // Calendar
+    final calPlugin = cal.DeviceCalendarPlugin();
+    final calResult = await calPlugin.requestPermissions();
+    results['calendar'] = calResult.data ?? false;
+
+    if (kDebugMode) {
+      print('[LocalData] Permissions: $results');
+    }
+    return results;
+  }
+
+  // ──────────────────────────────────────────
   // PHOTOS & CAMERA ROLL
   // ──────────────────────────────────────────
 
-  /// Search photos by date, location, or content (after indexing).
+  /// Get recent photos from the device photo library.
+  /// Returns photos with metadata (date, dimensions) for indexing.
+  Future<List<LocalPhoto>> recentPhotos({int limit = 100}) async {
+    try {
+      final permitted = await PhotoManager.requestPermissionExtend();
+      if (!permitted.isAuth && permitted != PermissionState.limited) {
+        if (kDebugMode) print('[LocalData] Photo permission denied');
+        return [];
+      }
+
+      // Get all albums, start with recent/camera roll
+      final albums = await PhotoManager.getAssetPathList(
+        type: RequestType.image,
+        hasAll: true,
+      );
+      if (albums.isEmpty) return [];
+
+      // "Recent" or "All Photos" album is usually first
+      final recentAlbum = albums.first;
+      final assets = await recentAlbum.getAssetListRange(
+        start: 0,
+        end: limit,
+      );
+
+      final photos = <LocalPhoto>[];
+      for (final asset in assets) {
+        final file = await asset.file;
+        if (file == null) continue;
+
+        // Build a descriptive label from available metadata
+        final label = _buildPhotoLabel(asset);
+
+        photos.add(LocalPhoto(
+          path: file.path,
+          date: asset.createDateTime,
+          label: label,
+          width: asset.width,
+          height: asset.height,
+          assetId: asset.id,
+        ));
+      }
+
+      if (kDebugMode) {
+        print('[LocalData] Loaded ${photos.length} photos from library');
+      }
+      return photos;
+    } catch (e) {
+      if (kDebugMode) print('[LocalData] Photo access error: $e');
+      return [];
+    }
+  }
+
+  /// Search photos by date range or keyword in title/label.
   Future<List<LocalPhoto>> searchPhotos(String query) async {
-    // TODO: Use photo_manager to access camera roll and do label-based search
-    return [];
+    // Get all recent photos and filter locally
+    final all = await recentPhotos(limit: 500);
+    if (query.isEmpty) return all;
+
+    final lower = query.toLowerCase();
+    return all.where((p) {
+      final label = (p.label ?? '').toLowerCase();
+      return label.contains(lower);
+    }).toList();
   }
 
-  /// Get recent photos for quick access.
-  Future<List<LocalPhoto>> recentPhotos({int limit = 20}) async {
-    // TODO: photo_manager integration
-    return [];
+  /// Build a descriptive label for a photo from its metadata.
+  String _buildPhotoLabel(AssetEntity asset) {
+    final parts = <String>[];
+
+    // Type description
+    if (asset.width > asset.height) {
+      parts.add('Landscape photo');
+    } else if (asset.height > asset.width) {
+      parts.add('Portrait photo');
+    } else {
+      parts.add('Square photo');
+    }
+
+    // Dimensions
+    parts.add('${asset.width}x${asset.height}');
+
+    // Date
+    final d = asset.createDateTime;
+    parts.add('taken ${d.year}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')}');
+
+    // Title if available
+    if (asset.title != null && asset.title!.isNotEmpty) {
+      parts.add('titled "${asset.title}"');
+    }
+
+    return parts.join(', ');
   }
 
   // ──────────────────────────────────────────
-  // EMAIL (Local IMAP cache)
+  // CONTACTS
   // ──────────────────────────────────────────
 
-  /// Search local email cache by sender, subject, or content.
+  /// Get all contacts for indexing. Returns name, phone, email.
+  Future<List<LocalContact>> getAllContacts() async {
+    try {
+      final hasPermission = await FlutterContacts.requestPermission(readonly: true);
+      if (!hasPermission) {
+        if (kDebugMode) print('[LocalData] Contacts permission denied');
+        return [];
+      }
+
+      final contacts = await FlutterContacts.getContacts(
+        withProperties: true,
+        withPhoto: false, // Don't load photos — just metadata
+      );
+
+      final results = <LocalContact>[];
+      for (final c in contacts) {
+        final phone = c.phones.isNotEmpty ? c.phones.first.number : null;
+        final email = c.emails.isNotEmpty ? c.emails.first.address : null;
+        final org = c.organizations.isNotEmpty
+            ? c.organizations.first.company
+            : null;
+
+        results.add(LocalContact(
+          name: c.displayName,
+          phone: phone,
+          email: email,
+          organization: org,
+        ));
+      }
+
+      if (kDebugMode) {
+        print('[LocalData] Loaded ${results.length} contacts');
+      }
+      return results;
+    } catch (e) {
+      if (kDebugMode) print('[LocalData] Contacts access error: $e');
+      return [];
+    }
+  }
+
+  /// Search contacts by name, number, or email.
+  Future<List<LocalContact>> searchContacts(String query) async {
+    final all = await getAllContacts();
+    if (query.isEmpty) return all;
+
+    final lower = query.toLowerCase();
+    return all.where((c) {
+      return c.name.toLowerCase().contains(lower) ||
+          (c.phone?.contains(lower) ?? false) ||
+          (c.email?.toLowerCase().contains(lower) ?? false) ||
+          (c.organization?.toLowerCase().contains(lower) ?? false);
+    }).toList();
+  }
+
+  // ──────────────────────────────────────────
+  // CALENDAR
+  // ──────────────────────────────────────────
+
+  /// Get events for a date range from all device calendars.
+  Future<List<LocalEvent>> getEvents(DateTime from, DateTime to) async {
+    try {
+      final plugin = cal.DeviceCalendarPlugin();
+
+      // Request permission
+      var permResult = await plugin.hasPermissions();
+      if (permResult.data != true) {
+        permResult = await plugin.requestPermissions();
+        if (permResult.data != true) {
+          if (kDebugMode) print('[LocalData] Calendar permission denied');
+          return [];
+        }
+      }
+
+      // Get all calendars
+      final calendarsResult = await plugin.retrieveCalendars();
+      final calendars = calendarsResult.data ?? [];
+      if (calendars.isEmpty) return [];
+
+      final events = <LocalEvent>[];
+
+      for (final calendar in calendars) {
+        if (calendar.id == null) continue;
+
+        final eventsResult = await plugin.retrieveEvents(
+          calendar.id!,
+          cal.RetrieveEventsParams(
+            startDate: from,
+            endDate: to,
+          ),
+        );
+
+        for (final event in eventsResult.data ?? <cal.Event>[]) {
+          if (event.title == null || event.title!.isEmpty) continue;
+
+          events.add(LocalEvent(
+            title: event.title!,
+            start: event.start ?? from,
+            end: event.end ?? to,
+            location: event.location,
+            description: event.description,
+            calendarName: calendar.name,
+          ));
+        }
+      }
+
+      if (kDebugMode) {
+        print('[LocalData] Loaded ${events.length} calendar events '
+            '(${from.toIso8601String()} → ${to.toIso8601String()})');
+      }
+      return events;
+    } catch (e) {
+      if (kDebugMode) print('[LocalData] Calendar access error: $e');
+      return [];
+    }
+  }
+
+  // ──────────────────────────────────────────
+  // EMAIL (IMAP via enough_mail)
+  // ──────────────────────────────────────────
+
+  /// Check if email (IMAP) is configured.
+  Future<bool> get isEmailConfigured async {
+    final prefs = await SharedPreferences.getInstance();
+    final host = prefs.getString('imap_host') ?? '';
+    final user = prefs.getString('imap_user') ?? '';
+    return host.isNotEmpty && user.isNotEmpty;
+  }
+
+  /// Save IMAP credentials. Call from settings screen.
+  Future<void> saveEmailConfig({
+    required String host,
+    required int port,
+    required String user,
+    required String password,
+    bool useSsl = true,
+  }) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('imap_host', host);
+    await prefs.setInt('imap_port', port);
+    await prefs.setString('imap_user', user);
+    await prefs.setString('imap_password', password);
+    await prefs.setBool('imap_ssl', useSsl);
+  }
+
+  /// Fetch recent emails from IMAP server.
+  /// Credentials are stored locally via SharedPreferences.
+  /// All processing stays on-device — we just pull messages from the server.
+  Future<List<LocalEmail>> recentEmails({int limit = 50}) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final host = prefs.getString('imap_host') ?? '';
+      final user = prefs.getString('imap_user') ?? '';
+      final password = prefs.getString('imap_password') ?? '';
+      final port = prefs.getInt('imap_port') ?? 993;
+      final useSsl = prefs.getBool('imap_ssl') ?? true;
+
+      if (host.isEmpty || user.isEmpty || password.isEmpty) {
+        return []; // Not configured
+      }
+
+      final client = imap.ImapClient(isLogEnabled: false);
+      await client.connectToServer(host, port, isSecure: useSsl);
+      await client.login(user, password);
+
+      // Select INBOX
+      await client.selectInbox();
+
+      // Fetch last N messages
+      final fetchResult = await client.fetchRecentMessages(
+        messageCount: limit,
+        criteria: 'BODY.PEEK[HEADER.FIELDS (FROM SUBJECT DATE)] BODY.PEEK[TEXT]',
+      );
+
+      final emails = <LocalEmail>[];
+      for (final msg in fetchResult.messages) {
+        final from = msg.from?.first.email ?? msg.from?.first.personalName ?? '';
+        final subject = msg.decodeSubject() ?? '(no subject)';
+        final date = msg.decodeDate() ?? DateTime.now();
+        final body = msg.decodeTextPlainPart() ?? msg.decodeTextHtmlPart() ?? '';
+
+        // Truncate long bodies for indexing (keep first 2000 chars)
+        final truncBody = body.length > 2000
+            ? body.substring(0, 2000)
+            : body;
+
+        emails.add(LocalEmail(
+          from: from,
+          subject: subject,
+          body: truncBody,
+          date: date,
+        ));
+      }
+
+      await client.logout();
+
+      if (kDebugMode) {
+        print('[LocalData] Fetched ${emails.length} emails via IMAP');
+      }
+      return emails;
+    } catch (e) {
+      if (kDebugMode) print('[LocalData] Email fetch error: $e');
+      return [];
+    }
+  }
+
+  /// Search emails by sender, subject, or content.
   Future<List<LocalEmail>> searchEmails(String query) async {
-    // TODO: enough_mail IMAP integration
-    return [];
-  }
+    final all = await recentEmails(limit: 50);
+    if (query.isEmpty) return all;
 
-  /// Get recent emails.
-  Future<List<LocalEmail>> recentEmails({int limit = 10}) async {
-    // TODO: enough_mail IMAP integration
-    return [];
+    final lower = query.toLowerCase();
+    return all.where((e) {
+      return e.from.toLowerCase().contains(lower) ||
+          e.subject.toLowerCase().contains(lower) ||
+          e.body.toLowerCase().contains(lower);
+    }).toList();
   }
 
   // ──────────────────────────────────────────
@@ -264,26 +583,6 @@ class LocalData {
   }
 
   // ──────────────────────────────────────────
-  // CONTACTS
-  // ──────────────────────────────────────────
-
-  /// Search contacts by name, number, or email.
-  Future<List<LocalContact>> searchContacts(String query) async {
-    // TODO: flutter_contacts package integration
-    return [];
-  }
-
-  // ──────────────────────────────────────────
-  // CALENDAR
-  // ──────────────────────────────────────────
-
-  /// Get events for a date range.
-  Future<List<LocalEvent>> getEvents(DateTime from, DateTime to) async {
-    // TODO: device_calendar package integration
-    return [];
-  }
-
-  // ──────────────────────────────────────────
   // WEB (Only when user explicitly asks)
   // ──────────────────────────────────────────
 
@@ -309,9 +608,19 @@ class _ScanDir {
 class LocalPhoto {
   final String path;
   final DateTime date;
-  final String? label; // AI-generated label from SmolVLM indexing
+  final String? label; // AI-generated or metadata-based label
+  final int width;
+  final int height;
+  final String? assetId; // Platform asset ID for re-access
 
-  LocalPhoto({required this.path, required this.date, this.label});
+  LocalPhoto({
+    required this.path,
+    required this.date,
+    this.label,
+    this.width = 0,
+    this.height = 0,
+    this.assetId,
+  });
 }
 
 class LocalEmail {
@@ -350,8 +659,14 @@ class LocalContact {
   final String name;
   final String? phone;
   final String? email;
+  final String? organization;
 
-  LocalContact({required this.name, this.phone, this.email});
+  LocalContact({
+    required this.name,
+    this.phone,
+    this.email,
+    this.organization,
+  });
 }
 
 class LocalEvent {
@@ -359,11 +674,15 @@ class LocalEvent {
   final DateTime start;
   final DateTime end;
   final String? location;
+  final String? description;
+  final String? calendarName;
 
   LocalEvent({
     required this.title,
     required this.start,
     required this.end,
     this.location,
+    this.description,
+    this.calendarName,
   });
 }

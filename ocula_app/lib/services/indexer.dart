@@ -5,14 +5,11 @@ import 'rag_engine.dart';
 import 'local_data.dart';
 import 'ocula_db.dart';
 
-/// Background indexer v3 — lifecycle-aware, asset-linking, all-platform.
+/// Background indexer v4 — real data, real permissions, all phone assets.
 ///
-/// Improvements over v2:
-/// - WidgetsBindingObserver: re-indexes on app resume
-/// - Periodic timer: re-indexes every 15 minutes while app is active
-/// - Asset linking: detects phone numbers, emails, file paths, URLs in
-///   indexed content and stores them as asset_links for surfacing in chat
-/// - Identical behavior on iOS, Android, macOS, Linux, Windows
+/// Indexes: photos, contacts, calendar events, text files, chat history.
+/// Requests permissions eagerly on first launch so assets are available
+/// immediately for RAG queries.
 class Indexer with WidgetsBindingObserver {
   static final Indexer _instance = Indexer._internal();
   factory Indexer() => _instance;
@@ -29,6 +26,7 @@ class Indexer with WidgetsBindingObserver {
   Timer? _periodicTimer;
   bool _lifecycleRegistered = false;
   DateTime? _lastFullIndex;
+  bool _permissionsRequested = false;
 
   /// Minimum interval between full index runs (avoid battery drain).
   static const _minIndexInterval = Duration(minutes: 15);
@@ -54,8 +52,8 @@ class Indexer with WidgetsBindingObserver {
       _lifecycleRegistered = true;
     }
 
-    // Kick off the first index
-    runFullIndex();
+    // Request permissions then kick off the first index
+    _requestPermissionsAndIndex();
 
     // Periodic re-index while app is foregrounded
     _periodicTimer?.cancel();
@@ -85,6 +83,23 @@ class Indexer with WidgetsBindingObserver {
     }
   }
 
+  /// Request all permissions then start the first full index.
+  /// Only prompts once — subsequent calls skip the permission step.
+  Future<void> _requestPermissionsAndIndex() async {
+    if (!_permissionsRequested) {
+      _permissionsRequested = true;
+      try {
+        final results = await _local.requestAllPermissions();
+        if (kDebugMode) {
+          print('[Indexer] Permission results: $results');
+        }
+      } catch (e) {
+        if (kDebugMode) print('[Indexer] Permission request error: $e');
+      }
+    }
+    await runFullIndex();
+  }
+
   /// Run a full index pass with smart incremental updates.
   ///
   /// Files are checked by fingerprint (mtime + size). Only new or changed
@@ -109,22 +124,26 @@ class Indexer with WidgetsBindingObserver {
 
     final stopwatch = Stopwatch()..start();
 
-    // Step 1: Files (60% of progress) — most impactful for RAG
-    _reportProgress(0.0, 'Scanning files...');
+    // Step 1: Contacts (15% of progress) — fast, high value for RAG
+    _reportProgress(0.0, 'Indexing contacts...');
+    await _indexContacts();
+    _reportProgress(0.15, 'Contacts done. Scanning files...');
+
+    // Step 2: Files (35% of progress)
     await _indexFiles();
-    _reportProgress(0.6, 'Files done. Indexing emails...');
+    _reportProgress(0.50, 'Files done. Indexing photos...');
 
-    // Step 2: Emails (15% of progress)
-    await _indexEmails();
-    _reportProgress(0.75, 'Emails done. Indexing photos...');
-
-    // Step 3: Photos (15% of progress)
+    // Step 3: Photos (20% of progress)
     await _indexPhotos();
-    _reportProgress(0.9, 'Photos done. Indexing calendar...');
+    _reportProgress(0.70, 'Photos done. Indexing calendar...');
 
-    // Step 4: Calendar (10% of progress)
+    // Step 4: Calendar (15% of progress)
     await _indexCalendar();
-    _reportProgress(0.95, 'Saving index...');
+    _reportProgress(0.85, 'Calendar done. Indexing emails...');
+
+    // Step 5: Emails (5% of progress — stub for now)
+    await _indexEmails();
+    _reportProgress(0.90, 'Saving index...');
 
     // Single batch save at the end
     await _rag.save();
@@ -167,7 +186,7 @@ class Indexer with WidgetsBindingObserver {
     await _rag.save();
   }
 
-  /// Manually index a specific file path.
+  /// Manually index a specific file path (for user-uploaded files).
   Future<bool> indexFilePath(String path) async {
     await _rag.init();
     final content = await _local.readFileContent(path);
@@ -182,10 +201,21 @@ class Indexer with WidgetsBindingObserver {
       modified: DateTime.now(),
       fingerprint: fingerprint,
     );
+
+    // Link the file as an openable asset
+    final sourceId = 'file:$name';
+    await _db.linkAsset(
+      sourceId: sourceId,
+      assetType: 'file',
+      assetRef: path,
+      label: name,
+    );
+    await _db.linkDetectedAssets(content, 'file', sourceId);
+
     await _rag.save();
 
     if (kDebugMode) {
-      print('[Indexer] Indexed file: $name (${content.length} chars)');
+      print('[Indexer] Indexed uploaded file: $name (${content.length} chars)');
     }
     return true;
   }
@@ -193,7 +223,65 @@ class Indexer with WidgetsBindingObserver {
   void _reportProgress(double progress, String status) {
     _progress = progress;
     onProgress?.call(progress, status);
+    if (kDebugMode) print('[Indexer] $status ($progress)');
   }
+
+  // ──────────────────────────────────────────
+  // CONTACTS — index all contacts for RAG
+  // ──────────────────────────────────────────
+
+  Future<void> _indexContacts() async {
+    try {
+      final contacts = await _local.getAllContacts();
+      if (kDebugMode) {
+        print('[Indexer] Found ${contacts.length} contacts to index');
+      }
+
+      for (final contact in contacts) {
+        final sourceId = 'contact:${contact.name}';
+
+        // Build structured text for RAG — newlines help the model parse fields
+        final parts = <String>['Name: ${contact.name}'];
+        if (contact.phone != null) parts.add('Phone number: ${contact.phone}');
+        if (contact.email != null) parts.add('Email address: ${contact.email}');
+        if (contact.organization != null) {
+          parts.add('Works at: ${contact.organization}');
+        }
+        final content = parts.join('\n');
+
+        // Fingerprint based on content hash for change detection
+        final fingerprint = content.hashCode.toString();
+
+        final indexed = await _rag.index(
+          content: content,
+          source: 'contact',
+          sourceId: sourceId,
+          timestamp: DateTime.now(),
+          fingerprint: fingerprint,
+        );
+
+        // Link as tappable asset
+        await _db.linkAsset(
+          sourceId: sourceId,
+          assetType: 'contact',
+          assetRef: contact.phone ?? contact.email ?? contact.name,
+          label: contact.name,
+        );
+
+        if (indexed) {
+          _filesIndexed++;
+        } else {
+          _filesSkipped++;
+        }
+      }
+    } catch (e) {
+      if (kDebugMode) print('[Indexer] Contact indexing error: $e');
+    }
+  }
+
+  // ──────────────────────────────────────────
+  // FILES
+  // ──────────────────────────────────────────
 
   Future<void> _indexFiles() async {
     try {
@@ -205,8 +293,8 @@ class Indexer with WidgetsBindingObserver {
       for (int i = 0; i < files.length; i++) {
         final file = files[i];
 
-        // Progress within file step (0.0 → 0.6)
-        _progress = 0.6 * (i / files.length);
+        // Progress within file step (0.15 → 0.50)
+        _progress = 0.15 + 0.35 * (i / files.length);
 
         // Check fingerprint — skip unchanged files
         final sourceId = 'file:${file.name}';
@@ -220,7 +308,6 @@ class Indexer with WidgetsBindingObserver {
         try {
           final content = await _local.readFileContent(file.path);
           if (content != null && content.isNotEmpty) {
-            final sourceIdFull = 'file:${file.name}';
             final indexed = await _rag.indexFile(
               fileName: file.name,
               textContent: content,
@@ -232,13 +319,13 @@ class Indexer with WidgetsBindingObserver {
               _filesIndexed++;
               // Link the file itself as an openable asset
               await _db.linkAsset(
-                sourceId: sourceIdFull,
+                sourceId: sourceId,
                 assetType: 'file',
                 assetRef: file.path,
                 label: file.name,
               );
               // Detect phone numbers, emails, URLs in content
-              await _db.linkDetectedAssets(content, 'file', sourceIdFull);
+              await _db.linkDetectedAssets(content, 'file', sourceId);
             } else {
               _filesSkipped++;
             }
@@ -254,6 +341,10 @@ class Indexer with WidgetsBindingObserver {
       if (kDebugMode) print('[Indexer] File indexing error: $e');
     }
   }
+
+  // ──────────────────────────────────────────
+  // EMAILS (stub — deferred)
+  // ──────────────────────────────────────────
 
   Future<void> _indexEmails() async {
     try {
@@ -290,12 +381,31 @@ class Indexer with WidgetsBindingObserver {
     }
   }
 
+  // ──────────────────────────────────────────
+  // PHOTOS
+  // ──────────────────────────────────────────
+
   Future<void> _indexPhotos() async {
     try {
-      final photos = await _local.recentPhotos(limit: 100);
-      for (final photo in photos) {
+      final photos = await _local.recentPhotos(limit: 200);
+      if (kDebugMode) {
+        print('[Indexer] Found ${photos.length} photos to index');
+      }
+
+      for (int i = 0; i < photos.length; i++) {
+        final photo = photos[i];
+        // Progress within photo step (0.50 → 0.70)
+        _progress = 0.50 + 0.20 * (i / photos.length);
+
         if (photo.label != null) {
-          final sourceId = 'photo:${photo.path}';
+          final sourceId = 'photo:${photo.assetId ?? photo.path}';
+
+          // Skip if already indexed
+          if (await _db.hasChunksForSource(sourceId)) {
+            _filesSkipped++;
+            continue;
+          }
+
           await _rag.indexPhoto(
             path: photo.path,
             label: photo.label!,
@@ -308,24 +418,52 @@ class Indexer with WidgetsBindingObserver {
             assetRef: photo.path,
             label: photo.label ?? photo.path.split('/').last,
           );
+          _filesIndexed++;
         }
       }
     } catch (e) {
-      if (kDebugMode) print('[Indexer] Photo indexing skipped: $e');
+      if (kDebugMode) print('[Indexer] Photo indexing error: $e');
     }
   }
+
+  // ──────────────────────────────────────────
+  // CALENDAR
+  // ──────────────────────────────────────────
 
   Future<void> _indexCalendar() async {
     try {
       final now = DateTime.now();
+      // Index past 30 days + next 30 days for broader coverage
       final events = await _local.getEvents(
-        now.subtract(const Duration(days: 7)),
-        now.add(const Duration(days: 7)),
+        now.subtract(const Duration(days: 30)),
+        now.add(const Duration(days: 30)),
       );
+      if (kDebugMode) {
+        print('[Indexer] Found ${events.length} calendar events to index');
+      }
+
       for (final event in events) {
         final sourceId = 'cal:${event.title}:${event.start.toIso8601String()}';
-        final content = '${event.title} at ${event.location ?? "no location"} '
-            'on ${event.start}';
+
+        // Skip if already indexed
+        if (await _db.hasChunksForSource(sourceId)) {
+          _filesSkipped++;
+          continue;
+        }
+
+        final parts = <String>[event.title];
+        if (event.location != null && event.location!.isNotEmpty) {
+          parts.add('at ${event.location}');
+        }
+        parts.add('on ${event.start.toLocal().toString().substring(0, 16)}');
+        if (event.description != null && event.description!.isNotEmpty) {
+          parts.add(event.description!);
+        }
+        if (event.calendarName != null) {
+          parts.add('(${event.calendarName} calendar)');
+        }
+        final content = parts.join(' ');
+
         await _rag.index(
           content: content,
           source: 'calendar',
@@ -340,11 +478,11 @@ class Indexer with WidgetsBindingObserver {
           label: '${event.title} — ${event.start.toLocal().toString().substring(0, 16)}',
         );
         // Detect phone/email/URL in event details
-        final details = '${event.title} ${event.location ?? ''}';
-        await _db.linkDetectedAssets(details, 'calendar', sourceId);
+        await _db.linkDetectedAssets(content, 'calendar', sourceId);
+        _filesIndexed++;
       }
     } catch (e) {
-      if (kDebugMode) print('[Indexer] Calendar indexing skipped: $e');
+      if (kDebugMode) print('[Indexer] Calendar indexing error: $e');
     }
   }
 }

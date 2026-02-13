@@ -890,6 +890,19 @@ class OculaDB {
     };
   }
 
+  /// Get a breakdown of indexed items by source type.
+  Future<Map<String, int>> sourceBreakdown() async {
+    final d = await db;
+    final rows = await d.rawQuery(
+      'SELECT source, COUNT(*) as cnt FROM rag_chunks GROUP BY source',
+    );
+    final result = <String, int>{};
+    for (final row in rows) {
+      result[row['source'] as String] = row['cnt'] as int;
+    }
+    return result;
+  }
+
   // ════════════════════════════════════════════════════════════════════
   // ASSET LINKS — connect RAG sources to openable phone assets
   // ════════════════════════════════════════════════════════════════════

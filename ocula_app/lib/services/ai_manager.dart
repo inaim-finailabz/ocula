@@ -438,11 +438,23 @@ class AIManager {
   }) async {
     // Build ChatML-formatted prompt — SmolVLM2 and Qwen3 both use this template
     final langPrefix = _appLang.promptPrefix;
-    final systemMsg = '${langPrefix}You are Ocula, a private AI assistant that runs '
-        'entirely on-device. Be concise and helpful. Answer only the user\'s question.';
+    final systemMsg = context.isNotEmpty
+        ? '${langPrefix}You are Ocula, a private AI assistant running on the user\'s phone. '
+          'You have access to the user\'s real phone data below. '
+          'ALWAYS use the provided data to answer. Include specific details like '
+          'phone numbers, emails, dates, and names from the data. '
+          'Never make up information. If the data answers the question, use it directly.\n'
+          'After answering, ALWAYS end with a short follow-up question to keep the conversation going. '
+          'Examples: "Want me to call them?", "Should I set a reminder?", '
+          '"Need directions there?", "Want me to draft a message?", '
+          '"Should I look up more details?"\n'
+          'Be concise and helpful.'
+        : '${langPrefix}You are Ocula, a private AI assistant running entirely on-device. '
+          'After answering, end with a brief follow-up question or suggestion to help further. '
+          'Be concise and helpful.';
 
     final userMsg = context.isNotEmpty
-        ? 'Context:\n$context\n\n$prompt'
+        ? '--- USER\'S PHONE DATA ---\n$context\n--- END DATA ---\n\nQuestion: $prompt'
         : prompt;
 
     final fullPrompt = '<|im_start|>system\n$systemMsg<|im_end|>\n'

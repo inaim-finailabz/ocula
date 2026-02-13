@@ -225,26 +225,46 @@ class Orchestrator {
       case QueryIntent.calendar:
         sourceHint = 'calendar';
         break;
+      case QueryIntent.contact:
+        sourceHint = 'contact';
+        break;
       default:
         break;
     }
 
-    final context = await _rag.getContext(state.query, sourceHint: sourceHint);
-    state.ragContext = context;
+    // Single search — reuse results for both context and asset linking
+    final results = await _rag.search(state.query, sourceHint: sourceHint);
 
-    // Collect linked assets from RAG source IDs
-    try {
-      final results = await _rag.search(state.query, sourceHint: sourceHint);
-      final sourceIds = results.map((r) => r.sourceId).toList();
-      if (sourceIds.isNotEmpty) {
+    if (results.isNotEmpty) {
+      // Build context string from results
+      state.ragContext = results.map((r) {
+        final label = _sourceLabel(r.source);
+        return '$label: ${r.text}';
+      }).join('\n\n');
+
+      // Collect linked assets from RAG source IDs
+      try {
+        final sourceIds = results.map((r) => r.sourceId).toList();
         state.linkedAssets = await OculaDB().findLinkedAssets(sourceIds);
+      } catch (e) {
+        if (kDebugMode) print('[Orchestrator] Asset linking skipped: $e');
       }
-    } catch (e) {
-      if (kDebugMode) print('[Orchestrator] Asset linking skipped: $e');
     }
 
     state.stepsCompleted.add('retrieve');
     return state;
+  }
+
+  String _sourceLabel(String source) {
+    switch (source) {
+      case 'contact': return 'CONTACT';
+      case 'calendar': return 'CALENDAR EVENT';
+      case 'photo': return 'PHOTO';
+      case 'file': return 'FILE';
+      case 'email': return 'EMAIL';
+      case 'chat': return 'PREVIOUS CONVERSATION';
+      default: return source.toUpperCase();
+    }
   }
 
   /// Node 3: Check episodic memory for recent conversations about this topic.
