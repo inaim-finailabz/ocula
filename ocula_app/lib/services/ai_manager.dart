@@ -431,31 +431,75 @@ class AIManager {
   /// 2. If image attached, use vision engine (separate native bridge, no
   ///    need to unload text engine — they have independent global state)
   /// 3. Generate response
+  ///
+  /// [intent] helps tailor the system prompt to the data type (contact,
+  /// file, photo, etc.) so the model grounds its answer in phone assets.
   Future<String> ask(String prompt, {
     String context = '',
     bool hasImage = false,
     String? imagePath,
+    QueryIntent intent = QueryIntent.chat,
   }) async {
     // Build ChatML-formatted prompt — SmolVLM2 and Qwen3 both use this template
     final langPrefix = _appLang.promptPrefix;
-    final systemMsg = context.isNotEmpty
-        ? '${langPrefix}You are Ocula, a private AI assistant running on the user\'s phone. '
-          'You have access to the user\'s real phone data below. '
-          'ALWAYS use the provided data to answer. Include specific details like '
-          'phone numbers, emails, dates, and names from the data. '
-          'Never make up information. If the data answers the question, use it directly.\n'
-          'After answering, ALWAYS end with a short follow-up question to keep the conversation going. '
-          'Examples: "Want me to call them?", "Should I set a reminder?", '
-          '"Need directions there?", "Want me to draft a message?", '
-          '"Should I look up more details?"\n'
-          'Be concise and helpful.'
-        : '${langPrefix}You are Ocula, a private AI assistant running entirely on-device. '
-          'After answering, end with a brief follow-up question or suggestion to help further. '
-          'Be concise and helpful.';
 
-    final userMsg = context.isNotEmpty
-        ? '--- USER\'S PHONE DATA ---\n$context\n--- END DATA ---\n\nQuestion: $prompt'
-        : prompt;
+    // ── System prompt: grounded in phone assets when context exists ──
+    final String systemMsg;
+
+    if (hasImage && imagePath != null) {
+      // Image analysis mode — tell the model to describe what it sees
+      systemMsg = '${langPrefix}You are Ocula, a private AI assistant running on the user\'s phone. '
+          'The user has shared an image from their device. '
+          'Carefully analyze and describe what you see in the image. '
+          'Identify objects, text, people, scenes, colors, and any notable details. '
+          'If it looks like a document or receipt, extract the key information. '
+          'If it looks like a screenshot, describe the content shown. '
+          'If it contains text, read and transcribe it. '
+          'Be specific and detailed in your description.\n'
+          'After describing, ask a relevant follow-up: '
+          '"Want me to save this info?", "Should I find related contacts?", '
+          '"Need me to extract the text?", "Want to share this?"';
+    } else if (context.isNotEmpty) {
+      // RAG-grounded mode — phone assets are available
+      final intentGuide = _intentGuide(intent);
+      systemMsg = '${langPrefix}You are Ocula, a private AI assistant running on the user\'s phone. '
+          'You have access to the user\'s REAL phone data below (contacts, files, photos, '
+          'calendar events, emails, and previous conversations). '
+          'CRITICAL RULES:\n'
+          '1. ALWAYS answer using the provided phone data first. Never make up information.\n'
+          '2. Include specific details: phone numbers, email addresses, dates, file names, '
+          'event times, and contact names exactly as they appear in the data.\n'
+          '3. If the data contains the answer, use it directly — do NOT give a generic response.\n'
+          '4. If a document or file is in the data, summarize its key points and mention the file name.\n'
+          '5. If a contact is found, show their name, phone, and email.\n'
+          '6. If the data does NOT answer the question, say so honestly and suggest what to try.\n'
+          '$intentGuide'
+          'After answering, end with a contextual follow-up question:\n'
+          '- For contacts: "Want me to call them?" or "Should I draft a message?"\n'
+          '- For files/docs: "Want me to find similar files?" or "Need a summary of another document?"\n'
+          '- For calendar: "Should I set a reminder?" or "Want to reschedule?"\n'
+          '- For emails: "Want to reply?" or "Should I find related emails?"\n'
+          '- For photos: "Want to see more photos from that day?" or "Should I share this?"\n'
+          'Be concise, specific, and actionable.';
+    } else {
+      // No context — general assistant mode
+      systemMsg = '${langPrefix}You are Ocula, a private AI assistant running entirely on-device. '
+          'The user\'s phone data (contacts, files, calendar, photos, emails) has been indexed '
+          'but no matching data was found for this query. '
+          'Answer helpfully, but remind the user they can ask about their phone data: '
+          '"I can also search your contacts, files, calendar, or photos if needed." '
+          'After answering, end with a brief follow-up question or suggestion. '
+          'Be concise and helpful.';
+    }
+
+    // ── User message: structured for clarity ──
+    final String userMsg;
+    if (context.isNotEmpty) {
+      userMsg = '--- USER\'S PHONE DATA ---\n$context\n--- END DATA ---\n\n'
+          'Based on the phone data above, answer this: $prompt';
+    } else {
+      userMsg = prompt;
+    }
 
     final fullPrompt = '<|im_start|>system\n$systemMsg<|im_end|>\n'
         '<|im_start|>user\n$userMsg<|im_end|>\n'
@@ -499,6 +543,33 @@ class AIManager {
     var text = response.text;
     text = text.replaceAll('<|im_end|>', '').replaceAll('<|im_start|>', '').trim();
     return text;
+  }
+
+  /// Build intent-specific guidance to narrow down the model's response.
+  String _intentGuide(QueryIntent intent) {
+    switch (intent) {
+      case QueryIntent.contact:
+        return '7. The user is looking for CONTACT information. '
+            'Prioritize showing names, phone numbers, and emails from the data. '
+            'Ask: "Is this the contact you were looking for?"\n';
+      case QueryIntent.file:
+        return '7. The user is asking about a FILE or DOCUMENT on their phone. '
+            'Summarize the key content of the file. Mention the file name and type. '
+            'If it\'s a long document, provide the main points.\n';
+      case QueryIntent.calendar:
+        return '7. The user is asking about their CALENDAR or SCHEDULE. '
+            'Show exact dates, times, locations, and event names from the data. '
+            'Mention if events conflict or are upcoming soon.\n';
+      case QueryIntent.email:
+        return '7. The user is asking about their EMAILS. '
+            'Show sender, subject, date, and key content. '
+            'Mention any action items or attachments.\n';
+      case QueryIntent.photo:
+        return '7. The user is asking about their PHOTOS. '
+            'Describe matching photos by date, content, and location if available.\n';
+      default:
+        return '';
+    }
   }
 
   /// Stop any in-flight generation (text or vision).

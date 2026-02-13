@@ -1,4 +1,6 @@
+import 'dart:io';
 import 'package:flutter/material.dart';
+import 'package:file_picker/file_picker.dart';
 import 'package:url_launcher/url_launcher.dart';
 import '../widgets/model_management.dart';
 import '../screens/enterprise_settings.dart';
@@ -113,6 +115,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 const _SectionHeader(title: 'Voice'),
                 const SizedBox(height: 8),
                 _voiceList(colors),
+                const SizedBox(height: 16),
+
+                // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+                // CUSTOM VOICE UPLOAD
+                // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+                _customVoiceSection(colors),
                 const SizedBox(height: 24),
 
                 _SectionHeader(title: 'Speed', trailing: _rateLabel(_rate)),
@@ -935,6 +943,102 @@ class _SettingsScreenState extends State<SettingsScreen> {
         },
       ),
     );
+  }
+
+  // ── Custom Voice Upload ──
+
+  Widget _customVoiceSection(ColorScheme colors) {
+    final hasVoice = widget.speech.hasCustomVoice;
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: colors.surfaceContainerHighest,
+        borderRadius: BorderRadius.circular(12),
+        border: hasVoice ? Border.all(color: Colors.greenAccent.withAlpha(80)) : null,
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(
+                hasVoice ? Icons.graphic_eq : Icons.upload_file,
+                size: 20,
+                color: hasVoice ? Colors.greenAccent : colors.onSurface,
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  hasVoice ? 'Custom voice uploaded' : 'Upload your voice',
+                  style: TextStyle(
+                    fontWeight: FontWeight.w600,
+                    fontSize: 14,
+                    color: hasVoice ? Colors.greenAccent : colors.onSurface,
+                  ),
+                ),
+              ),
+              if (hasVoice)
+                IconButton(
+                  icon: Icon(Icons.delete_outline, size: 20, color: colors.error),
+                  tooltip: 'Remove custom voice',
+                  onPressed: () async {
+                    await widget.speech.removeCustomVoice();
+                    setState(() {});
+                  },
+                ),
+            ],
+          ),
+          const SizedBox(height: 6),
+          Text(
+            hasVoice
+                ? 'Your voice sample is stored locally for future voice cloning.'
+                : 'Upload a voice recording (.wav, .m4a, .mp3) to personalize how Ocula speaks. '
+                  'Your voice sample stays on-device.',
+            style: TextStyle(
+              fontSize: 12,
+              color: colors.onSurface.withAlpha(120),
+              height: 1.3,
+            ),
+          ),
+          if (!hasVoice) ...[
+            const SizedBox(height: 10),
+            SizedBox(
+              width: double.infinity,
+              child: OutlinedButton.icon(
+                onPressed: _pickCustomVoice,
+                icon: const Icon(Icons.mic, size: 18),
+                label: const Text('Choose voice file'),
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Future<void> _pickCustomVoice() async {
+    try {
+      final result = await FilePicker.platform.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: ['wav', 'm4a', 'mp3', 'aac', 'ogg', 'caf'],
+      );
+      if (result != null && result.files.single.path != null) {
+        final file = File(result.files.single.path!);
+        final saved = await widget.speech.saveCustomVoice(file);
+        if (saved != null && mounted) {
+          setState(() {});
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Voice sample saved successfully')),
+          );
+        }
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Could not upload voice: $e')),
+        );
+      }
+    }
   }
 
   // ── Internet Access Tiles ──

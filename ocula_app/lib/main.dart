@@ -300,6 +300,18 @@ class _AssistantScreenState extends State<AssistantScreen>
   }
 
   Future<void> _send(String text) async {
+    final image = _attachedImage;
+    final doc = _attachedDocument;
+    final docName = _attachedDocName;
+
+    // If image attached with no text, provide a default prompt
+    if (text.trim().isEmpty && image != null) {
+      text = 'Describe this image in detail. What do you see?';
+    }
+    // If doc attached with no text, provide a default prompt
+    if (text.trim().isEmpty && doc != null) {
+      text = 'Summarize this document and highlight the key points.';
+    }
     if (text.trim().isEmpty) return;
     _textController.clear();
 
@@ -307,10 +319,6 @@ class _AssistantScreenState extends State<AssistantScreen>
     if (_isThinking || _isSpeaking) {
       await _stopEverything();
     }
-
-    final image = _attachedImage;
-    final doc = _attachedDocument;
-    final docName = _attachedDocName;
 
     // If a document is attached, prepend its content to the query
     String queryText = text;
@@ -322,16 +330,23 @@ class _AssistantScreenState extends State<AssistantScreen>
           final truncated = content.length > 4000
               ? content.substring(0, 4000)
               : content;
-          queryText = '[Attached file: $docName]\n$truncated\n\nUser question: $text';
+          queryText = '[Attached document: $docName]\n'
+              '--- DOCUMENT CONTENT ---\n$truncated\n--- END DOCUMENT ---\n\n'
+              'User request: $text';
         }
       } catch (_) {
         // Binary file — just reference the name
-        queryText = '[Attached file: $docName] $text';
+        queryText = '[Attached file: $docName — binary file, cannot read text content] $text';
       }
     }
 
+    // Display text — show the actual user text, not the augmented query
+    final displayText = image != null && text == 'Describe this image in detail. What do you see?'
+        ? 'Analyze this image'
+        : text;
+
     setState(() {
-      _messages.add(_Message(text: text, isUser: true, image: image));
+      _messages.add(_Message(text: displayText, isUser: true, image: image));
       _attachedImage = null;
       _attachedDocument = null;
       _attachedDocName = null;

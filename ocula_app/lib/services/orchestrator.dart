@@ -404,6 +404,7 @@ class Orchestrator {
       context: context,
       hasImage: state.hasImage,
       imagePath: state.imagePath,
+      intent: state.intent,
     );
     state.stepsCompleted.add('generate');
     return state;

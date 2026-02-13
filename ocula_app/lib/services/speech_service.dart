@@ -1,7 +1,9 @@
+import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:speech_to_text/speech_to_text.dart' as stt;
 import 'package:flutter_tts/flutter_tts.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:path_provider/path_provider.dart';
 import 'ai_manager.dart';
 
 /// Handles voice input (STT) and voice output (TTS) for the AI assistant.
@@ -23,11 +25,17 @@ class SpeechService {
   String _language = 'en-US';
   Map<String, String>? _voice; // {"name": ..., "locale": ...}
 
+  /// Path to user-uploaded custom voice sample file.
+  /// Stored locally for future on-device voice cloning support.
+  String? _customVoicePath;
+
   double get rate => _rate;
   double get pitch => _pitch;
   double get volume => _volume;
   String get language => _language;
   Map<String, String>? get voice => _voice;
+  String? get customVoicePath => _customVoicePath;
+  bool get hasCustomVoice => _customVoicePath != null && _customVoicePath!.isNotEmpty;
 
   SpeechService({AIManager? aiManager})
       : _aiManager = aiManager ?? AIManager();
@@ -171,6 +179,47 @@ class SpeechService {
     await _tts.stop();
   }
 
+  // ── Custom Voice Upload ──
+
+  /// Save a custom voice sample file.
+  /// Copies the source file to the app's documents directory so it persists.
+  /// Returns the stored path on success, null on failure.
+  Future<String?> saveCustomVoice(File sourceFile) async {
+    try {
+      final dir = await getApplicationDocumentsDirectory();
+      final voiceDir = Directory('${dir.path}/custom_voices');
+      if (!await voiceDir.exists()) {
+        await voiceDir.create(recursive: true);
+      }
+
+      final ext = sourceFile.path.split('.').last;
+      final destPath = '${voiceDir.path}/custom_voice.$ext';
+      await sourceFile.copy(destPath);
+
+      _customVoicePath = destPath;
+      await _saveSettings();
+      debugPrint('[SpeechService] Custom voice saved: $destPath');
+      return destPath;
+    } catch (e) {
+      debugPrint('[SpeechService] Failed to save custom voice: $e');
+      return null;
+    }
+  }
+
+  /// Remove the stored custom voice sample.
+  Future<void> removeCustomVoice() async {
+    if (_customVoicePath != null) {
+      try {
+        final file = File(_customVoicePath!);
+        if (await file.exists()) {
+          await file.delete();
+        }
+      } catch (_) {}
+      _customVoicePath = null;
+      await _saveSettings();
+    }
+  }
+
   // ── Persistence ──
 
   Future<void> _loadSettings() async {
@@ -179,6 +228,7 @@ class SpeechService {
     _pitch = prefs.getDouble('tts_pitch') ?? 1.0;
     _volume = prefs.getDouble('tts_volume') ?? 1.0;
     _language = prefs.getString('tts_language') ?? 'en-US';
+    _customVoicePath = prefs.getString('tts_custom_voice_path');
     final voiceName = prefs.getString('tts_voice_name');
     final voiceLocale = prefs.getString('tts_voice_locale');
     if (voiceName != null && voiceLocale != null) {
@@ -205,6 +255,11 @@ class SpeechService {
     if (_voice != null) {
       await prefs.setString('tts_voice_name', _voice!['name'] ?? '');
       await prefs.setString('tts_voice_locale', _voice!['locale'] ?? '');
+    }
+    if (_customVoicePath != null) {
+      await prefs.setString('tts_custom_voice_path', _customVoicePath!);
+    } else {
+      await prefs.remove('tts_custom_voice_path');
     }
   }
 }
