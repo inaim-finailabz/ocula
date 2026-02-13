@@ -52,7 +52,13 @@ class RAGEngine {
     _cachedCount = await _db.chunkCount;
 
     try {
-      _embeddingDim = await FlutterLlama.instance.getEmbeddingDim();
+      // Prefer dedicated embedding model dimension
+      final llama = FlutterLlama.instance;
+      if (llama.isEmbeddingModelLoaded) {
+        _embeddingDim = await llama.getEmbeddingModelDim();
+      } else {
+        _embeddingDim = await llama.getEmbeddingDim();
+      }
       if (kDebugMode) {
         print('[RAG] Init: $_cachedCount entries in DB, dim=$_embeddingDim');
       }
@@ -61,6 +67,25 @@ class RAGEngine {
     }
 
     _isInitialized = true;
+  }
+
+  /// Check if existing embeddings need re-indexing (e.g. embedding model changed).
+  /// Call after loading the embedding model for the first time.
+  Future<bool> needsReindex() async {
+    final meta = await _db.getMeta('embedding_model');
+    final llama = FlutterLlama.instance;
+    final currentModel = llama.isEmbeddingModelLoaded ? 'minilm-v2' : 'generative';
+    if (meta != currentModel && _cachedCount > 0) {
+      return true; // Embedding model changed — vectors are incompatible
+    }
+    return false;
+  }
+
+  /// Mark the current embedding model version in metadata.
+  Future<void> markEmbeddingModel() async {
+    final llama = FlutterLlama.instance;
+    final model = llama.isEmbeddingModelLoaded ? 'minilm-v2' : 'generative';
+    await _db.setMeta('embedding_model', model);
   }
 
   // ══════════════════════════════════════════
@@ -334,16 +359,32 @@ class RAGEngine {
   // EMBEDDINGS
   // ══════════════════════════════════════════
 
-  /// Embed text via llama.cpp. Falls back to empty (keyword-only mode).
+  /// Embed text via llama.cpp.
+  ///
+  /// Priority:
+  /// 1. Dedicated embedding model (all-MiniLM-L6-v2) — high-quality sentence embeddings
+  /// 2. Generative model fallback — lower quality but better than nothing
+  /// 3. Empty list — keyword-only mode (FTS5 BM25 still works)
   Future<List<double>> _embed(String text) async {
     try {
       final llama = FlutterLlama.instance;
-      if (!llama.isModelLoaded) return [];
 
-      final embedding = await llama.getEmbedding(text);
-      if (embedding != null && embedding.isNotEmpty) {
-        _embeddingDim = embedding.length;
-        return embedding;
+      // Prefer dedicated embedding model (trained for sentence similarity)
+      if (llama.isEmbeddingModelLoaded) {
+        final embedding = await llama.getEmbeddingV2(text);
+        if (embedding != null && embedding.isNotEmpty) {
+          _embeddingDim = embedding.length;
+          return embedding;
+        }
+      }
+
+      // Fallback: generative model embeddings (lower quality)
+      if (llama.isModelLoaded) {
+        final embedding = await llama.getEmbedding(text);
+        if (embedding != null && embedding.isNotEmpty) {
+          _embeddingDim = embedding.length;
+          return embedding;
+        }
       }
     } catch (e) {
       if (kDebugMode) {

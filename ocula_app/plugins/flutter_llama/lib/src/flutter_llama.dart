@@ -242,6 +242,82 @@ class FlutterLlama {
       return 0;
     }
   }
+
+  // ════════════════════════════════════════════
+  // DEDICATED EMBEDDING MODEL (for high-quality RAG)
+  // ════════════════════════════════════════════
+
+  bool _isEmbeddingModelLoaded = false;
+
+  /// Whether a dedicated embedding model is loaded.
+  bool get isEmbeddingModelLoaded => _isEmbeddingModelLoaded;
+
+  /// Load a dedicated embedding model (e.g. all-MiniLM-L6-v2 GGUF).
+  /// This is independent from the generative model.
+  Future<bool> loadEmbeddingModel(String modelPath) async {
+    try {
+      final result = await _channel.invokeMethod<bool>(
+        'loadEmbeddingModel',
+        {'modelPath': modelPath},
+      );
+      _isEmbeddingModelLoaded = result ?? false;
+      if (kDebugMode) {
+        print('[FlutterLlama] Embedding model loaded: $_isEmbeddingModelLoaded');
+      }
+      return _isEmbeddingModelLoaded;
+    } catch (e) {
+      if (kDebugMode) {
+        print('[FlutterLlama] Error loading embedding model: $e');
+      }
+      _isEmbeddingModelLoaded = false;
+      return false;
+    }
+  }
+
+  /// Compute embedding using the dedicated embedding model.
+  /// Returns high-quality sentence embeddings (384-dim for MiniLM).
+  /// Returns null if embedding model is not loaded.
+  Future<List<double>?> getEmbeddingV2(String text) async {
+    if (!_isEmbeddingModelLoaded) return null;
+    try {
+      final result = await _channel.invokeMethod<List<dynamic>>(
+        'getEmbeddingV2',
+        {'text': text},
+      );
+      if (result == null) return null;
+      return result.cast<double>();
+    } catch (e) {
+      if (kDebugMode) {
+        print('[FlutterLlama] Error getting embedding v2: $e');
+      }
+      return null;
+    }
+  }
+
+  /// Unload the dedicated embedding model.
+  Future<void> unloadEmbeddingModel() async {
+    try {
+      await _channel.invokeMethod<void>('unloadEmbeddingModel');
+      _isEmbeddingModelLoaded = false;
+      if (kDebugMode) {
+        print('[FlutterLlama] Embedding model unloaded');
+      }
+    } catch (e) {
+      if (kDebugMode) {
+        print('[FlutterLlama] Error unloading embedding model: $e');
+      }
+    }
+  }
+
+  /// Get the embedding dimension of the dedicated embedding model.
+  Future<int> getEmbeddingModelDim() async {
+    try {
+      final result = await _channel.invokeMethod<int>('getEmbeddingModelDim');
+      return result ?? 0;
+    } catch (e) {
+      return 0;
+    }
+  }
   
   /// Load model with automatic download from HuggingFace or Ollama
   /// 

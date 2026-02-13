@@ -29,6 +29,7 @@ class ModelInfo {
   final int sizeBytes;
   final AITier tier;
   final bool isVisionProjector;
+  final bool isEmbeddingModel;
 
   const ModelInfo({
     required this.fileName,
@@ -37,6 +38,7 @@ class ModelInfo {
     required this.sizeBytes,
     required this.tier,
     this.isVisionProjector = false,
+    this.isEmbeddingModel = false,
   });
 
   double get sizeMB => sizeBytes / (1024 * 1024);
@@ -68,25 +70,35 @@ class OculaModelManager {
   // ── Model Registry ── 2026 Ocula Intelligence Stack
   // Served by serve_models.sh (python3 http.server on port 8080)
   //
-  // Tier free  (Sensor)     – SmolVLM2-256M: instant response, video support
+  // Tier free  (Sensor)     – SmolVLM2-500M: fast response, video support, better instruction following
   // Tier plus  (Specialist) – Moondream 2:   pointing (x,y) & counting
   // Tier pro   (Thinker)    – Qwen3-VL-2B:   chain-of-thought reasoning
+  // Embedding                – all-MiniLM-L6-v2: sentence similarity for RAG
   static const models = [
-    // ── SENSOR: Always-on, fast & tiny ──
+    // ── SENSOR: Always-on, fast & capable ──
     ModelInfo(
-      fileName: 'SmolVLM2-256M-Video-Instruct-Q8_0.gguf',
+      fileName: 'SmolVLM2-500M-Video-Instruct-Q8_0.gguf',
       displayName: 'Sensor Engine',
-      downloadUrl: 'https://backend-ocula.finailabz.com/models/SmolVLM2-256M-Video-Instruct-Q8_0.gguf',
-      sizeBytes: 175 * 1024 * 1024, // ~175 MB
+      downloadUrl: 'https://backend-ocula.finailabz.com/models/SmolVLM2-500M-Video-Instruct-Q8_0.gguf',
+      sizeBytes: 437 * 1024 * 1024, // ~437 MB
       tier: AITier.free,
     ),
     ModelInfo(
-      fileName: 'mmproj-SmolVLM2-256M-Video-Instruct-f16.gguf',
+      fileName: 'mmproj-SmolVLM2-500M-Video-Instruct-Q8_0.gguf',
       displayName: 'Sensor Vision',
-      downloadUrl: 'https://backend-ocula.finailabz.com/models/mmproj-SmolVLM2-256M-Video-Instruct-f16.gguf',
-      sizeBytes: 181 * 1024 * 1024, // ~181 MB
+      downloadUrl: 'https://backend-ocula.finailabz.com/models/mmproj-SmolVLM2-500M-Video-Instruct-Q8_0.gguf',
+      sizeBytes: 109 * 1024 * 1024, // ~109 MB
       tier: AITier.free,
       isVisionProjector: true,
+    ),
+    // ── EMBEDDING: Sentence similarity for RAG search ──
+    ModelInfo(
+      fileName: 'all-MiniLM-L6-v2.Q8_0.gguf',
+      displayName: 'Search Engine',
+      downloadUrl: 'https://backend-ocula.finailabz.com/models/all-MiniLM-L6-v2.Q8_0.gguf',
+      sizeBytes: 25 * 1024 * 1024, // ~25 MB
+      tier: AITier.free,
+      isEmbeddingModel: true,
     ),
     // ── SPECIALIST: Spatial tasks, pointing & counting ──
     ModelInfo(
@@ -162,13 +174,13 @@ class OculaModelManager {
   /// Download the free-tier main model only. Returns true when it's ready.
   /// Intended to run during the splash screen so the user can interact ASAP.
   /// First tries to copy bundled model, then downloads if needed.
-  /// Vision projector is fetched in the background — not required for text chat.
+  /// Vision projector and embedding model are fetched in the background.
   Future<bool> ensureFreeModelReady({
     DownloadProgress? onProgress,
   }) async {
-    // Only the main model (not the projector) is required to start
+    // Only the main model (not the projector or embedding) is required to start
     final mainModel = models
-        .where((m) => m.tier == AITier.free && !m.isVisionProjector)
+        .where((m) => m.tier == AITier.free && !m.isVisionProjector && !m.isEmbeddingModel)
         .first;
 
     // Step 1: Try to copy bundled model first (instant)
@@ -192,6 +204,23 @@ class OculaModelManager {
     if (projector != null) {
       // Best-effort: copy bundled projector in background, don't fail splash
       _ensureBundledModelCopied(projector.fileName).catchError((_) => false);
+    }
+
+    // Ensure embedding model is available (bundled at ~25MB, copies instantly)
+    final embedModel = models.where((m) => m.isEmbeddingModel).firstOrNull;
+    if (embedModel != null && !await isDownloaded(embedModel.fileName)) {
+      // Try bundled copy first (instant), then download as fallback
+      final copied = await _ensureBundledModelCopied(embedModel.fileName);
+      if (!copied) {
+        // Fire-and-forget download fallback — don't block splash
+        download(embedModel).then((ok) {
+          if (ok) debugPrint('[ModelManager] Embedding model downloaded');
+        }).catchError((e) {
+          debugPrint('[ModelManager] Embedding model download failed: $e');
+        });
+      } else {
+        debugPrint('[ModelManager] Embedding model copied from bundle');
+      }
     }
 
     return true;
@@ -574,9 +603,19 @@ class OculaModelManager {
       return await enterpriseModelPath;
     }
     
-    final model = models.where((m) => m.tier == tier && !m.isVisionProjector).firstOrNull;
+    final model = models.where((m) => m.tier == tier && !m.isVisionProjector && !m.isEmbeddingModel).firstOrNull;
     if (model == null) return null;
 
+    final path = await modelPath(model.fileName);
+    if (File(path).existsSync()) return path;
+    return null;
+  }
+
+  /// Get the embedding model path (tier-independent — shared across all tiers).
+  /// Returns null if not downloaded yet.
+  Future<String?> embeddingModelPath() async {
+    final model = models.where((m) => m.isEmbeddingModel).firstOrNull;
+    if (model == null) return null;
     final path = await modelPath(model.fileName);
     if (File(path).existsSync()) return path;
     return null;

@@ -478,6 +478,28 @@ func llama_bridge_get_embedding(
 @_silgen_name("llama_get_embedding_dim")
 func llama_bridge_get_embedding_dim() -> Int32
 
+// Dedicated embedding model bridge functions
+@_silgen_name("llama_load_embedding_model")
+func llama_bridge_load_embedding_model(
+    _ modelPath: UnsafePointer<CChar>
+) -> Bool
+
+@_silgen_name("llama_get_embedding_v2")
+func llama_bridge_get_embedding_v2(
+    _ text: UnsafePointer<CChar>,
+    _ output: UnsafeMutablePointer<Float>,
+    _ outputSize: Int32
+) -> Int32
+
+@_silgen_name("llama_unload_embedding_model")
+func llama_bridge_unload_embedding_model()
+
+@_silgen_name("llama_is_embedding_model_loaded")
+func llama_bridge_is_embedding_model_loaded() -> Bool
+
+@_silgen_name("llama_get_embedding_model_dim")
+func llama_bridge_get_embedding_model_dim() -> Int32
+
 /**
  * FlutterLlamaPlugin - плагин для работы с llama.cpp моделями на macOS
  * 
@@ -533,6 +555,16 @@ public class FlutterLlamaPlugin: NSObject, FlutterPlugin, FlutterStreamHandler {
             getEmbedding(call: call, result: result)
         case "getEmbeddingDim":
             getEmbeddingDim(result: result)
+        case "loadEmbeddingModel":
+            loadEmbeddingModel(call: call, result: result)
+        case "getEmbeddingV2":
+            getEmbeddingV2(call: call, result: result)
+        case "unloadEmbeddingModel":
+            unloadEmbeddingModel(result: result)
+        case "isEmbeddingModelLoaded":
+            result(llama_bridge_is_embedding_model_loaded())
+        case "getEmbeddingModelDim":
+            result(Int(llama_bridge_get_embedding_model_dim()))
         default:
             result(FlutterMethodNotImplemented)
         }
@@ -878,6 +910,69 @@ public class FlutterLlamaPlugin: NSObject, FlutterPlugin, FlutterStreamHandler {
     private func getEmbeddingDim(result: @escaping FlutterResult) {
         let dim = llama_bridge_get_embedding_dim()
         result(Int(dim))
+    }
+
+    // MARK: - Dedicated Embedding Model (for high-quality RAG)
+
+    private func loadEmbeddingModel(call: FlutterMethodCall, result: @escaping FlutterResult) {
+        queue.async {
+            guard let args = call.arguments as? [String: Any],
+                  let path = args["modelPath"] as? String else {
+                DispatchQueue.main.async {
+                    result(FlutterError(code: "INVALID_ARGS", message: "Missing modelPath", details: nil))
+                }
+                return
+            }
+
+            let success = path.withCString { pathPtr -> Bool in
+                return llama_bridge_load_embedding_model(pathPtr)
+            }
+
+            DispatchQueue.main.async {
+                if success {
+                    NSLog("[FlutterLlama] Embedding model loaded: \(path)")
+                    result(true)
+                } else {
+                    result(FlutterError(code: "LOAD_FAILED", message: "Failed to load embedding model", details: nil))
+                }
+            }
+        }
+    }
+
+    private func getEmbeddingV2(call: FlutterMethodCall, result: @escaping FlutterResult) {
+        queue.async {
+            guard let args = call.arguments as? [String: Any],
+                  let text = args["text"] as? String else {
+                DispatchQueue.main.async {
+                    result(FlutterError(code: "INVALID_ARGS", message: "Missing text parameter", details: nil))
+                }
+                return
+            }
+
+            let maxDim = 8192
+            var outputBuffer = [Float](repeating: 0.0, count: maxDim)
+
+            let n_embd = text.withCString { textPtr -> Int32 in
+                return llama_bridge_get_embedding_v2(textPtr, &outputBuffer, Int32(maxDim))
+            }
+
+            DispatchQueue.main.async {
+                if n_embd > 0 {
+                    let embedding = Array(outputBuffer.prefix(Int(n_embd))).map { Double($0) }
+                    result(embedding)
+                } else {
+                    result(FlutterError(code: "EMBEDDING_FAILED", message: "Failed to compute embedding", details: nil))
+                }
+            }
+        }
+    }
+
+    private func unloadEmbeddingModel(result: @escaping FlutterResult) {
+        queue.async {
+            llama_bridge_unload_embedding_model()
+            NSLog("[FlutterLlama] Embedding model unloaded")
+            DispatchQueue.main.async { result(nil) }
+        }
     }
 }
 

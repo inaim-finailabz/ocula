@@ -6,6 +6,7 @@ import 'package:flutter_llama/flutter_llama.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'app_language.dart';
 import 'model_manager.dart';
+import 'rag_engine.dart';
 
 enum AITier { free, plus, pro, enterprise }
 
@@ -61,7 +62,7 @@ class AIManager {
   /// Minimum RAM (MB) required to safely run each tier.
   /// Includes model weight + KV cache + system overhead headroom.
   static const _tierRamRequirementMB = {
-    AITier.free: 1500,       // 175 MB model + context → ~1 GB total, 500 MB headroom
+    AITier.free: 2000,       // 437 MB model + 25 MB embed + context → ~1.5 GB total
     AITier.plus: 3500,       // 900 MB model + context → ~2.5 GB, 1 GB headroom
     AITier.pro: 5000,        // 1.1 GB model + context → ~3.5 GB, 1.5 GB headroom
     AITier.enterprise: 4000, // variable, conservative default
@@ -294,7 +295,7 @@ class AIManager {
 
       // 2. Look up the expected file size from the model registry
       final modelInfo = OculaModelManager.models
-          .where((m) => m.tier == tier && !m.isVisionProjector)
+          .where((m) => m.tier == tier && !m.isVisionProjector && !m.isEmbeddingModel)
           .firstOrNull;
       final expectedSize = modelInfo?.sizeBytes;
 
@@ -357,6 +358,10 @@ class AIManager {
         ));
         _activeTier = tier;
         debugPrint('[AIManager] switchEngine: ${tier.name} loaded ✓');
+
+        // Load dedicated embedding model if available (non-blocking).
+        // This runs alongside the text model — separate native instance.
+        _loadEmbeddingModelIfAvailable();
       } catch (e) {
         debugPrint('[AIManager] loadModel(${tier.name}) failed: $e');
         // Recovery: try to reload free model so we're never stuck with nothing
@@ -382,6 +387,37 @@ class AIManager {
     }
   }
 
+  /// Load the dedicated embedding model if it's downloaded.
+  /// Fire-and-forget — doesn't block text generation.
+  /// If the embedding model is new, triggers a full re-index so existing
+  /// chunks get proper sentence embeddings.
+  void _loadEmbeddingModelIfAvailable() async {
+    if (_textEngine.isEmbeddingModelLoaded) return;
+    try {
+      final path = await _models.embeddingModelPath();
+      if (path != null) {
+        final ok = await _textEngine.loadEmbeddingModel(path);
+        debugPrint('[AIManager] Embedding model loaded: $ok');
+
+        if (ok) {
+          // Check if we need to re-index (embedding model changed)
+          final rag = RAGEngine();
+          await rag.init();
+          if (await rag.needsReindex()) {
+            debugPrint('[AIManager] Embedding model changed — clearing old vectors for re-index');
+            await rag.clear();
+            await rag.markEmbeddingModel();
+            // The indexer's periodic timer will pick up the re-index automatically
+          } else {
+            await rag.markEmbeddingModel();
+          }
+        }
+      }
+    } catch (e) {
+      debugPrint('[AIManager] Embedding model load failed (non-fatal): $e');
+    }
+  }
+
   /// Auto-route: pick the right model based on hardware + intent.
   ///
   /// Routing order:
@@ -389,7 +425,7 @@ class AIManager {
   /// 2. INTENT CHECK:
   ///    - Reasoning (why, how, explain, analyze) → Thinker (pro / Qwen3)
   ///    - Spatial  (where, count, find, point)   → Specialist (plus / Moondream 2)
-  ///    - Default                                → Sensor (free / SmolVLM2)
+  ///    - Default                                → Sensor (free / SmolVLM2-500M)
   Future<void> autoRoute(String prompt, {bool hasImage = false}) async {
     // 1. Hardware gate — don't crash low-end phones
     final ram = await deviceRamMB;
@@ -442,7 +478,7 @@ class AIManager {
   }) async {
     // ── Prompt strategy per model tier ──
     //
-    // SmolVLM2-256M (free): 2048 ctx, ~256M params. Can barely follow 1-2 sentences.
+    // SmolVLM2-500M (free): 2048 ctx, ~500M params. Better instruction following.
     //   → Ultra-short system prompt, pre-summarized context, low temperature.
     //
     // Moondream 2 (plus): 2048 ctx, ~1.8B params. Better instruction following.
@@ -526,9 +562,13 @@ class AIManager {
     // ── Text path ──
     // Tier-tuned generation: small models need low temperature to stay coherent,
     // pro models can handle more creativity and longer output.
-    final int maxTok = isProModel ? 512 : 256;
-    final double temp = isSmallModel ? 0.3 : (isProModel ? 0.6 : 0.4);
-    final double repPen = isSmallModel ? 1.5 : 1.3;
+    // 2026-02: Reduced maxTokens across all tiers to fight rambling.
+    //   free: 80 tokens (~2 sentences), temp 0.1 (near-greedy)
+    //   plus: 150 tokens, temp 0.3
+    //   pro:  384 tokens, temp 0.5
+    final int maxTok = isSmallModel ? 80 : (isProModel ? 384 : 150);
+    final double temp = isSmallModel ? 0.1 : (isProModel ? 0.5 : 0.3);
+    final double repPen = isSmallModel ? 1.8 : 1.3;
 
     final response = await _textEngine.generate(GenerationParams(
       prompt: fullPrompt,
@@ -540,6 +580,53 @@ class AIManager {
 
     var text = response.text;
     text = text.replaceAll('<|im_end|>', '').replaceAll('<|im_start|>', '').trim();
+
+    // Post-process: truncate rambling output.
+    // Small models: aggressive truncation at 150 chars.
+    // Plus models: truncate at 300 chars.
+    // Pro models: truncate at 600 chars.
+    if (isSmallModel && text.length > 150) {
+      text = _truncateToFirstParagraph(text, maxChars: 150);
+    } else if (!isProModel && text.length > 300) {
+      text = _truncateToFirstParagraph(text, maxChars: 300);
+    } else if (isProModel && text.length > 600) {
+      text = _truncateToFirstParagraph(text, maxChars: 600);
+    }
+
+    return text;
+  }
+
+  /// Truncate rambling output to the first meaningful paragraph or [maxChars].
+  /// Priority: paragraph break > 2 sentences > hard character limit.
+  String _truncateToFirstParagraph(String text, {int maxChars = 200}) {
+    // Try splitting on double newline (paragraph break)
+    final paraIdx = text.indexOf('\n\n');
+    if (paraIdx > 30 && paraIdx <= maxChars) {
+      return text.substring(0, paraIdx).trim();
+    }
+
+    // No paragraph break — cut after second sentence-ending punctuation
+    int sentenceCount = 0;
+    final limit = text.length.clamp(0, maxChars + 50); // small overrun OK for sentence boundary
+    for (int i = 0; i < limit; i++) {
+      if (i > 0 && '.!?'.contains(text[i]) &&
+          (i + 1 >= text.length || text[i + 1] == ' ' || text[i + 1] == '\n')) {
+        sentenceCount++;
+        if (sentenceCount >= 2 && i > 40) {
+          return text.substring(0, i + 1).trim();
+        }
+      }
+    }
+
+    // Hard character limit — find the last space before maxChars to avoid mid-word cut
+    if (text.length > maxChars) {
+      final lastSpace = text.lastIndexOf(' ', maxChars);
+      if (lastSpace > maxChars ~/ 2) {
+        return '${text.substring(0, lastSpace).trim()}…';
+      }
+      return '${text.substring(0, maxChars).trim()}…';
+    }
+
     return text;
   }
 

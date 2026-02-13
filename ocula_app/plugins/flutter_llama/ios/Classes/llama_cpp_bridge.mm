@@ -15,7 +15,7 @@
 // Include llama.cpp headers
 #include "../../llama.cpp/include/llama.h"
 
-// Global state
+// Global state — generative model
 static llama_model* g_model = nullptr;
 static llama_context* g_context = nullptr;
 static const llama_vocab* g_vocab = nullptr;
@@ -25,7 +25,13 @@ static bool g_should_stop = false;
 static std::vector<std::string> g_stream_tokens;
 static size_t g_stream_pos = 0;
 static bool g_backends_loaded = false;
-static llama_context* g_embed_ctx = nullptr;  // Embedding context (for RAG)
+static llama_context* g_embed_ctx = nullptr;  // Embedding context (shares g_model)
+
+// Global state — dedicated embedding model (e.g. all-MiniLM-L6-v2)
+static llama_model*   g_embed_model = nullptr;
+static llama_context* g_embed_model_ctx = nullptr;
+static const llama_vocab* g_embed_vocab = nullptr;
+static std::mutex g_embed_mutex;
 
 /// Check whether a pointer looks like it lives in a valid heap region.
 /// Catches obviously-bogus values like 0x1 that pass a simple != nullptr check.
@@ -607,6 +613,197 @@ int32_t llama_get_embedding_dim() {
     std::lock_guard<std::mutex> lock(g_mutex);
     if (!g_model) return 0;
     return llama_model_n_embd(g_model);
+}
+
+// ──────────────────────────────────────────
+// DEDICATED EMBEDDING MODEL — for high-quality RAG
+// ──────────────────────────────────────────
+// Loads a separate GGUF model (e.g. all-MiniLM-L6-v2) specifically
+// trained for sentence similarity. Independent from the generative model.
+
+/// Load a dedicated embedding model from a GGUF file.
+/// Uses BERT-style mean pooling and a small context (256 tokens).
+/// Returns true on success.
+bool llama_load_embedding_model(const char* model_path) {
+    std::lock_guard<std::mutex> lock(g_embed_mutex);
+
+    NSLog(@"[llama_cpp_bridge] Loading embedding model: %s", model_path);
+
+    // Free existing embedding model if any
+    @autoreleasepool {
+        if (g_embed_model_ctx) {
+            llama_context* ctx = g_embed_model_ctx;
+            g_embed_model_ctx = nullptr;
+            llama_free(ctx);
+        }
+    }
+    if (g_embed_model) {
+        @autoreleasepool {
+            llama_model* mdl = g_embed_model;
+            g_embed_model = nullptr;
+            g_embed_vocab = nullptr;
+            if (is_plausible_heap_ptr(mdl)) {
+                llama_model_free(mdl);
+            }
+        }
+    } else {
+        g_embed_vocab = nullptr;
+    }
+
+    // Load model — CPU only to avoid competing with generative model for Metal
+    llama_model_params model_params = llama_model_default_params();
+    model_params.n_gpu_layers = 0; // CPU-only — embedding model is tiny
+
+    g_embed_model = llama_model_load_from_file(model_path, model_params);
+    if (!g_embed_model) {
+        NSLog(@"[llama_cpp_bridge] Failed to load embedding model from: %s", model_path);
+        return false;
+    }
+
+    g_embed_vocab = llama_model_get_vocab(g_embed_model);
+
+    // Create embedding context with BERT-style mean pooling
+    llama_context_params ctx_params = llama_context_default_params();
+    ctx_params.n_ctx       = 256;  // MiniLM max sequence length
+    ctx_params.n_batch     = 256;
+    ctx_params.n_threads   = 2;    // Lightweight — don't compete with generation
+    ctx_params.n_threads_batch = 2;
+    ctx_params.embeddings  = true;
+    ctx_params.pooling_type = LLAMA_POOLING_TYPE_MEAN; // BERT-style mean pooling
+
+    g_embed_model_ctx = llama_init_from_model(g_embed_model, ctx_params);
+    if (!g_embed_model_ctx) {
+        NSLog(@"[llama_cpp_bridge] Failed to create embedding model context");
+        llama_model* mdl = g_embed_model;
+        g_embed_model = nullptr;
+        g_embed_vocab = nullptr;
+        llama_model_free(mdl);
+        return false;
+    }
+
+    int n_embd = llama_model_n_embd(g_embed_model);
+    NSLog(@"[llama_cpp_bridge] Embedding model loaded (n_embd=%d)", n_embd);
+    return true;
+}
+
+/// Compute an embedding using the dedicated embedding model.
+/// Uses llama_encode (BERT-style encoder) with mean pooling.
+/// Returns the number of floats written, or 0 on failure.
+int32_t llama_get_embedding_v2(
+    const char* text,
+    float* output,
+    int32_t output_size
+) {
+    std::lock_guard<std::mutex> lock(g_embed_mutex);
+
+    if (!g_embed_model || !g_embed_model_ctx || !g_embed_vocab) {
+        return 0;
+    }
+
+    // Tokenize
+    std::string text_str(text);
+    const int n_tokens = -llama_tokenize(g_embed_vocab, text_str.c_str(), text_str.size(), NULL, 0, true, true);
+    if (n_tokens <= 0) {
+        NSLog(@"[llama_cpp_bridge] getEmbeddingV2: tokenization failed");
+        return 0;
+    }
+
+    int n_use = std::min(n_tokens, (int)llama_n_ctx(g_embed_model_ctx));
+    std::vector<llama_token> tokens(n_tokens);
+    llama_tokenize(g_embed_vocab, text_str.c_str(), text_str.size(), tokens.data(), tokens.size(), true, true);
+    if (n_use < n_tokens) {
+        tokens.resize(n_use);
+    }
+
+    // Clear memory
+    llama_memory_t mem = llama_get_memory(g_embed_model_ctx);
+    if (mem) {
+        llama_memory_clear(mem, true);
+    }
+
+    // Use llama_encode for BERT-style encoder models (mean pooling)
+    llama_batch batch = llama_batch_get_one(tokens.data(), (int32_t)tokens.size());
+    int rc = llama_encode(g_embed_model_ctx, batch);
+    if (rc != 0) {
+        // Fallback to llama_decode if encode isn't supported
+        rc = llama_decode(g_embed_model_ctx, batch);
+        if (rc != 0) {
+            NSLog(@"[llama_cpp_bridge] getEmbeddingV2: encode/decode failed");
+            return 0;
+        }
+    }
+
+    // Get pooled embedding (mean pooling → single vector for the whole sequence)
+    int n_embd = llama_model_n_embd(g_embed_model);
+    const float* embd = llama_get_embeddings(g_embed_model_ctx);
+    if (!embd) {
+        // Fallback: try getting last token embedding
+        embd = llama_get_embeddings_ith(g_embed_model_ctx, -1);
+    }
+    if (!embd) {
+        NSLog(@"[llama_cpp_bridge] getEmbeddingV2: no embeddings available");
+        return 0;
+    }
+
+    // Copy and L2-normalize
+    int copy_n = std::min(n_embd, (int)output_size);
+    float norm = 0.0f;
+    for (int i = 0; i < copy_n; i++) {
+        norm += embd[i] * embd[i];
+    }
+    norm = sqrtf(norm);
+    if (norm > 0.0f) {
+        for (int i = 0; i < copy_n; i++) {
+            output[i] = embd[i] / norm;
+        }
+    } else {
+        memcpy(output, embd, copy_n * sizeof(float));
+    }
+
+    return copy_n;
+}
+
+/// Unload the dedicated embedding model and free all associated memory.
+void llama_unload_embedding_model() {
+    std::lock_guard<std::mutex> lock(g_embed_mutex);
+
+    NSLog(@"[llama_cpp_bridge] Unloading embedding model");
+
+    @autoreleasepool {
+        if (g_embed_model_ctx) {
+            llama_context* ctx = g_embed_model_ctx;
+            g_embed_model_ctx = nullptr;
+            llama_free(ctx);
+        }
+    }
+
+    if (g_embed_model) {
+        @autoreleasepool {
+            llama_model* mdl = g_embed_model;
+            g_embed_model = nullptr;
+            g_embed_vocab = nullptr;
+            if (is_plausible_heap_ptr(mdl)) {
+                llama_model_free(mdl);
+            }
+        }
+    } else {
+        g_embed_vocab = nullptr;
+    }
+
+    NSLog(@"[llama_cpp_bridge] Embedding model unloaded");
+}
+
+/// Check if a dedicated embedding model is loaded.
+bool llama_is_embedding_model_loaded() {
+    std::lock_guard<std::mutex> lock(g_embed_mutex);
+    return g_embed_model != nullptr && g_embed_model_ctx != nullptr;
+}
+
+/// Get the embedding dimension of the dedicated embedding model.
+int32_t llama_get_embedding_model_dim() {
+    std::lock_guard<std::mutex> lock(g_embed_mutex);
+    if (!g_embed_model) return 0;
+    return llama_model_n_embd(g_embed_model);
 }
 
 } // extern "C"
