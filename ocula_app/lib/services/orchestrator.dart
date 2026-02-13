@@ -2,6 +2,7 @@ import 'package:flutter/foundation.dart';
 
 import 'ai_manager.dart';
 import 'rag_engine.dart';
+import 'rag_config.dart';
 import 'indexer.dart';
 import 'network_permission.dart';
 import 'local_data.dart';
@@ -146,6 +147,15 @@ class Orchestrator {
     state = await _detectIntent(state);
     if (_cancelled) return OrchestratorResult.empty;
 
+    // SHORT-CIRCUIT: Greetings bypass RAG/LLM entirely.
+    if (state.intent == QueryIntent.chat && _isGreeting(state.query)) {
+      state.response = 'Hi! I\'m Ocula, your private AI assistant. '
+          'How can I help you today?';
+      state.status = StepStatus.completed;
+      state.stepsCompleted.add('greeting_shortcut');
+      return OrchestratorResult(state.response);
+    }
+
     // STEP 2: Retrieve context via RAG (also collects linked assets)
     state = await _retrieve(state);
     if (_cancelled) return OrchestratorResult.empty;
@@ -179,6 +189,18 @@ class Orchestrator {
 
     state.status = StepStatus.completed;
     return OrchestratorResult(state.response, state.linkedAssets);
+  }
+
+  /// Check if a query is a simple greeting (hello, hi, hey, etc.).
+  bool _isGreeting(String query) {
+    final trimmed = query.trim().toLowerCase().replaceAll(RegExp(r'[^a-z\s]'), '');
+    const greetings = {
+      'hello', 'hi', 'hey', 'hiya', 'howdy', 'yo', 'sup',
+      'good morning', 'good afternoon', 'good evening',
+      'hi there', 'hello there', 'hey there',
+      'whats up', 'hows it going', 'how are you',
+    };
+    return greetings.contains(trimmed);
   }
 
   /// Node 1: Detect what the user wants.
@@ -233,7 +255,18 @@ class Orchestrator {
     }
 
     // Single search — reuse results for both context and asset linking
-    final results = await _rag.search(state.query, sourceHint: sourceHint);
+    var results = await _rag.search(state.query, sourceHint: sourceHint);
+    debugPrint('[Orchestrator] Hybrid search: ${results.length} results (sourceHint=$sourceHint)');
+
+    // Fallback: If hybrid search found nothing but we have a specific
+    // source intent, list all entries of that type. This handles "list all"
+    // queries like "who are my contacts" or "what's on my calendar" where
+    // the query doesn't semantically match individual records.
+    if (results.isEmpty && sourceHint != null) {
+      debugPrint('[Orchestrator] Hybrid search empty — listing all $sourceHint entries');
+      results = await _rag.listBySource(sourceHint);
+      debugPrint('[Orchestrator] listBySource fallback: ${results.length} results');
+    }
 
     if (results.isNotEmpty) {
       // Build context string from results
@@ -249,6 +282,19 @@ class Orchestrator {
       } catch (e) {
         if (kDebugMode) print('[Orchestrator] Asset linking skipped: $e');
       }
+    }
+
+    // Enrich with knowledge graph context — find related entities
+    // This adds relationship data ("user has_contact john", "john works_at acme")
+    // that helps the LLM connect dots across indexed items.
+    try {
+      final graphCtx = await OculaDB().graphContext(state.query, limit: 5);
+      if (graphCtx.isNotEmpty) {
+        state.ragContext += '\n\n[Linked entities] $graphCtx';
+        debugPrint('[Orchestrator] Graph context added: ${graphCtx.length} chars');
+      }
+    } catch (e) {
+      if (kDebugMode) print('[Orchestrator] Knowledge graph query skipped: $e');
     }
 
     state.stepsCompleted.add('retrieve');
@@ -316,6 +362,30 @@ class Orchestrator {
   /// 3. Spatial intent   → Specialist (plus / Moondream 2).
   /// 4. Default          → Sensor (free / SmolVLM2).
   Future<AgentState> _routeModel(AgentState state) async {
+    // ── Manual override: if user set a specific model, try it first ──
+    final overrideTier = RagConfig().modelOverrideTier;
+    if (overrideTier != null) {
+      if (await _ai.isTierDownloaded(overrideTier)) {
+        if (_ai.activeTier == overrideTier) {
+          state.modelUsed = overrideTier;
+          debugPrint('[Orchestrator] Route: override → ${overrideTier.name} (already loaded)');
+          state.stepsCompleted.add('route_model');
+          return state;
+        }
+        try {
+          await _ai.switchEngine(overrideTier);
+          state.modelUsed = overrideTier;
+          debugPrint('[Orchestrator] Route: override → ${overrideTier.name}');
+          state.stepsCompleted.add('route_model');
+          return state;
+        } catch (e) {
+          debugPrint('[Orchestrator] Override ${overrideTier.name} failed: $e — falling back to auto');
+        }
+      } else {
+        debugPrint('[Orchestrator] Override ${overrideTier.name} not downloaded — falling back to auto');
+      }
+    }
+
     // Hardware gate
     final ram = await _ai.deviceRamMB;
     if (ram < 4000) {
@@ -398,6 +468,9 @@ class Orchestrator {
   Future<AgentState> _generate(AgentState state) async {
     // Build context string — ai_manager.ask() handles the system prompt + ChatML template
     final context = state.ragContext;
+    debugPrint('[Orchestrator] Generate: intent=${state.intent.name}, '
+        'hasImage=${state.hasImage}, tier=${_ai.activeTier?.name}, '
+        'contextLen=${context.length}');
 
     state.response = await _ai.ask(
       state.query,
@@ -406,6 +479,7 @@ class Orchestrator {
       imagePath: state.imagePath,
       intent: state.intent,
     );
+    debugPrint('[Orchestrator] Response: ${state.response.length} chars');
     state.stepsCompleted.add('generate');
     return state;
   }

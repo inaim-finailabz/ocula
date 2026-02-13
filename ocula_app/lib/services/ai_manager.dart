@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 import 'package:device_info_plus/device_info_plus.dart';
 import 'package:flutter/foundation.dart';
@@ -7,6 +8,8 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'app_language.dart';
 import 'model_manager.dart';
 import 'rag_engine.dart';
+import 'rag_config.dart';
+import 'text_utils.dart';
 
 enum AITier { free, plus, pro, enterprise }
 
@@ -79,6 +82,13 @@ class AIManager {
   /// Only records it as pending if it's better than what's currently loaded
   /// AND the device has enough RAM to run it.
   void _onTierReady(AITier tier) async {
+    // Enterprise tier is a paid feature — never auto-upgrade to it.
+    // Users must explicitly enable it in Settings.
+    if (tier == AITier.enterprise) {
+      debugPrint('[AIManager] ⚠ Enterprise tier ready but auto-upgrade disabled — paid feature');
+      return;
+    }
+
     final currentRank = _tierRank[_activeTier] ?? -1;
     final pendingRank = _tierRank[_pendingUpgradeTier] ?? -1;
     final newRank = _tierRank[tier] ?? -1;
@@ -194,6 +204,21 @@ class AIManager {
     await _safeUnload();
   }
 
+  /// Validate enterprise API key format.
+  /// Keys must start with 'ocula-ent-' and have a valid base64 payload (min 32 chars).
+  static bool isValidEnterpriseKey(String key) {
+    if (key.length < 32) return false;
+    if (!key.startsWith('ocula-ent-')) return false;
+    final payload = key.substring('ocula-ent-'.length);
+    if (payload.isEmpty) return false;
+    try {
+      base64.decode(base64.normalize(payload));
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
   /// Switch to enterprise model based on configured settings.
   Future<void> _switchToEnterpriseModel() async {
     final prefs = await SharedPreferences.getInstance();
@@ -201,6 +226,12 @@ class AIManager {
 
     if (!isEnabled) {
       throw Exception('Enterprise mode is not enabled');
+    }
+
+    // Gate: require a valid enterprise API key
+    final apiKey = prefs.getString('enterprise_api_key') ?? '';
+    if (!isValidEnterpriseKey(apiKey)) {
+      throw Exception('Invalid or missing enterprise API key');
     }
 
     final useLocal = prefs.getBool('enterprise_use_local') ?? true;
@@ -216,11 +247,14 @@ class AIManager {
       }
 
       // Native llama_init_model handles atomic free+load
-      await _textEngine.loadModel(LlamaConfig(
+      final ok = await _textEngine.loadModel(LlamaConfig(
         modelPath: modelPath,
         nGpuLayers: -1,
         useGpu: true,
       ));
+      if (!ok) {
+        throw ModelNotReadyException(AITier.enterprise);
+      }
     } else {
       // Remote API — unload any loaded model to free RAM
       await _safeUnload();
@@ -235,6 +269,10 @@ class AIManager {
       final prefs = await SharedPreferences.getInstance();
       final isEnabled = prefs.getBool('enterprise_enabled') ?? false;
       if (!isEnabled) return false;
+
+      // Gate: require a valid enterprise API key
+      final apiKey = prefs.getString('enterprise_api_key') ?? '';
+      if (!isValidEnterpriseKey(apiKey)) return false;
       
       final useLocal = prefs.getBool('enterprise_use_local') ?? true;
       
@@ -350,12 +388,15 @@ class AIManager {
       }
 
       try {
-        await _textEngine.loadModel(LlamaConfig(
+        final loaded = await _textEngine.loadModel(LlamaConfig(
           modelPath: mainPath,
           nGpuLayers: gpuLayers,
           useGpu: gpuLayers != 0,
           contextSize: contextSize,
         ));
+        if (!loaded) {
+          throw ModelNotReadyException(tier);
+        }
         _activeTier = tier;
         debugPrint('[AIManager] switchEngine: ${tier.name} loaded ✓');
 
@@ -369,14 +410,16 @@ class AIManager {
           final freePath = await _models.mainModelPath(AITier.free);
           if (freePath != null) {
             try {
-              await _textEngine.loadModel(LlamaConfig(
+              final recovered = await _textEngine.loadModel(LlamaConfig(
                 modelPath: freePath,
                 nGpuLayers: -1,
                 useGpu: true,
               ));
-              _activeTier = AITier.free;
-              debugPrint('[AIManager] Recovered to free tier');
-              return;
+              if (recovered) {
+                _activeTier = AITier.free;
+                debugPrint('[AIManager] Recovered to free tier');
+                return;
+              }
             } catch (_) {}
           }
         }
@@ -492,13 +535,15 @@ class AIManager {
 
     // Pre-summarize context for small models: keep only the most relevant lines
     // to avoid overwhelming the tiny context window.
+    final ragConfig = RagConfig();
+    final budgetChars = ragConfig.contextBudgetChars;
     String compactContext = context;
     if (context.isNotEmpty && isSmallModel) {
-      compactContext = _summarizeContext(context, maxChars: 600);
+      compactContext = _summarizeContext(context, maxChars: (budgetChars * 0.5).round());
     } else if (context.isNotEmpty && !isProModel) {
-      compactContext = _summarizeContext(context, maxChars: 1200);
+      compactContext = _summarizeContext(context, maxChars: budgetChars);
     }
-    // Pro model gets full context (up to ~3000 chars fits in 4096 tokens)
+    // Pro model gets full context (up to configured budget)
 
     final String systemMsg;
     final String userMsg;
@@ -540,23 +585,32 @@ class AIManager {
     // unload only the vision model to free RAM.
     if (imagePath != null) {
       final projPath = await _models.visionProjectorPath(_activeTier ?? AITier.free);
+      debugPrint('[AIManager] Vision path: tier=${_activeTier?.name}, projPath=${projPath != null ? "found" : "MISSING"}');
       if (projPath != null) {
         final mainPath = await _models.mainModelPath(_activeTier ?? AITier.free) ?? '';
         try {
+          debugPrint('[AIManager] Loading vision model: ${mainPath.split('/').last}');
           final loaded = await _visionEngine.loadMultimodalModel(
             MultimodalConfig.textAndImage(mainPath, projPath),
           );
+          debugPrint('[AIManager] Vision model loaded: $loaded');
           if (loaded) {
             final response = await _visionEngine.describeImage(imagePath, fullPrompt);
+            debugPrint('[AIManager] Vision generated ${response.text.length} chars');
             // Free vision model RAM — text engine is untouched
             try { await _visionEngine.unloadMultimodalModel(); } catch (_) {}
             return response.text;
           }
         } catch (e) {
-          debugPrint('[AIManager] Vision failed: $e — falling through to text');
+          debugPrint('[AIManager] Vision failed: $e');
           try { await _visionEngine.unloadMultimodalModel(); } catch (_) {}
         }
       }
+      // Vision failed or no projector — DON'T fall through to text-only
+      // (text model can't see the image, it would produce garbage).
+      debugPrint('[AIManager] Vision unavailable — returning error message');
+      return 'I couldn\'t process this image right now. '
+          'The vision model may still be loading. Please try again in a moment.';
     }
 
     // ── Text path ──
@@ -566,7 +620,11 @@ class AIManager {
     //   free: 80 tokens (~2 sentences), temp 0.1 (near-greedy)
     //   plus: 150 tokens, temp 0.3
     //   pro:  384 tokens, temp 0.5
-    final int maxTok = isSmallModel ? 80 : (isProModel ? 384 : 150);
+    // User-configurable max tokens, scaled per tier
+    final configMaxTok = ragConfig.maxResponseTokens;
+    final int maxTok = isSmallModel
+        ? (configMaxTok * 0.2).round().clamp(40, 150)
+        : (isProModel ? configMaxTok : (configMaxTok * 0.4).round().clamp(80, 300));
     final double temp = isSmallModel ? 0.1 : (isProModel ? 0.5 : 0.3);
     final double repPen = isSmallModel ? 1.8 : 1.3;
 
@@ -580,6 +638,10 @@ class AIManager {
 
     var text = response.text;
     text = text.replaceAll('<|im_end|>', '').replaceAll('<|im_start|>', '').trim();
+
+    // Post-process: strip leaked prompt/context.
+    // Some models (especially on CPU) echo the user's data/context verbatim.
+    text = stripLeakedContext(text);
 
     // Post-process: truncate rambling output.
     // Small models: aggressive truncation at 150 chars.
@@ -658,6 +720,8 @@ class AIManager {
 
     return buffer.toString().trim();
   }
+
+  // _stripLeakedContext extracted to text_utils.dart → stripLeakedContext()
 
   /// Stop any in-flight generation (text or vision).
   /// Safe to call even if nothing is generating — the native side just

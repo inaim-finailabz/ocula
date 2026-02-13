@@ -4,6 +4,7 @@ import 'package:file_picker/file_picker.dart';
 import 'package:url_launcher/url_launcher.dart';
 import '../widgets/model_management.dart';
 import '../screens/enterprise_settings.dart';
+import '../screens/rag_settings.dart';
 import '../services/speech_service.dart';
 import '../services/network_permission.dart';
 import '../services/app_language.dart';
@@ -97,14 +98,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
               padding: const EdgeInsets.all(16),
               children: [
                 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-                // RECOMMENDED PRESETS
-                // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-                const _SectionHeader(title: 'Recommended'),
-                const SizedBox(height: 8),
-                _presetRow(colors),
-                const SizedBox(height: 24),
-
-                // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
                 // VOICE SETTINGS
                 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
                 const _SectionHeader(title: 'Language'),
@@ -193,6 +186,22 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 ),
                 const SizedBox(height: 12),
                 const _IndexStatsCard(),
+                const SizedBox(height: 32),
+
+                // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+                // SEARCH TUNING
+                // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+                const _SectionHeader(title: 'Search Tuning'),
+                const SizedBox(height: 4),
+                Text(
+                  'Control how Ocula searches your data and generates responses.',
+                  style: TextStyle(
+                    fontSize: 13,
+                    color: colors.onSurface.withAlpha(120),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                const RagSettings(),
                 const SizedBox(height: 32),
 
                 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -765,100 +774,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
     }
   }
 
-  // Voice presets
-  static const _presets = [
-    _VoicePreset(
-      name: 'Calm',
-      icon: Icons.self_improvement,
-      rate: 0.4,
-      pitch: 0.9,
-      volume: 0.8,
-    ),
-    _VoicePreset(
-      name: 'Natural',
-      icon: Icons.record_voice_over,
-      rate: 0.5,
-      pitch: 1.0,
-      volume: 1.0,
-    ),
-    _VoicePreset(
-      name: 'Energetic',
-      icon: Icons.bolt,
-      rate: 0.65,
-      pitch: 1.2,
-      volume: 1.0,
-    ),
-    _VoicePreset(
-      name: 'Fast Read',
-      icon: Icons.speed,
-      rate: 0.8,
-      pitch: 1.0,
-      volume: 1.0,
-    ),
-  ];
+  // Voice defaults — Natural preset applied automatically on init.
+  // Custom voice upload section below lets users personalize further.
 
-  Widget _presetRow(ColorScheme colors) {
-    return SizedBox(
-      height: 90,
-      child: ListView.separated(
-        scrollDirection: Axis.horizontal,
-        itemCount: _presets.length,
-        separatorBuilder: (_, __) => const SizedBox(width: 10),
-        itemBuilder: (context, i) {
-          final p = _presets[i];
-          final isActive =
-              (_rate - p.rate).abs() < 0.05 &&
-              (_pitch - p.pitch).abs() < 0.05 &&
-              (_volume - p.volume).abs() < 0.05;
 
-          return GestureDetector(
-            onTap: () => _applyPreset(p),
-            child: AnimatedContainer(
-              duration: const Duration(milliseconds: 200),
-              width: 85,
-              padding: const EdgeInsets.all(10),
-              decoration: BoxDecoration(
-                color: isActive
-                    ? colors.primary.withAlpha(40)
-                    : colors.surfaceContainerHighest,
-                borderRadius: BorderRadius.circular(14),
-                border: isActive
-                    ? Border.all(color: colors.primary, width: 2)
-                    : null,
-              ),
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Icon(p.icon, size: 24, color: isActive ? colors.primary : colors.onSurface),
-                  const SizedBox(height: 4),
-                  Text(
-                    p.name,
-                    style: TextStyle(
-                      fontSize: 12,
-                      fontWeight: isActive ? FontWeight.bold : FontWeight.normal,
-                      color: isActive ? colors.primary : colors.onSurface,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          );
-        },
-      ),
-    );
-  }
-
-  void _applyPreset(_VoicePreset p) {
-    setState(() {
-      _rate = p.rate;
-      _pitch = p.pitch;
-      _volume = p.volume;
-    });
-    widget.speech.setRate(p.rate);
-    widget.speech.setPitch(p.pitch);
-    widget.speech.setVolume(p.volume);
-  }
 
   // ── Language Dropdown ──
 
@@ -1259,23 +1178,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 }
 
-// ── Voice Preset Model ──
 
-class _VoicePreset {
-  final String name;
-  final IconData icon;
-  final double rate;
-  final double pitch;
-  final double volume;
-
-  const _VoicePreset({
-    required this.name,
-    required this.icon,
-    required this.rate,
-    required this.pitch,
-    required this.volume,
-  });
-}
 
 // ── Section Header ──
 

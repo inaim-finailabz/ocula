@@ -16,9 +16,11 @@ import 'screens/splash_screen.dart';
 import 'screens/onboarding_screen.dart';
 import 'screens/settings_screen.dart';
 import 'widgets/ocula_orb.dart';
+import 'services/env_config.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
+  debugPrint('[Ocula] ENV=${EnvConfig.env} SERVER=${EnvConfig.modelServerUrl}');
   runApp(const OculaApp());
 }
 
@@ -159,6 +161,24 @@ class _AssistantScreenState extends State<AssistantScreen>
         margin: const EdgeInsets.fromLTRB(16, 0, 16, 24),
       ),
     );
+  }
+
+  String _tierLabel(AITier tier) {
+    switch (tier) {
+      case AITier.free: return 'Sensor';
+      case AITier.plus: return 'Specialist';
+      case AITier.pro: return 'Thinker';
+      case AITier.enterprise: return 'Enterprise';
+    }
+  }
+
+  Color _tierColor(AITier tier) {
+    switch (tier) {
+      case AITier.free: return const Color(0xFF00CEC9);
+      case AITier.plus: return const Color(0xFF6C5CE7);
+      case AITier.pro: return const Color(0xFFFD79A8);
+      case AITier.enterprise: return const Color(0xFFFDCB6E);
+    }
   }
 
   void _showSnackbar(String message, {Duration? duration}) {
@@ -569,6 +589,28 @@ class _AssistantScreenState extends State<AssistantScreen>
                             ),
                           ),
                         ),
+                        const SizedBox(width: 10),
+                        // Active model badge
+                        if (_ai.activeTier != null)
+                          Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                            decoration: BoxDecoration(
+                              color: _tierColor(_ai.activeTier!).withAlpha(40),
+                              borderRadius: BorderRadius.circular(8),
+                              border: Border.all(
+                                color: _tierColor(_ai.activeTier!).withAlpha(80),
+                                width: 0.5,
+                              ),
+                            ),
+                            child: Text(
+                              _tierLabel(_ai.activeTier!),
+                              style: TextStyle(
+                                fontSize: 10,
+                                fontWeight: FontWeight.w600,
+                                color: _tierColor(_ai.activeTier!),
+                              ),
+                            ),
+                          ),
                         const Spacer(),
                         if (_messages.any((m) => !m.isUser))
                           Builder(

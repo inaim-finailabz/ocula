@@ -1,0 +1,52 @@
+# Qwen3-VL-2B (Thinker) Fine-tuning Config
+# 2B params — use QLoRA (4-bit) on RTX 4070 (16GB)
+# This is the flagship model — worth spending more epochs here.
+
+model:
+  name: "Qwen/Qwen3-VL-2B"
+  local_path: "../models/base/qwen3-vl-2b"
+  type: "vlm"
+  params: "2B"
+
+training:
+  method: "qlora"          # 4-bit quantized LoRA — ~10GB VRAM
+  epochs: 3
+  batch_size: 2
+  gradient_accumulation: 16
+  learning_rate: 5.0e-5    # Lower LR for larger model
+  lr_scheduler: "cosine"
+  warmup_ratio: 0.1
+  weight_decay: 0.01
+  max_seq_length: 4096     # Qwen3 supports 4K context
+  fp16: true
+  bnb_4bit_compute_dtype: "bfloat16"
+  bnb_4bit_quant_type: "nf4"
+
+lora:
+  rank: 16
+  alpha: 32
+  dropout: 0.05
+  target_modules:
+    - "q_proj"
+    - "k_proj"
+    - "v_proj"
+    - "o_proj"
+    - "gate_proj"
+    - "up_proj"
+    - "down_proj"
+
+data:
+  train: "../data/processed/chat_*_train.jsonl"
+  val: "../data/processed/chat_*_val.jsonl"
+  max_samples: 100000      # Larger budget for flagship model
+
+quantization:
+  methods:
+    - "Q4_K_M"             # Primary deployment format
+    - "Q8_0"               # High-quality variant
+  output_dir: "../models/gguf"
+  output_name: "Qwen3VL-2B-Thinking-finetuned"
+
+mlx:
+  batch_size: 1
+  lora_layers: 8           # Fewer layers due to model size

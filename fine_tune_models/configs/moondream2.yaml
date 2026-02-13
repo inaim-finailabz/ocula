@@ -1,0 +1,51 @@
+# Moondream 2 Fine-tuning Config
+# 1.8B params — use QLoRA (4-bit) on RTX 4070 (16GB)
+
+model:
+  name: "vikhyatk/moondream2"
+  local_path: "../models/base/moondream2"
+  type: "vlm"
+  params: "1.8B"
+
+training:
+  method: "qlora"          # 4-bit quantized LoRA — fits in 8GB VRAM
+  epochs: 2
+  batch_size: 4
+  gradient_accumulation: 8
+  learning_rate: 1.0e-4
+  lr_scheduler: "cosine"
+  warmup_ratio: 0.05
+  weight_decay: 0.01
+  max_seq_length: 2048
+  fp16: true
+  bnb_4bit_compute_dtype: "bfloat16"
+  bnb_4bit_quant_type: "nf4"
+
+lora:
+  rank: 16
+  alpha: 32
+  dropout: 0.05
+  target_modules:
+    - "q_proj"
+    - "k_proj"
+    - "v_proj"
+    - "o_proj"
+    - "gate_proj"
+    - "up_proj"
+    - "down_proj"
+
+data:
+  train: "../data/processed/chat_*_train.jsonl"
+  val: "../data/processed/chat_*_val.jsonl"
+  max_samples: 30000
+
+quantization:
+  methods:
+    - "Q4_K_M"             # Match current Ocula deployment format
+    - "Q8_0"               # Higher quality option
+  output_dir: "../models/gguf"
+  output_name: "moondream2-text-model-finetuned"
+
+mlx:
+  batch_size: 2
+  lora_layers: 12

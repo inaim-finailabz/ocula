@@ -5,6 +5,7 @@ import 'package:flutter/services.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'ai_manager.dart';
+import 'env_config.dart';
 
 /// On-demand model download and lifecycle manager.
 ///
@@ -59,7 +60,9 @@ class OculaModelManager {
   OculaModelManager._();
 
   /// Default model server base URL.
-  static const defaultModelServerUrl = 'https://ocula.finailabz.com';
+  /// In dev: reads from .env.dev (e.g. http://192.168.3.14:8080).
+  /// In prod: reads from .env.prod (e.g. https://backend-ocula.finailabz.com).
+  static const defaultModelServerUrl = EnvConfig.modelServerUrl;
 
   /// SharedPreferences key for the model server URL.
   static const _prefKeyModelServer = 'model_server_url';
@@ -197,13 +200,19 @@ class OculaModelManager {
       if (!ok) return false;
     }
 
-    // Try to copy the vision projector too, but don't block on it
+    // Try to copy the vision projector too — AWAIT it so vision is ready
+    // immediately. Without this, the first image query after launch fails
+    // because the projector copy is still in progress.
     final projector = models
         .where((m) => m.tier == AITier.free && m.isVisionProjector)
         .firstOrNull;
     if (projector != null) {
-      // Best-effort: copy bundled projector in background, don't fail splash
-      _ensureBundledModelCopied(projector.fileName).catchError((_) => false);
+      onProgress?.call(0.9, 'Preparing vision engine...');
+      final projCopied = await _ensureBundledModelCopied(projector.fileName);
+      if (!projCopied && !await isDownloaded(projector.fileName)) {
+        // Last resort: download projector — don't block splash if it fails
+        download(projector).catchError((_) => false);
+      }
     }
 
     // Ensure embedding model is available (bundled at ~25MB, copies instantly)

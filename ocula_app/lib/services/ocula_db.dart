@@ -316,6 +316,38 @@ class OculaDB {
     return result.isNotEmpty;
   }
 
+  /// List all chunks for a given source type (e.g. 'contact', 'calendar').
+  /// Used for "list all" queries where hybrid search may miss because
+  /// the query doesn't semantically match individual records.
+  Future<List<RagSearchResult>> listBySource(String source, {int limit = 20}) async {
+    final d = await db;
+    final rows = await d.query(
+      'rag_chunks',
+      columns: ['id', 'text', 'source', 'source_id', 'created_at'],
+      where: 'source = ?',
+      whereArgs: [source],
+      orderBy: 'created_at DESC',
+      limit: limit,
+    );
+
+    // Deduplicate by source_id (keep first per source)
+    final seen = <String>{};
+    final results = <RagSearchResult>[];
+    for (final row in rows) {
+      final sid = row['source_id'] as String;
+      if (!seen.add(sid)) continue;
+      results.add(RagSearchResult(
+        id: row['id'] as int,
+        text: row['text'] as String,
+        source: row['source'] as String,
+        sourceId: sid,
+        score: 1.0,
+        timestamp: DateTime.parse(row['created_at'] as String),
+      ));
+    }
+    return results;
+  }
+
   /// Hybrid search: FTS5 BM25 + vector cosine similarity.
   ///
   /// Returns top [topK] results scored by:

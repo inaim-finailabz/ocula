@@ -1,7 +1,7 @@
-import 'dart:math';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_llama/flutter_llama.dart';
 import 'ocula_db.dart';
+import 'rag_config.dart';
 
 /// On-device RAG v3 — SQLite-backed Hybrid Search Engine.
 ///
@@ -23,8 +23,7 @@ class RAGEngine {
 
   static const _maxEntries = 10000;
 
-  // ── Hybrid search tuning ──
-  static const _vectorWeight = 0.55;
+  final RagConfig _config = RagConfig();
 
   final OculaDB _db = OculaDB();
 
@@ -48,7 +47,7 @@ class RAGEngine {
     if (_isInitialized) return;
 
     // Touch the DB to trigger open + migration from JSON
-    final d = await _db.db;
+    await _db.db;
     _cachedCount = await _db.chunkCount;
 
     try {
@@ -105,7 +104,15 @@ class RAGEngine {
     // ── Change detection ──
     if (fingerprint != null) {
       final existing = await _db.getFingerprint(sourceId);
-      if (existing == fingerprint) return false; // Unchanged
+      if (existing == fingerprint) {
+        // Fingerprint matches — but verify chunks still exist.
+        // If chunks were evicted/lost (e.g. app reinstall, trimChunks),
+        // we must re-index even though the content hasn't changed.
+        if (await _db.hasChunksForSource(sourceId)) {
+          return false; // Unchanged AND chunks exist
+        }
+        debugPrint('[RAG] Fingerprint match but chunks missing for $sourceId — re-indexing');
+      }
       await _db.setFingerprint(sourceId, fingerprint);
 
       // Remove old entries for this sourceId (re-index)
@@ -210,21 +217,36 @@ class RAGEngine {
   /// Hybrid search: FTS5 BM25 + vector cosine similarity.
   Future<List<RAGResult>> search(
     String query, {
-    int topK = 5,
-    double minScore = 0.15,
+    int? topK,
+    double? minScore,
     String? sourceHint,
   }) async {
+    final effectiveTopK = topK ?? _config.topK;
+    final effectiveMinScore = minScore ?? _config.minScore;
     final queryVector = await _embed(query);
 
     final results = await _db.hybridSearch(
       query,
       queryVector,
-      topK: topK,
-      minScore: minScore,
+      topK: effectiveTopK,
+      minScore: effectiveMinScore,
       sourceHint: sourceHint,
-      vectorWeight: _vectorWeight,
+      vectorWeight: _config.vectorWeight,
     );
 
+    return results.map((r) => RAGResult(
+      text: r.text,
+      source: r.source,
+      sourceId: r.sourceId,
+      score: r.score,
+      timestamp: r.timestamp,
+    )).toList();
+  }
+
+  /// List all entries of a given source type (e.g. 'contact', 'calendar').
+  /// Bypasses hybrid search — useful for "list all" queries.
+  Future<List<RAGResult>> listBySource(String source, {int limit = 20}) async {
+    final results = await _db.listBySource(source, limit: limit);
     return results.map((r) => RAGResult(
       text: r.text,
       source: r.source,
@@ -298,7 +320,8 @@ class RAGEngine {
   // ══════════════════════════════════════════
 
   /// Sentence-aware chunking with overlap.
-  List<String> _chunkSentences(String text, {int maxChars = 800, int overlapSentences = 2}) {
+  List<String> _chunkSentences(String text, {int? maxChars, int overlapSentences = 2}) {
+    maxChars ??= _config.chunkSize;
     if (text.length <= maxChars) return [text];
 
     final sentences = text

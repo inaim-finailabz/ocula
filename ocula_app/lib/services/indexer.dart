@@ -268,6 +268,30 @@ class Indexer with WidgetsBindingObserver {
           label: contact.name,
         );
 
+        // Populate knowledge graph with contact relationships
+        await _db.addTriple(
+          subject: 'user',
+          predicate: 'has_contact',
+          object: contact.name.toLowerCase(),
+          source: 'contact',
+        );
+        if (contact.organization != null) {
+          await _db.addTriple(
+            subject: contact.name.toLowerCase(),
+            predicate: 'works_at',
+            object: contact.organization!.toLowerCase(),
+            source: 'contact',
+          );
+        }
+        if (contact.email != null) {
+          await _db.addTriple(
+            subject: contact.name.toLowerCase(),
+            predicate: 'email_is',
+            object: contact.email!.toLowerCase(),
+            source: 'contact',
+          );
+        }
+
         if (indexed) {
           _filesIndexed++;
         } else {
@@ -323,6 +347,13 @@ class Indexer with WidgetsBindingObserver {
                 assetType: 'file',
                 assetRef: file.path,
                 label: file.name,
+              );
+              // Populate knowledge graph with file relationships
+              await _db.addTriple(
+                subject: 'user',
+                predicate: 'has_file',
+                object: file.name.toLowerCase(),
+                source: 'file',
               );
               // Detect phone numbers, emails, URLs in content
               await _db.linkDetectedAssets(content, 'file', sourceId);
@@ -477,6 +508,21 @@ class Indexer with WidgetsBindingObserver {
           assetRef: 'cal:${event.title}',
           label: '${event.title} — ${event.start.toLocal().toString().substring(0, 16)}',
         );
+        // Populate knowledge graph with calendar relationships
+        await _db.addTriple(
+          subject: 'user',
+          predicate: 'has_event',
+          object: event.title.toLowerCase(),
+          source: 'calendar',
+        );
+        if (event.location != null && event.location!.isNotEmpty) {
+          await _db.addTriple(
+            subject: event.title.toLowerCase(),
+            predicate: 'at_location',
+            object: event.location!.toLowerCase(),
+            source: 'calendar',
+          );
+        }
         // Detect phone/email/URL in event details
         await _db.linkDetectedAssets(content, 'calendar', sourceId);
         _filesIndexed++;
