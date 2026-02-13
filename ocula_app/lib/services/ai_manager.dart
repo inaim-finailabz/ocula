@@ -342,7 +342,7 @@ class AIManager {
       final int contextSize;
       if (tier == AITier.pro) {
         gpuLayers = 0;       // CPU-only — no Metal contention
-        contextSize = 2048;
+        contextSize = 4096;  // Qwen3-VL-2B can handle bigger context
       } else {
         gpuLayers = -1;      // all layers on GPU
         contextSize = 2048;
@@ -440,64 +440,56 @@ class AIManager {
     String? imagePath,
     QueryIntent intent = QueryIntent.chat,
   }) async {
-    // Build ChatML-formatted prompt — SmolVLM2 and Qwen3 both use this template
+    // ── Prompt strategy per model tier ──
+    //
+    // SmolVLM2-256M (free): 2048 ctx, ~256M params. Can barely follow 1-2 sentences.
+    //   → Ultra-short system prompt, pre-summarized context, low temperature.
+    //
+    // Moondream 2 (plus): 2048 ctx, ~1.8B params. Better instruction following.
+    //   → Short system prompt, more context allowed.
+    //
+    // Qwen3-VL-2B (pro): 4096 ctx, ~2B params. Good instruction following.
+    //   → Richer system prompt, full context, higher token budget.
     final langPrefix = _appLang.promptPrefix;
+    final bool isSmallModel = (_activeTier == null || _activeTier == AITier.free);
+    final bool isProModel = (_activeTier == AITier.pro);
 
-    // ── System prompt: grounded in phone assets when context exists ──
+    // Pre-summarize context for small models: keep only the most relevant lines
+    // to avoid overwhelming the tiny context window.
+    String compactContext = context;
+    if (context.isNotEmpty && isSmallModel) {
+      compactContext = _summarizeContext(context, maxChars: 600);
+    } else if (context.isNotEmpty && !isProModel) {
+      compactContext = _summarizeContext(context, maxChars: 1200);
+    }
+    // Pro model gets full context (up to ~3000 chars fits in 4096 tokens)
+
     final String systemMsg;
+    final String userMsg;
 
     if (hasImage && imagePath != null) {
-      // Image analysis mode — tell the model to describe what it sees
-      systemMsg = '${langPrefix}You are Ocula, a private AI assistant running on the user\'s phone. '
-          'The user has shared an image from their device. '
-          'Carefully analyze and describe what you see in the image. '
-          'Identify objects, text, people, scenes, colors, and any notable details. '
-          'If it looks like a document or receipt, extract the key information. '
-          'If it looks like a screenshot, describe the content shown. '
-          'If it contains text, read and transcribe it. '
-          'Be specific and detailed in your description.\n'
-          'After describing, ask a relevant follow-up: '
-          '"Want me to save this info?", "Should I find related contacts?", '
-          '"Need me to extract the text?", "Want to share this?"';
-    } else if (context.isNotEmpty) {
-      // RAG-grounded mode — phone assets are available
-      final intentGuide = _intentGuide(intent);
-      systemMsg = '${langPrefix}You are Ocula, a private AI assistant running on the user\'s phone. '
-          'You have access to the user\'s REAL phone data below (contacts, files, photos, '
-          'calendar events, emails, and previous conversations). '
-          'CRITICAL RULES:\n'
-          '1. ALWAYS answer using the provided phone data first. Never make up information.\n'
-          '2. Include specific details: phone numbers, email addresses, dates, file names, '
-          'event times, and contact names exactly as they appear in the data.\n'
-          '3. If the data contains the answer, use it directly — do NOT give a generic response.\n'
-          '4. If a document or file is in the data, summarize its key points and mention the file name.\n'
-          '5. If a contact is found, show their name, phone, and email.\n'
-          '6. If the data does NOT answer the question, say so honestly and suggest what to try.\n'
-          '$intentGuide'
-          'After answering, end with a contextual follow-up question:\n'
-          '- For contacts: "Want me to call them?" or "Should I draft a message?"\n'
-          '- For files/docs: "Want me to find similar files?" or "Need a summary of another document?"\n'
-          '- For calendar: "Should I set a reminder?" or "Want to reschedule?"\n'
-          '- For emails: "Want to reply?" or "Should I find related emails?"\n'
-          '- For photos: "Want to see more photos from that day?" or "Should I share this?"\n'
-          'Be concise, specific, and actionable.';
+      systemMsg = '${langPrefix}Describe this image. Be specific and brief.';
+      userMsg = prompt;
+    } else if (compactContext.isNotEmpty) {
+      if (isSmallModel) {
+        // Free tier: absolute minimum prompt. The model can't follow complex rules.
+        systemMsg = '${langPrefix}Answer using ONLY the data below. Be brief.';
+        userMsg = '$compactContext\n\nQ: $prompt';
+      } else if (isProModel) {
+        // Pro tier (Qwen3): can handle richer instructions
+        systemMsg = '${langPrefix}You are Ocula, a private phone assistant. '
+            'Answer using the user\'s phone data provided below. '
+            'Include specific details (names, numbers, dates, file names). '
+            'If the data doesn\'t answer the question, say so. Be concise.';
+        userMsg = 'Phone data:\n$compactContext\n\nQuestion: $prompt';
+      } else {
+        // Plus tier: moderate instructions
+        systemMsg = '${langPrefix}You are Ocula, a phone assistant. '
+            'Answer using the data provided. Be specific and brief.';
+        userMsg = 'Data:\n$compactContext\n\nQ: $prompt';
+      }
     } else {
-      // No context — general assistant mode
-      systemMsg = '${langPrefix}You are Ocula, a private AI assistant running entirely on-device. '
-          'The user\'s phone data (contacts, files, calendar, photos, emails) has been indexed '
-          'but no matching data was found for this query. '
-          'Answer helpfully, but remind the user they can ask about their phone data: '
-          '"I can also search your contacts, files, calendar, or photos if needed." '
-          'After answering, end with a brief follow-up question or suggestion. '
-          'Be concise and helpful.';
-    }
-
-    // ── User message: structured for clarity ──
-    final String userMsg;
-    if (context.isNotEmpty) {
-      userMsg = '--- USER\'S PHONE DATA ---\n$context\n--- END DATA ---\n\n'
-          'Based on the phone data above, answer this: $prompt';
-    } else {
+      systemMsg = '${langPrefix}You are Ocula, a helpful phone assistant. Be brief.';
       userMsg = prompt;
     }
 
@@ -532,11 +524,17 @@ class AIManager {
     }
 
     // ── Text path ──
+    // Tier-tuned generation: small models need low temperature to stay coherent,
+    // pro models can handle more creativity and longer output.
+    final int maxTok = isProModel ? 512 : 256;
+    final double temp = isSmallModel ? 0.3 : (isProModel ? 0.6 : 0.4);
+    final double repPen = isSmallModel ? 1.5 : 1.3;
+
     final response = await _textEngine.generate(GenerationParams(
       prompt: fullPrompt,
-      maxTokens: 512,
-      temperature: 0.7,
-      repeatPenalty: 1.3,
+      maxTokens: maxTok,
+      temperature: temp,
+      repeatPenalty: repPen,
       stopSequences: ['<|im_end|>', '<|im_start|>'],
     ));
 
@@ -545,31 +543,33 @@ class AIManager {
     return text;
   }
 
-  /// Build intent-specific guidance to narrow down the model's response.
-  String _intentGuide(QueryIntent intent) {
-    switch (intent) {
-      case QueryIntent.contact:
-        return '7. The user is looking for CONTACT information. '
-            'Prioritize showing names, phone numbers, and emails from the data. '
-            'Ask: "Is this the contact you were looking for?"\n';
-      case QueryIntent.file:
-        return '7. The user is asking about a FILE or DOCUMENT on their phone. '
-            'Summarize the key content of the file. Mention the file name and type. '
-            'If it\'s a long document, provide the main points.\n';
-      case QueryIntent.calendar:
-        return '7. The user is asking about their CALENDAR or SCHEDULE. '
-            'Show exact dates, times, locations, and event names from the data. '
-            'Mention if events conflict or are upcoming soon.\n';
-      case QueryIntent.email:
-        return '7. The user is asking about their EMAILS. '
-            'Show sender, subject, date, and key content. '
-            'Mention any action items or attachments.\n';
-      case QueryIntent.photo:
-        return '7. The user is asking about their PHOTOS. '
-            'Describe matching photos by date, content, and location if available.\n';
-      default:
-        return '';
+  /// Pre-summarize RAG context to fit in a small model's context window.
+  ///
+  /// Strategy: keep lines that contain the most information density.
+  /// Prioritize lines with names, numbers, dates, and file references.
+  /// Drop filler lines like "[Recent conversations]" headers.
+  String _summarizeContext(String context, {int maxChars = 600}) {
+    if (context.length <= maxChars) return context;
+
+    final lines = context.split('\n').where((l) => l.trim().isNotEmpty).toList();
+
+    // Remove header/label-only lines to save space
+    final contentLines = lines.where((l) {
+      final trimmed = l.trim();
+      return trimmed.length > 10 && // skip tiny lines
+          !trimmed.startsWith('[Recent') &&
+          !trimmed.startsWith('[Note:') &&
+          !trimmed.startsWith('[Knowledge');
+    }).toList();
+
+    // Take the most informative lines that fit within budget
+    final buffer = StringBuffer();
+    for (final line in contentLines) {
+      if (buffer.length + line.length + 1 > maxChars) break;
+      buffer.writeln(line);
     }
+
+    return buffer.toString().trim();
   }
 
   /// Stop any in-flight generation (text or vision).

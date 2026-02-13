@@ -93,6 +93,7 @@ class _AssistantScreenState extends State<AssistantScreen>
   bool _isThinking = false;
   bool _isListening = false;
   bool _isSpeaking = false;
+  bool _stopRequested = false;
   OrbState _orbState = OrbState.idle;
   File? _attachedImage;
   File? _attachedDocument;
@@ -283,6 +284,8 @@ class _AssistantScreenState extends State<AssistantScreen>
   }
 
   Future<void> _stopEverything() async {
+    // Signal to _send() that any in-flight result should be discarded
+    _stopRequested = true;
     // Stop generation + TTS + listening — total silence
     await _orchestrator.stop();
     await _speech.stopSpeaking();
@@ -345,6 +348,9 @@ class _AssistantScreenState extends State<AssistantScreen>
         ? 'Analyze this image'
         : text;
 
+    // Reset stop flag — this new query is intentional
+    _stopRequested = false;
+
     setState(() {
       _messages.add(_Message(text: displayText, isUser: true, image: image));
       _attachedImage = null;
@@ -368,6 +374,12 @@ class _AssistantScreenState extends State<AssistantScreen>
       );
 
       if (!mounted) return;
+
+      // Discard result if user hit stop while we were generating
+      if (_stopRequested) {
+        _stopRequested = false;
+        return;
+      }
 
       // Empty response = cancelled by user (stop or new query)
       if (result.response.isEmpty) {
