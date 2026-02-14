@@ -3,6 +3,7 @@
 
 model:
   name: "vikhyatk/moondream2"
+  short_name: "Ocula-Pro"
   local_path: "../models/base/moondream2"
   type: "vlm"
   params: "1.8B"
@@ -44,7 +45,7 @@ quantization:
     - "Q4_K_M"             # Match current Ocula deployment format
     - "Q8_0"               # Higher quality option
   output_dir: "../models/gguf"
-  output_name: "moondream2-text-model-finetuned"
+  output_name: "Ocula-Pro"
 
 mlx:
   batch_size: 2

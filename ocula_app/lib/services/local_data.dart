@@ -115,7 +115,11 @@ class LocalData {
   }
 
   /// Build a descriptive label for a photo from its metadata.
-  String _buildPhotoLabel(AssetEntity asset) {
+  /// Build a rich label for a photo from all available metadata.
+  /// GPS coordinates, album name, title, date, and orientation all help
+  /// the RAG engine match semantic queries like "vacation in Greece" or
+  /// "my driver's license".
+  Future<String> buildPhotoLabel(AssetEntity asset, {String? albumName}) async {
     final parts = <String>[];
 
     // Type description
@@ -130,15 +134,53 @@ class LocalData {
     // Dimensions
     parts.add('${asset.width}x${asset.height}');
 
-    // Date
+    // Date — include day-of-week for better temporal queries
     final d = asset.createDateTime;
-    parts.add('taken ${d.year}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')}');
+    const weekdays = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+    const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+                    'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    parts.add('taken ${weekdays[d.weekday - 1]} '
+        '${d.day} ${months[d.month - 1]} ${d.year}');
 
-    // Title if available
+    // Title / filename — often contains useful keywords
     if (asset.title != null && asset.title!.isNotEmpty) {
       parts.add('titled "${asset.title}"');
     }
 
+    // Album name — "Screenshots", "Camera", "Downloads", etc.
+    if (albumName != null && albumName.isNotEmpty) {
+      parts.add('in album "$albumName"');
+    }
+
+    // GPS location — critical for place-based queries
+    try {
+      final latLng = await asset.latlngAsync();
+      final lat = latLng?.latitude;
+      final lng = latLng?.longitude;
+      if (lat != null && lng != null && lat != 0.0 && lng != 0.0) {
+        parts.add('GPS: ${lat.toStringAsFixed(4)}, ${lng.toStringAsFixed(4)}');
+      }
+    } catch (_) {}
+
+    return parts.join(', ');
+  }
+
+  // Sync wrapper for backward compat (no GPS, no album)
+  String _buildPhotoLabel(AssetEntity asset) {
+    final parts = <String>[];
+    if (asset.width > asset.height) {
+      parts.add('Landscape photo');
+    } else if (asset.height > asset.width) {
+      parts.add('Portrait photo');
+    } else {
+      parts.add('Square photo');
+    }
+    parts.add('${asset.width}x${asset.height}');
+    final d = asset.createDateTime;
+    parts.add('taken ${d.year}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')}');
+    if (asset.title != null && asset.title!.isNotEmpty) {
+      parts.add('titled "${asset.title}"');
+    }
     return parts.join(', ');
   }
 

@@ -152,7 +152,8 @@ def train_cuda(config):
     )
 
     # Training arguments
-    output_dir = f"../models/lora_adapters/smolvlm2-{train_cfg['method']}"
+    model_name = config["model"].get("short_name", "smolvlm2")
+    output_dir = f"../models/lora_adapters/{model_name}-{train_cfg['method']}"
     training_args = TrainingArguments(
         output_dir=output_dir,
         num_train_epochs=train_cfg["epochs"],
@@ -167,7 +168,7 @@ def train_cuda(config):
         save_steps=500,
         save_total_limit=3,
         report_to=["tensorboard"],
-        logging_dir="../logs/smolvlm2",
+        logging_dir=f"../logs/{model_name}",
         dataloader_num_workers=4,
         remove_unused_columns=False,
     )
@@ -204,7 +205,8 @@ def train_mlx(config):
     train_cfg = config["training"]
     lora_cfg = config["lora"]
 
-    output_dir = "../models/lora_adapters/smolvlm2-mlx-lora"
+    model_name = config["model"].get("short_name", "smolvlm2")
+    output_dir = f"../models/lora_adapters/{model_name}-mlx-lora"
     os.makedirs(output_dir, exist_ok=True)
 
     # Prepare data file for mlx-lm
@@ -251,7 +253,7 @@ def train_mlx(config):
     subprocess.run(cmd, check=True)
 
     print(f"\n[OK] MLX training complete! Adapters saved to: {output_dir}")
-    print("     Next: python 06_merge_lora.py --model smolvlm2 --backend mlx")
+    print(f"     Next: python 06_merge_lora.py --model {model_name} --backend mlx")
 
 
 def main():

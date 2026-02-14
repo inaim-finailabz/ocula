@@ -3,6 +3,7 @@
 
 model:
   name: "HuggingFaceTB/SmolVLM2-500M-Video-Instruct"
+  short_name: "Ocula-Base"
   local_path: "../models/base/smolvlm2-500m"
   type: "vlm"
   params: "500M"
@@ -41,7 +42,7 @@ quantization:
   methods:
     - "Q8_0"               # 500M model is small, Q8 keeps quality
   output_dir: "../models/gguf"
-  output_name: "SmolVLM2-500M-Video-Instruct-finetuned"
+  output_name: "Ocula-Base"
 
 mlx:
   batch_size: 4

@@ -23,6 +23,7 @@
 // llama.cpp core headers
 #include "llama.h"
 #include "ggml.h"
+#include "ggml-backend.h"
 #include "ggml-alloc.h"
 #include "ggml-backend.h"
 
@@ -114,15 +115,30 @@ Java_net_nativemind_flutter_1llama_FlutterLlamaMultimodalPlugin_nativeLoadMultim
     if (mm_model)    { llama_model_free(mm_model);      mm_model   = nullptr; }
     mm_vocab = nullptr;
 
-    // Load backends once
+    // Load backends once — skip Vulkan when GPU is off (emulator Vulkan is unstable)
     if (!mm_backends_loaded) {
-        ggml_backend_load_all();
+        if (use_gpu) {
+            ggml_backend_load_all();
+        } else {
+            LOGI("GPU disabled — loading CPU backend only");
+        }
         mm_backends_loaded = true;
     }
 
     // --- Load text model ---
     llama_model_params model_params = llama_model_default_params();
     model_params.n_gpu_layers = use_gpu ? n_gpu_layers : 0;
+
+    // When GPU is disabled, restrict to CPU device only (avoids Vulkan crash on emulator)
+    ggml_backend_dev_t cpu_devices[2] = { nullptr, nullptr };
+    if (!use_gpu) {
+        ggml_backend_dev_t cpu_dev = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_CPU);
+        if (cpu_dev) {
+            cpu_devices[0] = cpu_dev;
+            model_params.devices = cpu_devices;
+            LOGI("Restricting to CPU-only device: %s", ggml_backend_dev_name(cpu_dev));
+        }
+    }
 
     mm_model = llama_model_load_from_file(path, model_params);
     if (!mm_model) {

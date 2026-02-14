@@ -212,7 +212,7 @@ bool llama_generate(
     if (llama_tokenize(g_vocab, prompt_text.c_str(), prompt_text.size(), prompt_tokens.data(), prompt_tokens.size(), true, true) < 0) {
         NSLog(@"[llama_cpp_bridge] Failed to tokenize prompt");
         return false;
-    }
+        }
     
     // Decode prompt in batches (prompt may exceed n_batch)
     const int32_t n_batch_size = llama_n_batch(g_context);

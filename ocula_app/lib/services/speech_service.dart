@@ -44,6 +44,11 @@ class SpeechService {
   Future<void> init() async {
     await _loadSettings();
     await _applySettings();
+
+    // Make speak() Future wait until TTS actually finishes (or is stopped).
+    // Without this, speak() resolves immediately after the platform receives
+    // the command, causing _isSpeaking to flip false while audio plays.
+    await _tts.awaitSpeakCompletion(true);
   }
 
   /// Get available TTS voices.

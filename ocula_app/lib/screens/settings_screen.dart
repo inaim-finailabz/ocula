@@ -12,6 +12,7 @@ import '../services/ai_manager.dart';
 import '../services/model_manager.dart';
 import '../services/local_data.dart';
 import '../services/indexer.dart';
+import '../services/notification_service.dart';
 import '../services/ocula_db.dart';
 
 /// Settings screen — voice customisation + privacy controls.
@@ -257,6 +258,24 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 ),
                 const SizedBox(height: 12),
                 _EmailConfigTile(),
+
+                const SizedBox(height: 32),
+
+                // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+                // NOTIFICATIONS
+                // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+                const _SectionHeader(title: 'Notifications'),
+                const SizedBox(height: 4),
+                Text(
+                  'Calendar reminders and daily schedule briefings. '
+                  'All notifications are local — nothing leaves your device.',
+                  style: TextStyle(
+                    fontSize: 13,
+                    color: colors.onSurface.withAlpha(120),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                const _NotificationSettings(),
 
                 const SizedBox(height: 32),
 
@@ -1630,5 +1649,138 @@ class _SectionHeader extends StatelessWidget {
         ],
       ],
     );
+  }
+}
+
+/// Notification settings — calendar reminders + daily briefing toggles.
+class _NotificationSettings extends StatefulWidget {
+  const _NotificationSettings();
+
+  @override
+  State<_NotificationSettings> createState() => _NotificationSettingsState();
+}
+
+class _NotificationSettingsState extends State<_NotificationSettings> {
+  final _notif = NotificationService();
+  bool _enabled = true;
+  bool _briefingEnabled = true;
+  int _reminderMinutes = 30;
+  int _briefingHour = 8;
+  bool _loading = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    final enabled = await _notif.isEnabled;
+    final briefing = await _notif.isBriefingEnabled;
+    final minutes = await _notif.reminderMinutes;
+    final hour = await _notif.briefingHour;
+    if (mounted) {
+      setState(() {
+        _enabled = enabled;
+        _briefingEnabled = briefing;
+        _reminderMinutes = minutes;
+        _briefingHour = hour;
+        _loading = false;
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_loading) return const SizedBox.shrink();
+
+    final colors = Theme.of(context).colorScheme;
+
+    return Column(
+      children: [
+        SwitchListTile(
+          contentPadding: EdgeInsets.zero,
+          title: const Text('Calendar Reminders'),
+          subtitle: Text('Notify $_reminderMinutes min before events'),
+          value: _enabled,
+          activeColor: colors.primary,
+          onChanged: (v) {
+            setState(() => _enabled = v);
+            _notif.setEnabled(v);
+          },
+        ),
+        if (_enabled)
+          Padding(
+            padding: const EdgeInsets.only(left: 16),
+            child: Row(
+              children: [
+                const Text('Remind me', style: TextStyle(fontSize: 13)),
+                const SizedBox(width: 8),
+                DropdownButton<int>(
+                  value: _reminderMinutes,
+                  underline: const SizedBox.shrink(),
+                  style: TextStyle(fontSize: 13, color: colors.primary),
+                  items: const [
+                    DropdownMenuItem(value: 10, child: Text('10 min')),
+                    DropdownMenuItem(value: 15, child: Text('15 min')),
+                    DropdownMenuItem(value: 30, child: Text('30 min')),
+                    DropdownMenuItem(value: 60, child: Text('1 hour')),
+                  ],
+                  onChanged: (v) {
+                    if (v != null) {
+                      setState(() => _reminderMinutes = v);
+                      _notif.setReminderMinutes(v);
+                    }
+                  },
+                ),
+                const Text(' before events', style: TextStyle(fontSize: 13)),
+              ],
+            ),
+          ),
+        const Divider(height: 1),
+        SwitchListTile(
+          contentPadding: EdgeInsets.zero,
+          title: const Text('Daily Briefing'),
+          subtitle: Text('Schedule overview at ${_formatHour(_briefingHour)}'),
+          value: _briefingEnabled,
+          activeColor: colors.primary,
+          onChanged: (v) {
+            setState(() => _briefingEnabled = v);
+            _notif.setBriefingEnabled(v);
+          },
+        ),
+        if (_briefingEnabled)
+          Padding(
+            padding: const EdgeInsets.only(left: 16),
+            child: Row(
+              children: [
+                const Text('Briefing time', style: TextStyle(fontSize: 13)),
+                const SizedBox(width: 8),
+                DropdownButton<int>(
+                  value: _briefingHour,
+                  underline: const SizedBox.shrink(),
+                  style: TextStyle(fontSize: 13, color: colors.primary),
+                  items: List.generate(24, (i) => DropdownMenuItem(
+                    value: i,
+                    child: Text(_formatHour(i)),
+                  )),
+                  onChanged: (v) {
+                    if (v != null) {
+                      setState(() => _briefingHour = v);
+                      _notif.setBriefingHour(v);
+                    }
+                  },
+                ),
+              ],
+            ),
+          ),
+      ],
+    );
+  }
+
+  String _formatHour(int hour) {
+    final h = hour > 12 ? hour - 12 : (hour == 0 ? 12 : hour);
+    final amPm = hour >= 12 ? 'PM' : 'AM';
+    return '$h:00 $amPm';
   }
 }

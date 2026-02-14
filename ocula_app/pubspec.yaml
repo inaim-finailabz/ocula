@@ -45,6 +45,11 @@ dependencies:
   shared_preferences: ^2.5.4
   device_info_plus: ^11.0.0      # RAM detection for model routing
 
+  # Notifications & Background
+  flutter_local_notifications: ^18.0.1  # Local notification delivery
+  workmanager: ^0.9.0+3                 # Background task scheduling
+  timezone: ^0.9.4                      # Timezone-aware notification scheduling
+
 dev_dependencies:
   flutter_test:
     sdk: flutter

@@ -17,6 +17,7 @@ import 'screens/onboarding_screen.dart';
 import 'screens/settings_screen.dart';
 import 'widgets/ocula_orb.dart';
 import 'services/env_config.dart';
+import 'services/notification_service.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -114,6 +115,9 @@ class _AssistantScreenState extends State<AssistantScreen>
 
     _orchestrator.onAskInternet = _showInternetDialog;
     Indexer().startBackgroundIndexing();
+
+    // Initialize notifications — calendar reminders + daily briefing
+    _initNotifications();
     _textController.addListener(() => setState(() {}));
 
     _orbSizeController = AnimationController(
@@ -163,11 +167,30 @@ class _AssistantScreenState extends State<AssistantScreen>
     );
   }
 
+  Future<void> _initNotifications() async {
+    try {
+      final notifService = NotificationService();
+      await notifService.init();
+      await notifService.requestPermission();
+      // Pre-fill a query when user taps a notification
+      notifService.onNotificationTap = (query) {
+        if (mounted) {
+          _send(query);
+        }
+      };
+      // Schedule initial reminders + daily briefing
+      await notifService.scheduleCalendarReminders();
+      await notifService.scheduleDailyBriefing();
+    } catch (e) {
+      debugPrint('[Ocula] Notification init error: $e');
+    }
+  }
+
   String _tierLabel(AITier tier) {
     switch (tier) {
-      case AITier.free: return 'Sensor';
-      case AITier.plus: return 'Specialist';
-      case AITier.pro: return 'Thinker';
+      case AITier.free: return 'Sensor · SmolVLM2';
+      case AITier.plus: return 'Specialist · Moondream2';
+      case AITier.pro: return 'Thinker · Qwen3-VL';
       case AITier.enterprise: return 'Enterprise';
     }
   }
@@ -306,9 +329,12 @@ class _AssistantScreenState extends State<AssistantScreen>
   Future<void> _stopEverything() async {
     // Signal to _send() that any in-flight result should be discarded
     _stopRequested = true;
-    // Stop generation + TTS + listening — total silence
-    await _orchestrator.stop();
-    await _speech.stopSpeaking();
+
+    // Fire-and-forget: stop generation + TTS + listening in parallel.
+    // Don't await TTS stop — it may block until the platform confirms,
+    // and we want the UI to reset instantly.
+    _orchestrator.stop();
+    _speech.stopSpeaking();
     if (_isListening) {
       _speech.stopListening();
     }
@@ -422,7 +448,9 @@ class _AssistantScreenState extends State<AssistantScreen>
       _scrollToBottom();
 
       await _speech.speak(result.response);
-      if (mounted) {
+      // Only reset speaking state if we weren't stopped/interrupted.
+      // If _stopRequested, _stopEverything() already handled the UI reset.
+      if (mounted && !_stopRequested) {
         setState(() {
           _orbState = OrbState.idle;
           _isSpeaking = false;

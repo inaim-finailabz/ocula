@@ -211,13 +211,17 @@ class Orchestrator {
       state.intent = QueryIntent.web;
     } else if (lower.contains('email') || lower.contains('inbox') || lower.contains('mail')) {
       state.intent = QueryIntent.email;
-    } else if (lower.contains('photo') || lower.contains('picture') || lower.contains('screenshot')) {
+    } else if (lower.contains('photo') || lower.contains('picture') || lower.contains('screenshot')
+        || lower.contains('vacation') || lower.contains('selfie') || lower.contains('image')) {
       state.intent = QueryIntent.photo;
-    } else if (lower.contains('file') || lower.contains('document') || lower.contains('pdf')) {
+    } else if (lower.contains('file') || lower.contains('document') || lower.contains('pdf')
+        || lower.contains('license') || lower.contains('receipt') || lower.contains('invoice')
+        || lower.contains('contract') || lower.contains('certificate')) {
       state.intent = QueryIntent.file;
     } else if (lower.contains('contact') || lower.contains('phone number') || lower.contains('call')) {
       state.intent = QueryIntent.contact;
-    } else if (lower.contains('schedule') || lower.contains('calendar') || lower.contains('meeting')) {
+    } else if (lower.contains('schedule') || lower.contains('calendar') || lower.contains('meeting')
+        || lower.contains('appointment') || lower.contains('event')) {
       state.intent = QueryIntent.calendar;
     } else {
       state.intent = QueryIntent.chat;
@@ -254,9 +258,14 @@ class Orchestrator {
         break;
     }
 
+    // Expand query for better recall on photo/document content queries.
+    // Users ask things like "my driver's license" or "vacation in Greece" —
+    // the raw query may not match indexed metadata, so we add synonyms.
+    final searchQuery = _expandQuery(state.query, state.intent);
+
     // Single search — reuse results for both context and asset linking
-    var results = await _rag.search(state.query, sourceHint: sourceHint);
-    debugPrint('[Orchestrator] Hybrid search: ${results.length} results (sourceHint=$sourceHint)');
+    var results = await _rag.search(searchQuery, sourceHint: sourceHint);
+    debugPrint('[Orchestrator] Hybrid search: ${results.length} results (sourceHint=$sourceHint, expanded=$searchQuery)');
 
     // Fallback: If hybrid search found nothing but we have a specific
     // source intent, list all entries of that type. This handles "list all"
@@ -299,6 +308,61 @@ class Orchestrator {
 
     state.stepsCompleted.add('retrieve');
     return state;
+  }
+
+  /// Expand a user query with related terms to improve RAG recall.
+  /// Example: "my driver's license" → "my driver's license document ID card"
+  String _expandQuery(String query, QueryIntent intent) {
+    final lower = query.toLowerCase();
+
+    // For photo/file intents, add content-type synonyms to help match
+    // metadata-based labels when the user asks about content.
+    final expansions = <String>[];
+
+    // Document type expansions
+    const docSynonyms = {
+      'license': 'ID card document identification',
+      'driver': 'driving license permit',
+      'passport': 'travel document ID',
+      'receipt': 'purchase invoice bill payment',
+      'invoice': 'bill receipt payment',
+      'contract': 'agreement document signed',
+      'resume': 'CV curriculum vitae',
+      'ticket': 'boarding pass travel',
+      'insurance': 'policy coverage document',
+      'certificate': 'diploma degree document',
+    };
+
+    // Location/activity expansions for photos
+    const placeSynonyms = {
+      'vacation': 'holiday trip travel',
+      'beach': 'sea ocean coast shore',
+      'mountain': 'hiking trail peak summit',
+      'wedding': 'ceremony celebration marriage',
+      'birthday': 'celebration party cake',
+      'concert': 'show music event performance',
+      'restaurant': 'dinner food dining meal',
+      'graduation': 'ceremony diploma degree',
+    };
+
+    final synonymMap = (intent == QueryIntent.photo) ? placeSynonyms : docSynonyms;
+    for (final entry in synonymMap.entries) {
+      if (lower.contains(entry.key)) {
+        expansions.add(entry.value);
+      }
+    }
+
+    // Always check both maps for general queries
+    if (intent == QueryIntent.chat) {
+      for (final entry in {...docSynonyms, ...placeSynonyms}.entries) {
+        if (lower.contains(entry.key)) {
+          expansions.add(entry.value);
+        }
+      }
+    }
+
+    if (expansions.isEmpty) return query;
+    return '$query ${expansions.join(' ')}';
   }
 
   String _sourceLabel(String source) {

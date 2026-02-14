@@ -186,9 +186,19 @@ class RAGEngine {
     required String path,
     required String label,
     required DateTime date,
+    String? aiDescription,
   }) async {
+    // Build a rich text chunk for semantic search.
+    // Include the AI description (if available) for content-based queries
+    // like "find my driver's license" or "vacation photos".
+    final parts = <String>['Photo: $label'];
+    if (aiDescription != null && aiDescription.isNotEmpty) {
+      parts.add('Content: $aiDescription');
+    }
+    parts.add('File: ${path.split('/').last}');
+
     await index(
-      content: 'Photo: $label. Location: $path',
+      content: parts.join('. '),
       source: 'photo',
       sourceId: 'photo:$path',
       timestamp: date,

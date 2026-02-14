@@ -44,6 +44,7 @@ class AIManager {
   bool _isSwitching = false;
   final AppLanguage _appLang = AppLanguage();
   int? _deviceRamMB;
+  bool? _isEmulator;
 
   /// The best tier that finished downloading but hasn't been loaded yet.
   /// Set by the tierReadyStream listener, consumed by applyPendingUpgrade().
@@ -149,10 +150,23 @@ class AIManager {
     if (_deviceRamMB != null) return _deviceRamMB!;
     final info = DeviceInfoPlugin();
     if (Platform.isAndroid) {
-      final android = await info.androidInfo;
-      _deviceRamMB = android.systemFeatures.contains('android.hardware.ram.low')
-          ? 2000
-          : 6000; // Android doesn't expose exact RAM; heuristic
+      // Read actual RAM from /proc/meminfo (works on real devices + emulators)
+      try {
+        final meminfo = await File('/proc/meminfo').readAsString();
+        final match = RegExp(r'MemTotal:\s+(\d+)\s+kB').firstMatch(meminfo);
+        if (match != null) {
+          _deviceRamMB = int.parse(match.group(1)!) ~/ 1024;
+          debugPrint('[AIManager] Actual device RAM: $_deviceRamMB MB (from /proc/meminfo)');
+        }
+      } catch (_) {
+        // Fall through to heuristic
+      }
+      if (_deviceRamMB == null) {
+        final android = await info.androidInfo;
+        _deviceRamMB = android.systemFeatures.contains('android.hardware.ram.low')
+            ? 2000
+            : 6000;
+      }
     } else if (Platform.isIOS) {
       // iOS doesn't expose RAM directly; use model heuristic
       final ios = await info.iosInfo;
@@ -165,6 +179,22 @@ class AIManager {
       _deviceRamMB = 8000; // Desktop — assume plenty of RAM
     }
     return _deviceRamMB!;
+  }
+
+  /// True if running on an Android emulator (goldfish/ranchu kernel, x86 ABI).
+  Future<bool> get isEmulator async {
+    if (_isEmulator != null) return _isEmulator!;
+    if (!Platform.isAndroid) {
+      _isEmulator = false;
+      return false;
+    }
+    final info = DeviceInfoPlugin();
+    final android = await info.androidInfo;
+    _isEmulator = !android.isPhysicalDevice;
+    if (_isEmulator!) {
+      debugPrint('[AIManager] Running on Android EMULATOR — will use reduced settings');
+    }
+    return _isEmulator!;
   }
 
   // ════════════════════════════════════════════════════════════════════
@@ -375,13 +405,17 @@ class AIManager {
       // Tier-appropriate settings:
       //   free/plus: full GPU (-1) + 2048 context — small models, fit easily
       //   pro:       CPU only (0) + 2048 context — avoids Metal OOM on 2B model
-      // Using CPU for pro is safe: A17 Pro handles Qwen3-VL-2B Q4_K_M at
-      // ~8-12 tok/s on CPU, which is perfectly usable.
+      // Emulator override: CPU-only + reduced context (Vulkan is unstable, RAM is limited)
+      final bool emulator = await isEmulator;
       final int gpuLayers;
       final int contextSize;
-      if (tier == AITier.pro) {
+      if (emulator) {
+        gpuLayers = 0;       // CPU-only — emulator Vulkan is unstable
+        contextSize = tier == AITier.pro ? 2048 : 1024;
+        debugPrint('[AIManager] Emulator mode: gpuLayers=0, contextSize=$contextSize');
+      } else if (tier == AITier.pro) {
         gpuLayers = 0;       // CPU-only — no Metal contention
-        contextSize = 4096;  // Qwen3-VL-2B can handle bigger context
+        contextSize = 4096;  // Ocula Pro (Qwen3-VL-2B) can handle bigger context
       } else {
         gpuLayers = -1;      // all layers on GPU
         contextSize = 2048;
@@ -393,6 +427,8 @@ class AIManager {
           nGpuLayers: gpuLayers,
           useGpu: gpuLayers != 0,
           contextSize: contextSize,
+          batchSize: emulator ? 256 : 512,
+          nThreads: emulator ? 2 : 4,
         ));
         if (!loaded) {
           throw ModelNotReadyException(tier);
@@ -464,11 +500,11 @@ class AIManager {
   /// Auto-route: pick the right model based on hardware + intent.
   ///
   /// Routing order:
-  /// 1. HARDWARE CHECK — low-RAM devices stay on Sensor (free).
+  /// 1. HARDWARE CHECK — low-RAM devices stay on Ocula Lite (free).
   /// 2. INTENT CHECK:
-  ///    - Reasoning (why, how, explain, analyze) → Thinker (pro / Qwen3)
-  ///    - Spatial  (where, count, find, point)   → Specialist (plus / Moondream 2)
-  ///    - Default                                → Sensor (free / SmolVLM2-500M)
+  ///    - Reasoning (why, how, explain, analyze) → Ocula Pro (Qwen3-VL-2B)
+  ///    - Spatial  (where, count, find, point)   → Ocula Plus (Moondream 2)
+  ///    - Default                                → Ocula Lite (SmolVLM2-500M)
   Future<void> autoRoute(String prompt, {bool hasImage = false}) async {
     // 1. Hardware gate — don't crash low-end phones
     final ram = await deviceRamMB;
@@ -479,7 +515,7 @@ class AIManager {
 
     final lower = prompt.toLowerCase();
 
-    // 2. Reasoning intent → Thinker (Qwen3-VL-2B)
+    // 2. Reasoning intent → Ocula Pro (Qwen3-VL-2B)
     final isReasoning = lower.contains('why') ||
         lower.contains('how') ||
         lower.contains('explain') ||
@@ -488,7 +524,7 @@ class AIManager {
         lower.contains('summarize') ||
         lower.contains('contract');
 
-    // 3. Spatial intent → Specialist (Moondream 2)
+    // 3. Spatial intent → Ocula Plus (Moondream 2)
     final isSpatial = lower.contains('where') ||
         lower.contains('count') ||
         lower.contains('find') ||
@@ -502,7 +538,7 @@ class AIManager {
     } else if (isSpatial || hasImage) {
       await switchEngine(AITier.plus);
     }
-    // else: stay on free (Sensor) — already loaded at startup
+    // else: stay on free (Ocula Lite) — already loaded at startup
   }
 
   /// The main entry point. Full pipeline:
@@ -521,13 +557,13 @@ class AIManager {
   }) async {
     // ── Prompt strategy per model tier ──
     //
-    // SmolVLM2-500M (free): 2048 ctx, ~500M params. Better instruction following.
+    // Ocula Lite (free): 2048 ctx, ~500M params. Better instruction following.
     //   → Ultra-short system prompt, pre-summarized context, low temperature.
     //
-    // Moondream 2 (plus): 2048 ctx, ~1.8B params. Better instruction following.
+    // Ocula Plus (plus): 2048 ctx, ~1.8B params. Better instruction following.
     //   → Short system prompt, more context allowed.
     //
-    // Qwen3-VL-2B (pro): 4096 ctx, ~2B params. Good instruction following.
+    // Ocula Pro (pro): 4096 ctx, ~2B params. Good instruction following.
     //   → Richer system prompt, full context, higher token budget.
     final langPrefix = _appLang.promptPrefix;
     final bool isSmallModel = (_activeTier == null || _activeTier == AITier.free);
@@ -548,29 +584,54 @@ class AIManager {
     final String systemMsg;
     final String userMsg;
 
+    // Intent-specific data label for context sections
+    final String dataLabel = _intentDataLabel(intent);
+
     if (hasImage && imagePath != null) {
       systemMsg = '${langPrefix}Describe this image. Be specific and brief.';
       userMsg = prompt;
     } else if (compactContext.isNotEmpty) {
       if (isSmallModel) {
         // Free tier: absolute minimum prompt. The model can't follow complex rules.
-        systemMsg = '${langPrefix}Answer using ONLY the data below. Be brief.';
+        // "Do not make up" is the most effective anti-hallucination phrase for tiny models.
+        systemMsg = '${langPrefix}Answer using ONLY the data below. Do not make up information. Be brief.';
         userMsg = '$compactContext\n\nQ: $prompt';
       } else if (isProModel) {
-        // Pro tier (Qwen3): can handle richer instructions
-        systemMsg = '${langPrefix}You are Ocula, a private phone assistant. '
-            'Answer using the user\'s phone data provided below. '
-            'Include specific details (names, numbers, dates, file names). '
-            'If the data doesn\'t answer the question, say so. Be concise.';
-        userMsg = 'Phone data:\n$compactContext\n\nQuestion: $prompt';
+        // Ocula Pro: can handle richer instructions and structured output
+        systemMsg = '${langPrefix}You are Ocula, a private on-device phone assistant. '
+            'Answer using ONLY the user\'s phone data provided below. '
+            'NEVER invent or guess information not in the data.\n'
+            'Rules:\n'
+            '- Include specific details: names, phone numbers, dates, times, file names.\n'
+            '- Use bullet points for lists of items (contacts, events, files).\n'
+            '- For calendar events, always include date and time.\n'
+            '- For contacts, include phone number or email when available.\n'
+            '- If the data doesn\'t answer the question, say "I don\'t have that information in your phone data."\n'
+            '- End with one short follow-up question the user might ask next.';
+        userMsg = '$dataLabel:\n$compactContext\n\nQuestion: $prompt';
       } else {
-        // Plus tier: moderate instructions
+        // Plus tier: moderate instructions with light structure
         systemMsg = '${langPrefix}You are Ocula, a phone assistant. '
-            'Answer using the data provided. Be specific and brief.';
-        userMsg = 'Data:\n$compactContext\n\nQ: $prompt';
+            'Answer using ONLY the data provided. Do not make up information. '
+            'If the data does not answer the question, say so. '
+            'Be specific and brief. Use bullet points for lists.';
+        userMsg = '$dataLabel:\n$compactContext\n\nQ: $prompt';
       }
     } else {
-      systemMsg = '${langPrefix}You are Ocula, a helpful phone assistant. Be brief.';
+      // No RAG context — general chat.
+      // Without data to ground on, models hallucinate more easily.
+      // Tell the model explicitly it has no phone data available.
+      if (isProModel) {
+        systemMsg = '${langPrefix}You are Ocula, a private on-device phone assistant. '
+            'You currently have no phone data for this query. '
+            'Do NOT invent contacts, events, or files. '
+            'If the user asks about their phone data, tell them you don\'t '
+            'have that information yet and suggest checking Settings > Your Data. '
+            'For general questions, answer helpfully and concisely.';
+      } else {
+        systemMsg = '${langPrefix}You are Ocula, a helpful phone assistant. '
+            'No phone data available. Do not make up information. Be brief.';
+      }
       userMsg = prompt;
     }
 
@@ -590,8 +651,21 @@ class AIManager {
         final mainPath = await _models.mainModelPath(_activeTier ?? AITier.free) ?? '';
         try {
           debugPrint('[AIManager] Loading vision model: ${mainPath.split('/').last}');
+          final emulator = await isEmulator;
           final loaded = await _visionEngine.loadMultimodalModel(
-            MultimodalConfig.textAndImage(mainPath, projPath),
+            MultimodalConfig(
+              textModelPath: mainPath,
+              mmprojPath: projPath,
+              enableVision: true,
+              enableAudio: false,
+              useGpuForMultimodal: !emulator,
+              extraParams: emulator ? {
+                'nThreads': 2,
+                'nGpuLayers': 0,
+                'contextSize': 1024,
+                'batchSize': 256,
+              } : null,
+            ),
           );
           debugPrint('[AIManager] Vision model loaded: $loaded');
           if (loaded) {
@@ -646,14 +720,17 @@ class AIManager {
     // Post-process: truncate rambling output.
     // Small models: aggressive truncation at 150 chars.
     // Plus models: truncate at 300 chars.
-    // Pro models: truncate at 600 chars.
+    // Pro models: truncate at 800 chars.
     if (isSmallModel && text.length > 150) {
       text = _truncateToFirstParagraph(text, maxChars: 150);
     } else if (!isProModel && text.length > 300) {
       text = _truncateToFirstParagraph(text, maxChars: 300);
-    } else if (isProModel && text.length > 600) {
-      text = _truncateToFirstParagraph(text, maxChars: 600);
+    } else if (isProModel && text.length > 800) {
+      text = _truncateToFirstParagraph(text, maxChars: 800);
     }
+
+    // Anti-hallucination: detect and reject off-topic or nonsensical output.
+    text = _guardHallucination(text, prompt, compactContext, isSmallModel);
 
     return text;
   }
@@ -692,6 +769,152 @@ class AIManager {
     return text;
   }
 
+  /// Detect and replace hallucinated or off-topic responses.
+  ///
+  /// Small on-device models often:
+  /// 1. Generate text completely unrelated to the query
+  /// 2. Invent facts not present in the provided context
+  /// 3. Continue with random instructions or role-play
+  /// 4. Repeat the same phrase in a loop
+  ///
+  /// This guard catches the worst cases and replaces them with a safe fallback.
+  String _guardHallucination(
+    String text,
+    String query,
+    String context,
+    bool isSmallModel,
+  ) {
+    if (text.isEmpty) return text;
+
+    final lower = text.toLowerCase();
+    final queryLower = query.toLowerCase();
+
+    // ── 1. Detect repetition loops ──
+    // If any 8+ char substring repeats 3+ times, it's a loop.
+    if (text.length > 30) {
+      for (int len = 8; len <= 30; len++) {
+        final chunk = text.substring(0, len).toLowerCase();
+        final count = RegExp(RegExp.escape(chunk), caseSensitive: false)
+            .allMatches(lower)
+            .length;
+        if (count >= 3) {
+          debugPrint('[AIManager] Hallucination: repetition loop detected');
+          return _fallbackResponse(query, context);
+        }
+      }
+    }
+
+    // ── 2. Detect role-play / instruction leaks ──
+    // Model starts acting as if it's writing a prompt or giving instructions
+    // to itself rather than answering the user.
+    const rolePlayMarkers = [
+      'as an ai', 'as a language model', 'i am a helpful',
+      'i am an ai', 'sure! here', 'of course!',
+      'instructions:', 'system:', 'user:', 'assistant:',
+      '<|im_start|>', '<|im_end|>', '<s>', '</s>',
+      'write a', 'create a story', 'once upon a time',
+    ];
+    for (final marker in rolePlayMarkers) {
+      if (lower.startsWith(marker)) {
+        debugPrint('[AIManager] Hallucination: role-play/leak marker "$marker"');
+        return _fallbackResponse(query, context);
+      }
+    }
+
+    // ── 3. Detect zero relevance (no query words in response) ──
+    // Extract meaningful words from the query (3+ chars, not stop words)
+    const stopWords = {
+      'the', 'and', 'for', 'are', 'but', 'not', 'you', 'all', 'can',
+      'had', 'her', 'was', 'one', 'our', 'out', 'day', 'has', 'his',
+      'how', 'its', 'may', 'new', 'now', 'old', 'see', 'way', 'who',
+      'did', 'get', 'let', 'say', 'she', 'too', 'use', 'what', 'when',
+      'where', 'which', 'will', 'with', 'does', 'have', 'this', 'that',
+      'from', 'they', 'been', 'some', 'than', 'them', 'then', 'were',
+      'about', 'could', 'would', 'should', 'there', 'their', 'these',
+      'those', 'being', 'other', 'after', 'before', 'into', 'just',
+      'like', 'make', 'many', 'also', 'most', 'much', 'only',
+      'over', 'such', 'take', 'very', 'come', 'tell', 'show', 'find',
+      'give', 'know', 'want', 'look', 'need', 'think',
+    };
+    final queryWords = queryLower
+        .replaceAll(RegExp(r'[^a-z\s]'), '')
+        .split(RegExp(r'\s+'))
+        .where((w) => w.length >= 3 && !stopWords.contains(w))
+        .toSet();
+
+    if (queryWords.length >= 2) {
+      final matchCount = queryWords.where((w) => lower.contains(w)).length;
+      final matchRatio = matchCount / queryWords.length;
+
+      // Also check if response references anything from the RAG context
+      final contextLower = context.toLowerCase();
+      final hasContextOverlap = contextLower.isNotEmpty &&
+          contextLower.split(RegExp(r'\s+')).where((w) =>
+              w.length >= 4 && lower.contains(w)).length >= 2;
+
+      // If response shares no words with query AND no overlap with context,
+      // it's very likely hallucinated.
+      if (matchRatio == 0 && !hasContextOverlap && text.length > 20) {
+        debugPrint('[AIManager] Hallucination: zero relevance '
+            '(queryWords=$queryWords, matchCount=$matchCount)');
+        return _fallbackResponse(query, context);
+      }
+    }
+
+    // ── 4. Detect invented data when context is empty ──
+    // If no RAG context was provided but the model produces specific names,
+    // phone numbers, or dates, it's fabricating.
+    if (context.isEmpty && isSmallModel) {
+      final hasPhoneNumber = RegExp(r'\d{3}[-.\s]?\d{3}[-.\s]?\d{4}').hasMatch(text);
+      final hasEmail = RegExp(r'\w+@\w+\.\w+').hasMatch(text);
+      if (hasPhoneNumber || hasEmail) {
+        debugPrint('[AIManager] Hallucination: invented contact details without context');
+        return 'I don\'t have enough data to answer that. '
+            'Try asking about your contacts, calendar, or files '
+            'after indexing is complete.';
+      }
+    }
+
+    return text;
+  }
+
+  /// Generate a safe fallback when hallucination is detected.
+  /// If RAG context exists, attempt a minimal extractive answer.
+  String _fallbackResponse(String query, String context) {
+    if (context.isEmpty) {
+      return 'I\'m not sure how to answer that. Could you rephrase your question?';
+    }
+    // Try to extract the most relevant line from context as a simple answer
+    final queryWords = query.toLowerCase()
+        .replaceAll(RegExp(r'[^a-z\s]'), '')
+        .split(RegExp(r'\s+'))
+        .where((w) => w.length >= 3)
+        .toSet();
+    final lines = context.split('\n').where((l) => l.trim().length > 10).toList();
+
+    // Score each line by how many query words it contains
+    var bestLine = '';
+    var bestScore = 0;
+    for (final line in lines) {
+      final lineLower = line.toLowerCase();
+      final score = queryWords.where((w) => lineLower.contains(w)).length;
+      if (score > bestScore) {
+        bestScore = score;
+        bestLine = line.trim();
+      }
+    }
+
+    if (bestLine.isNotEmpty && bestScore >= 1) {
+      // Clean up context labels
+      return bestLine
+          .replaceAll(RegExp(r'^(CONTACT|CALENDAR EVENT|FILE|PHOTO|EMAIL): '), '')
+          .trim();
+    }
+
+    return 'I found some data but couldn\'t form a clear answer. '
+        'Try rephrasing your question.';
+  }
+
   /// Pre-summarize RAG context to fit in a small model's context window.
   ///
   /// Strategy: keep lines that contain the most information density.
@@ -719,6 +942,27 @@ class AIManager {
     }
 
     return buffer.toString().trim();
+  }
+
+  /// Human-readable label for the data section based on query intent.
+  /// Helps the LLM understand what type of phone data it's looking at.
+  String _intentDataLabel(QueryIntent intent) {
+    switch (intent) {
+      case QueryIntent.contact:
+        return 'Contact information from your phone';
+      case QueryIntent.calendar:
+        return 'Calendar events from your schedule';
+      case QueryIntent.file:
+        return 'Files on your device';
+      case QueryIntent.photo:
+        return 'Photos from your library';
+      case QueryIntent.email:
+        return 'Emails from your inbox';
+      case QueryIntent.web:
+        return 'Search results';
+      case QueryIntent.chat:
+        return 'Phone data';
+    }
   }
 
   // _stripLeakedContext extracted to text_utils.dart → stripLeakedContext()

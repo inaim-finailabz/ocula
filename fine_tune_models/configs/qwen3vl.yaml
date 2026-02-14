@@ -4,6 +4,7 @@
 
 model:
   name: "Qwen/Qwen3-VL-2B"
+  short_name: "Ocula-Plus"
   local_path: "../models/base/qwen3-vl-2b"
   type: "vlm"
   params: "2B"
@@ -45,7 +46,7 @@ quantization:
     - "Q4_K_M"             # Primary deployment format
     - "Q8_0"               # High-quality variant
   output_dir: "../models/gguf"
-  output_name: "Qwen3VL-2B-Thinking-finetuned"
+  output_name: "Ocula-Plus"
 
 mlx:
   batch_size: 1

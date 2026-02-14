@@ -57,3 +57,14 @@ build/
 
 # Large model files
 *.gguf
+
+# Local virtual environments
+ocula_venv/
+
+# Fine-tune data
+fine_tune_models/data/
+
+# Fine-tune artifacts and env
+fine_tune_models/models/
+fine_tune_models/ocula_env/
+fine_tune_models/logs/

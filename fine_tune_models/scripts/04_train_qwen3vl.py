@@ -128,7 +128,8 @@ def train_cuda(config):
         remove_columns=dataset.column_names, num_proc=4,
     )
 
-    output_dir = "../models/lora_adapters/qwen3vl-qlora"
+    model_name = config["model"].get("short_name", "qwen3vl")
+    output_dir = f"../models/lora_adapters/{model_name}-qlora"
     training_args = TrainingArguments(
         output_dir=output_dir,
         num_train_epochs=train_cfg["epochs"],
@@ -143,7 +144,7 @@ def train_cuda(config):
         save_steps=500,
         save_total_limit=3,
         report_to=["tensorboard"],
-        logging_dir="../logs/qwen3vl",
+        logging_dir=f"../logs/{model_name}",
         gradient_checkpointing=True,
         optim="paged_adamw_8bit",
         dataloader_num_workers=4,
@@ -174,7 +175,8 @@ def train_mlx(config):
     model_path = config["model"]["local_path"]
     mlx_cfg = config.get("mlx", {})
     train_cfg = config["training"]
-    output_dir = "../models/lora_adapters/qwen3vl-mlx-lora"
+    model_name = config["model"].get("short_name", "qwen3vl")
+    output_dir = f"../models/lora_adapters/{model_name}-mlx-lora"
     os.makedirs(output_dir, exist_ok=True)
 
     # Prepare data

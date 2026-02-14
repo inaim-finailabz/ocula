@@ -85,40 +85,6 @@ class OculaDB {
     batch.execute('CREATE INDEX idx_rag_source_id ON rag_chunks(source_id)');
     batch.execute('CREATE INDEX idx_rag_source ON rag_chunks(source)');
 
-    // Full-text search on chunk text (BM25 built-in)
-    batch.execute('''
-      CREATE VIRTUAL TABLE rag_fts USING fts5(
-        text,
-        source,
-        source_id,
-        content='rag_chunks',
-        content_rowid='id',
-        tokenize='porter unicode61'
-      )
-    ''');
-
-    // Triggers to keep FTS in sync with rag_chunks
-    batch.execute('''
-      CREATE TRIGGER rag_fts_insert AFTER INSERT ON rag_chunks BEGIN
-        INSERT INTO rag_fts(rowid, text, source, source_id)
-          VALUES (new.id, new.text, new.source, new.source_id);
-      END
-    ''');
-    batch.execute('''
-      CREATE TRIGGER rag_fts_delete AFTER DELETE ON rag_chunks BEGIN
-        INSERT INTO rag_fts(rag_fts, rowid, text, source, source_id)
-          VALUES ('delete', old.id, old.text, old.source, old.source_id);
-      END
-    ''');
-    batch.execute('''
-      CREATE TRIGGER rag_fts_update AFTER UPDATE ON rag_chunks BEGIN
-        INSERT INTO rag_fts(rag_fts, rowid, text, source, source_id)
-          VALUES ('delete', old.id, old.text, old.source, old.source_id);
-        INSERT INTO rag_fts(rowid, text, source, source_id)
-          VALUES (new.id, new.text, new.source, new.source_id);
-      END
-    ''');
-
     // ── RAG metadata (fingerprints, stats) ──
     batch.execute('''
       CREATE TABLE rag_meta (
@@ -171,6 +137,44 @@ class OculaDB {
     batch.execute('CREATE INDEX idx_alink_type ON asset_links(asset_type)');
 
     await batch.commit(noResult: true);
+
+    // FTS5 full-text search — optional, some Android SQLite builds lack it.
+    // RAG search falls back to vector-only when FTS is unavailable.
+    try {
+      await db.execute('''
+        CREATE VIRTUAL TABLE rag_fts USING fts5(
+          text,
+          source,
+          source_id,
+          content='rag_chunks',
+          content_rowid='id',
+          tokenize='porter unicode61'
+        )
+      ''');
+      await db.execute('''
+        CREATE TRIGGER rag_fts_insert AFTER INSERT ON rag_chunks BEGIN
+          INSERT INTO rag_fts(rowid, text, source, source_id)
+            VALUES (new.id, new.text, new.source, new.source_id);
+        END
+      ''');
+      await db.execute('''
+        CREATE TRIGGER rag_fts_delete AFTER DELETE ON rag_chunks BEGIN
+          INSERT INTO rag_fts(rag_fts, rowid, text, source, source_id)
+            VALUES ('delete', old.id, old.text, old.source, old.source_id);
+        END
+      ''');
+      await db.execute('''
+        CREATE TRIGGER rag_fts_update AFTER UPDATE ON rag_chunks BEGIN
+          INSERT INTO rag_fts(rag_fts, rowid, text, source, source_id)
+            VALUES ('delete', old.id, old.text, old.source, old.source_id);
+          INSERT INTO rag_fts(rowid, text, source, source_id)
+            VALUES (new.id, new.text, new.source, new.source_id);
+        END
+      ''');
+      debugPrint('[OculaDB] FTS5 enabled');
+    } catch (e) {
+      debugPrint('[OculaDB] FTS5 not available — using vector-only RAG: $e');
+    }
   }
 
   Future<void> _onUpgrade(Database db, int oldVersion, int newVersion) async {

@@ -3,6 +3,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/widgets.dart';
 import 'rag_engine.dart';
 import 'local_data.dart';
+import 'notification_service.dart';
 import 'ocula_db.dart';
 
 /// Background indexer v4 — real data, real permissions, all phone assets.
@@ -449,6 +450,27 @@ class Indexer with WidgetsBindingObserver {
             assetRef: photo.path,
             label: photo.label ?? photo.path.split('/').last,
           );
+
+          // Knowledge graph triples for photo content
+          // Extract keywords from label for graph-based retrieval
+          final labelLower = photo.label!.toLowerCase();
+          await _db.addTriple(
+            subject: 'user',
+            predicate: 'has_photo',
+            object: labelLower,
+            source: 'photo',
+          );
+          // Extract album name if present in label
+          final albumMatch = RegExp(r'in album "([^"]+)"').firstMatch(labelLower);
+          if (albumMatch != null) {
+            await _db.addTriple(
+              subject: labelLower,
+              predicate: 'in_album',
+              object: albumMatch.group(1)!,
+              source: 'photo',
+            );
+          }
+
           _filesIndexed++;
         }
       }
@@ -530,6 +552,9 @@ class Indexer with WidgetsBindingObserver {
     } catch (e) {
       if (kDebugMode) print('[Indexer] Calendar indexing error: $e');
     }
+
+    // Re-schedule notifications for upcoming events after indexing
+    NotificationService().scheduleCalendarReminders().catchError((_) {});
   }
 }
 

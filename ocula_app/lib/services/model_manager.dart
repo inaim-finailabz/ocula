@@ -73,63 +73,63 @@ class OculaModelManager {
   // ── Model Registry ── 2026 Ocula Intelligence Stack
   // Served by serve_models.sh (python3 http.server on port 8080)
   //
-  // Tier free  (Sensor)     – SmolVLM2-500M: fast response, video support, better instruction following
-  // Tier plus  (Specialist) – Moondream 2:   pointing (x,y) & counting
-  // Tier pro   (Thinker)    – Qwen3-VL-2B:   chain-of-thought reasoning
-  // Embedding                – all-MiniLM-L6-v2: sentence similarity for RAG
+  // Ocula Lite  (free)  – SmolVLM2-500M: fast response, video support, better instruction following
+  // Ocula Plus  (plus)  – Moondream 2:   pointing (x,y) & counting
+  // Ocula Pro   (pro)   – Qwen3-VL-2B:   chain-of-thought reasoning
+  // Ocula Embed          – all-MiniLM-L6-v2: sentence similarity for RAG
   static const models = [
-    // ── SENSOR: Always-on, fast & capable ──
+    // ── OCULA LITE: Always-on, fast & capable ──
     ModelInfo(
       fileName: 'SmolVLM2-500M-Video-Instruct-Q8_0.gguf',
-      displayName: 'Sensor Engine',
+      displayName: 'Ocula Lite',
       downloadUrl: 'https://backend-ocula.finailabz.com/models/SmolVLM2-500M-Video-Instruct-Q8_0.gguf',
       sizeBytes: 437 * 1024 * 1024, // ~437 MB
       tier: AITier.free,
     ),
     ModelInfo(
       fileName: 'mmproj-SmolVLM2-500M-Video-Instruct-Q8_0.gguf',
-      displayName: 'Sensor Vision',
+      displayName: 'Ocula Lite Vision',
       downloadUrl: 'https://backend-ocula.finailabz.com/models/mmproj-SmolVLM2-500M-Video-Instruct-Q8_0.gguf',
       sizeBytes: 109 * 1024 * 1024, // ~109 MB
       tier: AITier.free,
       isVisionProjector: true,
     ),
-    // ── EMBEDDING: Sentence similarity for RAG search ──
+    // ── OCULA EMBED: Sentence similarity for RAG search ──
     ModelInfo(
       fileName: 'all-MiniLM-L6-v2.Q8_0.gguf',
-      displayName: 'Search Engine',
+      displayName: 'Ocula Embed',
       downloadUrl: 'https://backend-ocula.finailabz.com/models/all-MiniLM-L6-v2.Q8_0.gguf',
       sizeBytes: 25 * 1024 * 1024, // ~25 MB
       tier: AITier.free,
       isEmbeddingModel: true,
     ),
-    // ── SPECIALIST: Spatial tasks, pointing & counting ──
+    // ── OCULA PLUS: Spatial tasks, pointing & counting ──
     ModelInfo(
       fileName: 'moondream2-text-model-Q4_K_M.gguf',
-      displayName: 'Specialist Engine',
+      displayName: 'Ocula Plus',
       downloadUrl: 'https://backend-ocula.finailabz.com/models/moondream2-text-model-Q4_K_M.gguf',
       sizeBytes: 900 * 1024 * 1024, // ~900 MB (Q4_K_M quantized)
       tier: AITier.plus,
     ),
     ModelInfo(
       fileName: 'moondream2-mmproj-f16-20250414.gguf',
-      displayName: 'Specialist Vision',
+      displayName: 'Ocula Plus Vision',
       downloadUrl: 'https://backend-ocula.finailabz.com/models/moondream2-mmproj-f16-20250414.gguf',
       sizeBytes: 910 * 1024 * 1024, // ~910 MB
       tier: AITier.plus,
       isVisionProjector: true,
     ),
-    // ── THINKER: Reasoning with chain-of-thought ──
+    // ── OCULA PRO: Reasoning with chain-of-thought ──
     ModelInfo(
       fileName: 'Qwen3VL-2B-Thinking-Q4_K_M.gguf',
-      displayName: 'Thinker Engine',
+      displayName: 'Ocula Pro',
       downloadUrl: 'https://backend-ocula.finailabz.com/models/Qwen3VL-2B-Thinking-Q4_K_M.gguf',
       sizeBytes: 1110 * 1024 * 1024, // ~1.11 GB
       tier: AITier.pro,
     ),
     ModelInfo(
       fileName: 'mmproj-Qwen3VL-2B-Thinking-F16.gguf',
-      displayName: 'Thinker Vision',
+      displayName: 'Ocula Pro Vision',
       downloadUrl: 'https://backend-ocula.finailabz.com/models/mmproj-Qwen3VL-2B-Thinking-F16.gguf',
       sizeBytes: 819 * 1024 * 1024, // ~819 MB
       tier: AITier.pro,
@@ -164,13 +164,13 @@ class OculaModelManager {
   static String featureLabel(AITier tier) {
     switch (tier) {
       case AITier.free:
-        return 'Quick Scan';
+        return 'Ocula Lite';
       case AITier.plus:
-        return 'Spatial & Counting';
+        return 'Ocula Plus';
       case AITier.pro:
-        return 'Deep Thinking';
+        return 'Ocula Pro';
       case AITier.enterprise:
-        return 'Enterprise Backend';
+        return 'Enterprise';
     }
   }
 
@@ -682,9 +682,23 @@ class OculaModelManager {
       );
     }
     if (Platform.isAndroid) {
-      return url.replaceFirst('://localhost:', '://10.0.2.2:');
+      // Android emulator can't reach the host's LAN IP or localhost directly;
+      // 10.0.2.2 is the emulator's alias for the host machine.
+      final uri = Uri.parse(url);
+      if (uri.host == 'localhost' || uri.host == '127.0.0.1' || _isPrivateIp(uri.host)) {
+        return url.replaceFirst('://${uri.host}:', '://10.0.2.2:');
+      }
     }
     return url;
+  }
+
+  /// Check if an IP is a private/LAN address (192.168.x.x, 10.x.x.x, 172.16-31.x.x).
+  static bool _isPrivateIp(String host) {
+    final parts = host.split('.');
+    if (parts.length != 4) return false;
+    final a = int.tryParse(parts[0]) ?? -1;
+    final b = int.tryParse(parts[1]) ?? -1;
+    return a == 10 || (a == 172 && b >= 16 && b <= 31) || (a == 192 && b == 168);
   }
 
   /// Get the current model server URL.

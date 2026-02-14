@@ -1,0 +1,70 @@
+# Qwen3-VL-2B Vision Fine-tuning Config
+# For improving image detection + document understanding (Pro tier / Thinker)
+
+model:
+  name: "Qwen/Qwen3-VL-2B"
+  local_path: "../models/base/qwen3-vl-2b"
+  type: "vlm"
+  params: "2B"
+
+training:
+  method: "qlora"          # QLoRA required — 2B needs quantized training
+  epochs: 1
+  batch_size: 2            # CUDA 16GB: 2, MPS: 1, MLX: 1
+  gradient_accumulation: 8 # Effective batch = 16
+  learning_rate: 5.0e-5    # Lower LR for larger model + longer context
+  lr_scheduler: "cosine"
+  warmup_ratio: 0.05
+  weight_decay: 0.01
+  max_seq_length: 4096     # Qwen3-VL supports long context
+  max_samples: 100000      # Larger model can absorb more data
+  max_steps: 5000          # Hard cap on training steps (loss converges early)
+  fp16: false
+  bf16: true
+  gradient_checkpointing: true  # Essential for 2B on 16GB
+
+lora:
+  rank: 16                 # r=16 for 2B
+  alpha: 32                # alpha = 2×rank
+  dropout: 0.05
+  target_modules:          # Standard Qwen transformer projections
+    - "q_proj"
+    - "k_proj"
+    - "v_proj"
+    - "o_proj"
+    - "gate_proj"
+    - "up_proj"
+    - "down_proj"
+
+data:
+  train: "../data/vision_qwen3vl/qwen3vl_vision_train.jsonl"
+  val: "../data/vision_qwen3vl/qwen3vl_vision_val.jsonl"
+  image_dir: "../data/vision_qwen3vl/images"
+
+  # Qwen3-VL is the "Thinker" — heavy on reasoning-based tasks
+  datasets:
+    image:
+      - vqav2               # Visual QA (~10K)
+      - textcaps             # OCR-aware captioning (~10K)
+    document:
+      - docvqa               # Document QA (~10K)
+      - chartqa              # Chart understanding (~10K)
+      - infovqa              # Infographic QA (~10K)
+      - ai2d                 # Science diagrams (~10K)
+    reasoning:
+      - scienceqa            # Multimodal science QA with explanations (~10K)
+
+mlx:
+  batch_size: 1            # 2B model — conservative batch on Apple Silicon
+  lora_layers: 8
+  # Estimated training time on M1 Pro (16GB):
+  #   ~50K examples × 3 epochs → may be tight on RAM; use --max-samples 20000
+  # Estimated training time on M2 Ultra (192GB):
+  #   ~100K examples × 3 epochs → ~4–6 hours
+
+quantization:
+  methods:
+    - "Q4_K_M"             # Primary — best balance for 2B on mobile
+    - "Q8_0"               # Higher quality, ~2× size
+  output_dir: "../models/gguf"
+  output_name: "Qwen3-VL-2B-finetuned"
