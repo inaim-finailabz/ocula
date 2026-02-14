@@ -188,9 +188,9 @@ class _AssistantScreenState extends State<AssistantScreen>
 
   String _tierLabel(AITier tier) {
     switch (tier) {
-      case AITier.free: return 'Sensor · SmolVLM2';
-      case AITier.plus: return 'Specialist · Moondream2';
-      case AITier.pro: return 'Thinker · Qwen3-VL';
+      case AITier.free: return 'Sensor';
+      case AITier.plus: return 'Specialist';
+      case AITier.pro: return 'Thinker';
       case AITier.enterprise: return 'Enterprise';
     }
   }
