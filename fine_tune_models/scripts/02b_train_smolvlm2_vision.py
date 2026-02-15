@@ -102,31 +102,24 @@ def detect_backend() -> str:
 
 
 # ═════════════════════════════════════════════════════════════════
-# CUDA / MPS Training (HuggingFace Transformers + TRL SFTTrainer)
+# CUDA Training via Unsloth (handles 4-bit, LoRA, dtype internally)
 # ═════════════════════════════════════════════════════════════════
 
-def train_cuda_mps(config: dict, args):
+def train_cuda(config: dict, args):
     """
-    Vision-language LoRA fine-tuning with SFTTrainer.
+    SmolVLM2 vision LoRA fine-tuning using Unsloth + SFTTrainer.
 
-    This properly handles multimodal inputs:
-    - Images are processed through the vision encoder
-    - Text is tokenized alongside image tokens
-    - LoRA adapters are applied to the language model layers
+    Unsloth handles:
+      - 4-bit quantization (no manual BitsAndBytesConfig)
+      - LoRA injection (no manual get_peft_model)
+      - Gradient checkpointing
+      - dtype consistency (no bf16/fp32 mismatch)
+      - 2x faster training with fused kernels
     """
     import torch
-    from datasets import load_dataset
-    from transformers import (
-        AutoProcessor,
-        BitsAndBytesConfig,
-    )
-    try:
-        from transformers import AutoModelForImageTextToText as VisionModel
-    except ImportError:
-        from transformers import AutoModelForVision2Seq as VisionModel
-    from peft import LoraConfig
+    from unsloth import FastVisionModel
     from trl import SFTTrainer, SFTConfig
-    from PIL import Image
+    from unsloth.trainer import UnslothVisionDataCollator
 
     model_name = config.get("model", {}).get("name", DEFAULT_MODEL)
     local_path = config.get("model", {}).get("local_path", "")
@@ -135,159 +128,124 @@ def train_cuda_mps(config: dict, args):
     train_cfg = config.get("training", {})
     lora_cfg = config.get("lora", {})
 
-    device = "cuda" if args.backend == "cuda" else "mps"
+    # ── Load model with Unsloth ──
+    unsloth_model = f"unsloth/{model_name.split('/')[-1]}"
+    print(f"\n[*] Loading model via Unsloth: {unsloth_model}")
+    print(f"    (fallback: {model_path})")
 
-    # ── Quantization for limited VRAM ──
-    bnb_config = None
-    if args.backend == "cuda" and args.use_4bit:
-        bnb_config = BitsAndBytesConfig(
-            load_in_4bit=True,
-            bnb_4bit_quant_type="nf4",
-            bnb_4bit_compute_dtype=torch.bfloat16,
-            bnb_4bit_use_double_quant=True,
+    try:
+        model, tokenizer = FastVisionModel.from_pretrained(
+            model_name=unsloth_model,
+            load_in_4bit=args.use_4bit,
+            use_gradient_checkpointing="unsloth",
         )
-        print("[*] Using 4-bit QLoRA (saves VRAM)")
-
-    # ── Load model + processor ──
-    print(f"\n[*] Loading model: {model_path}")
-    processor = AutoProcessor.from_pretrained(model_path, trust_remote_code=True)
-
-    model = VisionModel.from_pretrained(
-        model_path,
-        torch_dtype=torch.bfloat16 if device == "cuda" else torch.float32,
-        quantization_config=bnb_config,
-        trust_remote_code=True,
-        device_map="auto" if device == "cuda" else None,
-    )
-    if device == "mps":
-        model = model.to("mps")
-
-    # Monkey-patch inputs_merger to cast vision hidden states to match embed dtype.
-    # SmolVLM's vision encoder outputs float32 through gradient checkpointing
-    # boundaries even when the model is loaded in bfloat16. The mismatch crashes
-    # at modeling_smolvlm.py:573 where image_embeds (bf16) != hidden_states (fp32).
-    if device == "cuda":
-        inner_model = model.model if hasattr(model, "model") else model
-        original_inputs_merger = inner_model.inputs_merger
-
-        def patched_inputs_merger(
-            input_ids, inputs_embeds, image_hidden_states, *args, **kwargs
-        ):
-            if image_hidden_states is not None and inputs_embeds is not None:
-                image_hidden_states = image_hidden_states.to(inputs_embeds.dtype)
-            return original_inputs_merger(
-                input_ids, inputs_embeds, image_hidden_states, *args, **kwargs
-            )
-
-        inner_model.inputs_merger = patched_inputs_merger
-        print("  [*] Patched inputs_merger for dtype consistency")
+    except Exception as e:
+        print(f"[!] Unsloth model not found ({e}), using HF path: {model_path}")
+        model, tokenizer = FastVisionModel.from_pretrained(
+            model_name=model_path,
+            load_in_4bit=args.use_4bit,
+            use_gradient_checkpointing="unsloth",
+        )
 
     total_params = sum(p.numel() for p in model.parameters())
     print(f"  Total parameters: {total_params / 1e6:.1f}M")
 
-    # ── LoRA config ──
-    target_modules = lora_cfg.get("target_modules", [
-        "q_proj", "k_proj", "v_proj", "o_proj",
-        "gate_proj", "up_proj", "down_proj",
-    ])
-    lora_config = LoraConfig(
-        r=lora_cfg.get("rank", 32),
-        lora_alpha=lora_cfg.get("alpha", 64),
-        lora_dropout=lora_cfg.get("dropout", 0.05),
-        target_modules=target_modules,
-        task_type="CAUSAL_LM",
+    # ── Configure LoRA via Unsloth ──
+    r = lora_cfg.get("rank", 32)
+    lora_alpha = lora_cfg.get("alpha", 64)
+    lora_dropout = lora_cfg.get("dropout", 0)
+
+    model = FastVisionModel.get_peft_model(
+        model,
+        finetune_vision_modules=True,
+        finetune_language_modules=True,
+        finetune_attention_modules=True,
+        finetune_mlp_modules=True,
+        r=r,
+        lora_alpha=lora_alpha,
+        lora_dropout=lora_dropout,
         bias="none",
     )
 
-    # ── Load dataset ──
-    print(f"[*] Loading training data: {args.train_data}")
-    train_ds = load_dataset("json", data_files=args.train_data, split="train")
-    val_ds = None
-    if args.val_data and Path(args.val_data).exists():
-        val_ds = load_dataset("json", data_files=args.val_data, split="train")
-        print(f"  Validation: {len(val_ds)} examples")
+    trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    print(f"  Trainable LoRA parameters: {trainable / 1e6:.1f}M ({100 * trainable / total_params:.1f}%)")
+
+    # ── Load & convert dataset to Unsloth vision format ──
+    print(f"\n[*] Loading training data: {args.train_data}")
+
+    def load_jsonl(path):
+        examples = []
+        with open(path) as f:
+            for line in f:
+                examples.append(json.loads(line))
+        return examples
+
+    raw_train = load_jsonl(args.train_data)
 
     max_samples = train_cfg.get("max_samples", args.max_samples)
-    if max_samples and len(train_ds) > max_samples:
-        train_ds = train_ds.shuffle(seed=42).select(range(max_samples))
+    if max_samples and len(raw_train) > max_samples:
+        import random
+        random.seed(42)
+        random.shuffle(raw_train)
+        raw_train = raw_train[:max_samples]
+
+    raw_val = []
+    if args.val_data and Path(args.val_data).exists():
+        raw_val = load_jsonl(args.val_data)
+
+    def convert_to_conversation(sample):
+        """Convert our JSONL format to Unsloth vision format with file paths."""
+        messages = sample.get("messages", [])
+        image_paths = sample.get("images", [])
+        img = image_paths[0] if image_paths else None
+
+        converted_messages = []
+        for msg in messages:
+            role = msg.get("role", "")
+            content = msg.get("content", "")
+
+            if isinstance(content, list):
+                new_content = []
+                for c in content:
+                    if c.get("type") == "image" and img is not None:
+                        new_content.append({"type": "image", "image": img})
+                    elif c.get("type") == "text":
+                        new_content.append({"type": "text", "text": c["text"]})
+                converted_messages.append({"role": role, "content": new_content})
+            elif isinstance(content, str):
+                if role == "user" and img is not None:
+                    converted_messages.append({
+                        "role": role,
+                        "content": [
+                            {"type": "image", "image": img},
+                            {"type": "text", "text": content},
+                        ],
+                    })
+                else:
+                    converted_messages.append({
+                        "role": role,
+                        "content": [{"type": "text", "text": content}],
+                    })
+
+        return {"messages": converted_messages}
+
+    print(f"  Converting {len(raw_train)} training examples to vision format...")
+    train_ds = [convert_to_conversation(s) for s in raw_train]
     print(f"  Training: {len(train_ds)} examples")
 
-    # ── Collator for multimodal data ──
-    class VisionCollator:
-        """Process image + text pairs into model inputs."""
-        def __init__(self, processor, max_length=2048):
-            self.processor = processor
-            self.max_length = max_length
-
-        def __call__(self, examples):
-            texts = []
-            images_list = []
-
-            for ex in examples:
-                messages = ex.get("messages", [])
-                image_paths = ex.get("images", [])
-
-                # Build conversation text via processor's chat template
-                text = self.processor.apply_chat_template(
-                    messages, tokenize=False, add_generation_prompt=False
-                )
-                texts.append(text)
-
-                # Load images
-                imgs = []
-                for img_path in image_paths:
-                    try:
-                        img = Image.open(img_path).convert("RGB")
-                        imgs.append(img)
-                    except Exception:
-                        # Create tiny placeholder if image missing
-                        imgs.append(Image.new("RGB", (224, 224), (128, 128, 128)))
-                images_list.append(imgs if imgs else None)
-
-            # Process with the multimodal processor
-            if any(imgs is not None for imgs in images_list):
-                # SmolVLM expects images as list-of-lists: [[img1], [img2], ...]
-                batch = self.processor(
-                    text=texts,
-                    images=[[imgs[0]] if imgs else [] for imgs in images_list],
-                    return_tensors="pt",
-                    padding=True,
-                    truncation=True,
-                    max_length=self.max_length,
-                )
-            else:
-                batch = self.processor(
-                    text=texts,
-                    return_tensors="pt",
-                    padding=True,
-                    truncation=True,
-                    max_length=self.max_length,
-                )
-
-            # Labels = input_ids (standard causal LM)
-            labels = batch["input_ids"].clone()
-            # Mask padding tokens in labels
-            if self.processor.tokenizer.pad_token_id is not None:
-                labels[labels == self.processor.tokenizer.pad_token_id] = -100
-            batch["labels"] = labels
-
-            return batch
-
-    collator = VisionCollator(
-        processor,
-        max_length=train_cfg.get("max_seq_length", 2048),
-    )
+    val_ds = None
+    if raw_val:
+        val_ds = [convert_to_conversation(s) for s in raw_val]
+        print(f"  Validation: {len(val_ds)} examples")
 
     # ── Training config ──
-    epochs = train_cfg.get("epochs", 3)
+    epochs = train_cfg.get("epochs", 1)
     batch_size = train_cfg.get("batch_size", 4)
     grad_accum = train_cfg.get("gradient_accumulation", 4)
     lr = train_cfg.get("learning_rate", 2e-4)
-
-    if device == "mps":
-        # MPS has limited memory — reduce batch size
-        batch_size = min(batch_size, 2)
-        grad_accum = max(grad_accum, 8)
+    max_steps = train_cfg.get("max_steps", -1)
+    if args.max_iters:
+        max_steps = args.max_iters
 
     output_dir = args.output or DEFAULT_OUTPUT
 
@@ -302,38 +260,39 @@ def train_cuda_mps(config: dict, args):
         gradient_accumulation_steps=grad_accum,
         learning_rate=lr,
         lr_scheduler_type=train_cfg.get("lr_scheduler", "cosine"),
-        warmup_ratio=train_cfg.get("warmup_ratio", 0.05),
+        warmup_steps=5,
         weight_decay=train_cfg.get("weight_decay", 0.01),
-        bf16=(device == "cuda"),
-        fp16=False,
-        logging_steps=10,
+        bf16=torch.cuda.is_bf16_supported(),
+        fp16=not torch.cuda.is_bf16_supported(),
+        logging_steps=1,
         save_steps=save_steps,
         save_total_limit=save_total_limit,
         save_strategy="steps",
-        eval_strategy="steps" if val_ds else "no",
-        eval_steps=500 if val_ds else None,
+        max_steps=max_steps if max_steps and max_steps > 0 else -1,
         report_to=["tensorboard"],
-        logging_dir=f"../logs/ocula-base-vision",
         dataloader_num_workers=0,
         remove_unused_columns=False,
-        gradient_checkpointing=True,
-        gradient_checkpointing_kwargs={"use_reentrant": False},
-        dataset_text_field=None,          # We use a custom collator
+        dataset_text_field="",
         dataset_kwargs={"skip_prepare_dataset": True},
+        optim="adamw_8bit",
+        max_grad_norm=1.0,
+        max_seq_length=train_cfg.get("max_seq_length", 2048),
     )
 
-    # ── Train ──
+    # ── Train with Unsloth's vision collator ──
     trainer = SFTTrainer(
         model=model,
+        tokenizer=tokenizer,
         args=sft_config,
         train_dataset=train_ds,
         eval_dataset=val_ds,
-        data_collator=collator,
-        peft_config=lora_config,
+        data_collator=UnslothVisionDataCollator(model, tokenizer),
     )
 
-    print(f"\n[*] Starting vision SFT on {device.upper()}")
+    print(f"\n[*] Starting SmolVLM2 vision SFT via Unsloth on CUDA")
     print(f"    Epochs: {epochs}, Batch: {batch_size} × {grad_accum} accum, LR: {lr}")
+    print(f"    Max steps: {max_steps if max_steps and max_steps > 0 else 'unlimited'}")
+    print(f"    4-bit: {args.use_4bit}")
     print(f"    Checkpoints: every {save_steps} steps, keep {save_total_limit}")
     print(f"    Output: {output_dir}")
 
@@ -355,23 +314,181 @@ def train_cuda_mps(config: dict, args):
     # ── Save LoRA adapters ──
     print(f"\n[*] Saving LoRA adapters to {output_dir}")
     trainer.save_model(output_dir)
-    processor.save_pretrained(output_dir)
+    tokenizer.save_pretrained(output_dir)
 
     # ── Save merged model (pre-quantization) for future fine-tuning ──
     merged_dir = str(Path(output_dir).parent / "smolvlm2-vision-merged")
     print(f"\n[*] Saving merged model (base + LoRA) to {merged_dir}")
     print(f"    This allows future fine-tuning without retraining from scratch.")
 
-    from peft import PeftModel
-    merged_model = trainer.model.merge_and_unload()
-    merged_model.save_pretrained(merged_dir)
-    processor.save_pretrained(merged_dir)
+    model.save_pretrained_merged(
+        merged_dir,
+        tokenizer,
+        save_method="merged_16bit",
+    )
 
     print("[OK] SmolVLM2 vision fine-tuning complete!")
     print(f"     LoRA adapters:  {output_dir}")
     print(f"     Merged model:   {merged_dir}")
-    print(f"     Next: python 06_merge_lora.py --model ocula-base")
-    print(f"     Then: python 07_quantize_gguf.py --model ocula-base")
+    print(f"     Next: python 07_quantize_gguf.py --model ocula-base")
+
+
+# ═════════════════════════════════════════════════════════════════
+# MPS Training (fallback for Apple Silicon without MLX)
+# ═════════════════════════════════════════════════════════════════
+
+def train_mps(config: dict, args):
+    """MPS fallback — uses HuggingFace Transformers + PEFT directly."""
+    import torch
+    from datasets import load_dataset
+    from transformers import AutoProcessor
+    from PIL import Image
+    try:
+        from transformers import AutoModelForImageTextToText as VisionModel
+    except ImportError:
+        from transformers import AutoModelForVision2Seq as VisionModel
+    from peft import LoraConfig
+    from trl import SFTTrainer, SFTConfig
+
+    model_name = config.get("model", {}).get("name", DEFAULT_MODEL)
+    local_path = config.get("model", {}).get("local_path", "")
+    model_path = local_path if local_path and Path(local_path).exists() else model_name
+
+    train_cfg = config.get("training", {})
+    lora_cfg = config.get("lora", {})
+
+    print(f"\n[*] Loading model: {model_path}")
+    processor = AutoProcessor.from_pretrained(model_path, trust_remote_code=True)
+    model = VisionModel.from_pretrained(
+        model_path,
+        torch_dtype=torch.float32,
+        trust_remote_code=True,
+    )
+    model = model.to("mps")
+    model.gradient_checkpointing_enable()
+
+    total_params = sum(p.numel() for p in model.parameters())
+    print(f"  Total parameters: {total_params / 1e6:.1f}M")
+
+    target_modules = lora_cfg.get("target_modules", [
+        "q_proj", "k_proj", "v_proj", "o_proj",
+        "gate_proj", "up_proj", "down_proj",
+    ])
+    lora_config = LoraConfig(
+        r=lora_cfg.get("rank", 32),
+        lora_alpha=lora_cfg.get("alpha", 64),
+        lora_dropout=lora_cfg.get("dropout", 0.05),
+        target_modules=target_modules,
+        task_type="CAUSAL_LM",
+        bias="none",
+    )
+
+    print(f"[*] Loading training data: {args.train_data}")
+    train_ds = load_dataset("json", data_files=args.train_data, split="train")
+    val_ds = None
+    if args.val_data and Path(args.val_data).exists():
+        val_ds = load_dataset("json", data_files=args.val_data, split="train")
+
+    max_samples = train_cfg.get("max_samples", args.max_samples)
+    if max_samples and len(train_ds) > max_samples:
+        train_ds = train_ds.shuffle(seed=42).select(range(max_samples))
+    print(f"  Training: {len(train_ds)} examples")
+
+    class VisionCollator:
+        def __init__(self, processor, max_length=2048):
+            self.processor = processor
+            self.max_length = max_length
+
+        def __call__(self, examples):
+            texts = []
+            images_list = []
+            for ex in examples:
+                messages = ex.get("messages", [])
+                image_paths = ex.get("images", [])
+                text = self.processor.apply_chat_template(
+                    messages, tokenize=False, add_generation_prompt=False
+                )
+                texts.append(text)
+                imgs = []
+                for img_path in image_paths:
+                    try:
+                        imgs.append(Image.open(img_path).convert("RGB"))
+                    except Exception:
+                        imgs.append(Image.new("RGB", (224, 224), (128, 128, 128)))
+                images_list.append(imgs if imgs else None)
+
+            if any(imgs is not None for imgs in images_list):
+                batch = self.processor(
+                    text=texts,
+                    images=[[imgs[0]] if imgs else [] for imgs in images_list],
+                    return_tensors="pt", padding=True, truncation=True,
+                    max_length=self.max_length,
+                )
+            else:
+                batch = self.processor(
+                    text=texts, return_tensors="pt", padding=True,
+                    truncation=True, max_length=self.max_length,
+                )
+            labels = batch["input_ids"].clone()
+            if self.processor.tokenizer.pad_token_id is not None:
+                labels[labels == self.processor.tokenizer.pad_token_id] = -100
+            batch["labels"] = labels
+            return batch
+
+    collator = VisionCollator(processor, max_length=train_cfg.get("max_seq_length", 2048))
+
+    epochs = train_cfg.get("epochs", 1)
+    batch_size = min(train_cfg.get("batch_size", 4), 2)
+    grad_accum = max(train_cfg.get("gradient_accumulation", 4), 8)
+    lr = train_cfg.get("learning_rate", 5e-5)
+    output_dir = args.output or DEFAULT_OUTPUT
+
+    save_steps = train_cfg.get("save_steps", 100)
+    save_total_limit = train_cfg.get("save_total_limit", 5)
+
+    sft_config = SFTConfig(
+        output_dir=output_dir,
+        num_train_epochs=epochs,
+        per_device_train_batch_size=batch_size,
+        gradient_accumulation_steps=grad_accum,
+        learning_rate=lr,
+        lr_scheduler_type="cosine",
+        warmup_steps=100,
+        weight_decay=0.01,
+        bf16=False,
+        logging_steps=10,
+        save_steps=save_steps,
+        save_total_limit=save_total_limit,
+        save_strategy="steps",
+        eval_strategy="steps" if val_ds else "no",
+        report_to=["tensorboard"],
+        dataloader_num_workers=0,
+        remove_unused_columns=False,
+        gradient_checkpointing=True,
+        gradient_checkpointing_kwargs={"use_reentrant": False},
+        dataset_kwargs={"skip_prepare_dataset": True},
+        max_grad_norm=1.0,
+    )
+
+    trainer = SFTTrainer(
+        model=model, args=sft_config,
+        train_dataset=train_ds, eval_dataset=val_ds,
+        data_collator=collator, peft_config=lora_config,
+    )
+
+    print(f"\n[*] Starting SmolVLM2 vision SFT on MPS")
+    print(f"    Epochs: {epochs}, Batch: {batch_size} × {grad_accum} accum, LR: {lr}")
+    print(f"    Output: {output_dir}")
+
+    if args.resume:
+        trainer.train(resume_from_checkpoint=args.resume)
+    else:
+        trainer.train()
+
+    print(f"\n[*] Saving LoRA adapters to {output_dir}")
+    trainer.save_model(output_dir)
+    processor.save_pretrained(output_dir)
+    print("[OK] SmolVLM2 vision fine-tuning complete!")
 
 
 # ═════════════════════════════════════════════════════════════════
@@ -702,8 +819,10 @@ def main():
 
     if backend == "mlx":
         train_mlx(config, args)
-    elif backend in ("cuda", "mps", "cpu"):
-        train_cuda_mps(config, args)
+    elif backend == "cuda":
+        train_cuda(config, args)
+    elif backend in ("mps", "cpu"):
+        train_mps(config, args)
     else:
         print(f"[!] Unknown backend: {backend}")
         sys.exit(1)
