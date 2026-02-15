@@ -30,9 +30,48 @@ set(GGML_OPENMP OFF CACHE BOOL "" FORCE)
 set(GGML_AMX OFF CACHE BOOL "" FORCE)
 set(GGML_CUDA OFF CACHE BOOL "" FORCE)
 set(GGML_METAL OFF CACHE BOOL "" FORCE)
-set(GGML_OPENCL OFF CACHE BOOL "" FORCE)
 
-# ── Vulkan GPU acceleration ──
+# ── OpenCL GPU acceleration (Adreno-optimized) ──
+# Qualcomm Adreno GPUs perform significantly better with OpenCL than Vulkan.
+# Most Android flagships (Nothing, OnePlus, Samsung US, older Pixels) use Adreno.
+# The OpenCL library (libOpenCL.so) ships on Qualcomm devices at runtime.
+# We provide Khronos headers from third_party/opencl-headers.
+
+set(OPENCL_HEADERS_DIR "${THIRD_PARTY_DIR}/opencl-headers")
+find_library(opencl-lib OpenCL)
+
+if(opencl-lib AND EXISTS "${OPENCL_HEADERS_DIR}/CL/cl.h")
+    set(GGML_OPENCL ON CACHE BOOL "" FORCE)
+    set(GGML_OPENCL_USE_ADRENO_KERNELS ON CACHE BOOL "" FORCE)
+    set(GGML_OPENCL_EMBED_KERNELS ON CACHE BOOL "" FORCE)
+
+    # Provide OpenCL package variables so find_package(OpenCL) succeeds
+    set(OpenCL_FOUND TRUE CACHE BOOL "" FORCE)
+    set(OpenCL_INCLUDE_DIRS "${OPENCL_HEADERS_DIR}" CACHE PATH "" FORCE)
+    set(OpenCL_LIBRARIES "${opencl-lib}" CACHE FILEPATH "" FORCE)
+
+    # Create imported target for OpenCL
+    if(NOT TARGET OpenCL::OpenCL)
+        add_library(OpenCL::OpenCL SHARED IMPORTED)
+        set_target_properties(OpenCL::OpenCL PROPERTIES
+            IMPORTED_LOCATION "${opencl-lib}"
+            INTERFACE_INCLUDE_DIRECTORIES "${OPENCL_HEADERS_DIR}"
+        )
+    endif()
+
+    message(STATUS "OpenCL GPU acceleration ENABLED (Adreno-optimized)")
+    message(STATUS "  Headers: ${OPENCL_HEADERS_DIR}")
+    message(STATUS "  Library: ${opencl-lib}")
+else()
+    set(GGML_OPENCL OFF CACHE BOOL "" FORCE)
+    if(NOT opencl-lib)
+        message(STATUS "OpenCL disabled: libOpenCL not found (non-Qualcomm device?)")
+    else()
+        message(STATUS "OpenCL disabled: missing headers at ${OPENCL_HEADERS_DIR}")
+    endif()
+endif()
+
+# ── Vulkan GPU acceleration (fallback for Mali/other GPUs) ──
 # The NDK ships libvulkan.so + C headers, but NOT vulkan.hpp (C++ bindings).
 # We supply vulkan.hpp from third_party/vulkan-hpp.
 # glslc shader compiler comes from the NDK's shader-tools.
@@ -121,6 +160,16 @@ else()
     message(STATUS "  Using optimized CPU backend with ARM NEON")
 endif()
 
+# Summary
+if(GGML_OPENCL AND GGML_VULKAN)
+    message(STATUS "GPU: OpenCL (primary, Adreno) + Vulkan (fallback, Mali/other)")
+elseif(GGML_OPENCL)
+    message(STATUS "GPU: OpenCL only (Adreno-optimized)")
+elseif(GGML_VULKAN)
+    message(STATUS "GPU: Vulkan only")
+else()
+    message(STATUS "GPU: NONE — CPU-only with ARM NEON")
+endif()
 message(STATUS "Works on: All ARM64 Android devices")
 
 # Add llama.cpp as subdirectory (it will build its own CMakeLists.txt)
@@ -146,7 +195,11 @@ target_link_libraries(flutter_llama_bridge
     ${android-lib}
 )
 
-# Link Vulkan if enabled
+# Link GPU libraries
+if(GGML_OPENCL AND opencl-lib)
+    target_link_libraries(flutter_llama_bridge ${opencl-lib})
+    message(STATUS "  Linked: OpenCL library (Adreno)")
+endif()
 if(GGML_VULKAN AND vulkan-lib)
     target_link_libraries(flutter_llama_bridge ${vulkan-lib})
     message(STATUS "  Linked: Vulkan library")
@@ -201,6 +254,9 @@ target_link_libraries(flutter_llama_multimodal_bridge
     ${android-lib}
 )
 
+if(GGML_OPENCL AND opencl-lib)
+    target_link_libraries(flutter_llama_multimodal_bridge ${opencl-lib})
+endif()
 if(GGML_VULKAN AND vulkan-lib)
     target_link_libraries(flutter_llama_multimodal_bridge ${vulkan-lib})
 endif()
