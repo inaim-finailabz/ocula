@@ -137,14 +137,14 @@ def train_cuda(config: dict, args):
         model, tokenizer = FastVisionModel.from_pretrained(
             model_name=unsloth_model,
             load_in_4bit=args.use_4bit,
-            use_gradient_checkpointing="unsloth",
+            use_gradient_checkpointing=True,  # "unsloth" mode fails on SmolVLM's SigLIP encoder
         )
     except Exception as e:
         print(f"[!] Unsloth model not found ({e}), using HF path: {model_path}")
         model, tokenizer = FastVisionModel.from_pretrained(
             model_name=model_path,
             load_in_4bit=args.use_4bit,
-            use_gradient_checkpointing="unsloth",
+            use_gradient_checkpointing=True,  # "unsloth" mode fails on SmolVLM's SigLIP encoder
         )
 
     total_params = sum(p.numel() for p in model.parameters())
