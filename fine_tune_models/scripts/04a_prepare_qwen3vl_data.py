@@ -151,7 +151,10 @@ def convert_docvqa(max_samples: int, image_dir: Path):
     from datasets import load_dataset
 
     print("[*] Loading DocVQA...")
-    ds = load_dataset("lmms-lab/DocVQA", "DocVQA", split="train")
+    try:
+        ds = load_dataset("lmms-lab/DocVQA", "DocVQA", split="train")
+    except ValueError:
+        ds = load_dataset("lmms-lab/DocVQA", "DocVQA", split="validation")
     if max_samples and len(ds) > max_samples:
         ds = ds.shuffle(seed=42).select(range(max_samples))
 
