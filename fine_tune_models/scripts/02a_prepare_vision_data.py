@@ -194,7 +194,7 @@ def convert_vqav2(max_samples: int, output_dir: Path, image_dir: Path):
     from datasets import load_dataset
 
     print("[*] Loading VQAv2...")
-    ds = load_dataset("merve/vqav2-small", split="validation", trust_remote_code=True)
+    ds = load_dataset("merve/vqav2-small", split="validation")
     if max_samples and len(ds) > max_samples:
         ds = ds.shuffle(seed=42).select(range(max_samples))
 
@@ -273,10 +273,14 @@ def convert_paragraph_captioning(max_samples: int, output_dir: Path, image_dir: 
 
     print("[*] Loading image paragraph captioning...")
     try:
-        ds = load_dataset("merve/image-paragraph-captioning", split="train", trust_remote_code=True)
-    except Exception as e:
-        print(f"  [WARN] Could not load paragraph captioning: {e}")
-        return []
+        ds = load_dataset("merve/image-paragraph-captioning", split="train")
+    except Exception:
+        try:
+            print("  [*] Trying fallback: google/docci...")
+            ds = load_dataset("google/docci", split="train")
+        except Exception as e:
+            print(f"  [WARN] Could not load paragraph captioning: {e}")
+            return []
 
     if max_samples and len(ds) > max_samples:
         ds = ds.shuffle(seed=42).select(range(max_samples))
@@ -313,7 +317,7 @@ def convert_docvqa(max_samples: int, output_dir: Path, image_dir: Path):
     from datasets import load_dataset
 
     print("[*] Loading DocVQA...")
-    ds = load_dataset("lmms-lab/DocVQA", "DocVQA", split="validation", trust_remote_code=True)
+    ds = load_dataset("lmms-lab/DocVQA", "DocVQA", split="validation")
     if max_samples and len(ds) > max_samples:
         ds = ds.shuffle(seed=42).select(range(max_samples))
 
@@ -352,10 +356,10 @@ def convert_chartqa(max_samples: int, output_dir: Path, image_dir: Path):
 
     print("[*] Loading ChartQA...")
     try:
-        ds = load_dataset("HuggingFaceM4/ChartQA", split="train", trust_remote_code=True)
+        ds = load_dataset("HuggingFaceM4/ChartQA", split="train")
     except Exception:
         # Some versions split differently
-        ds = load_dataset("ahmed-masry/ChartQA", split="train", trust_remote_code=True)
+        ds = load_dataset("ahmed-masry/ChartQA", split="train")
 
     if max_samples and len(ds) > max_samples:
         ds = ds.shuffle(seed=42).select(range(max_samples))
@@ -387,7 +391,7 @@ def convert_infovqa(max_samples: int, output_dir: Path, image_dir: Path):
 
     print("[*] Loading InfoVQA...")
     try:
-        ds = load_dataset("lmms-lab/InfoVQA", split="train", trust_remote_code=True)
+        ds = load_dataset("lmms-lab/InfoVQA", split="train")
     except Exception as e:
         print(f"  [WARN] Could not load InfoVQA: {e}")
         return []
@@ -427,7 +431,7 @@ def convert_ai2d(max_samples: int, output_dir: Path, image_dir: Path):
 
     print("[*] Loading AI2D...")
     try:
-        ds = load_dataset("lmms-lab/ai2d", split="train", trust_remote_code=True)
+        ds = load_dataset("lmms-lab/ai2d", split="train")
     except Exception as e:
         print(f"  [WARN] Could not load AI2D: {e}")
         return []
@@ -478,7 +482,7 @@ def generate_doc_summarization_examples(max_samples: int = 2000):
     print("[*] Loading document summarization data (CNN/DailyMail)...")
     try:
         ds = load_dataset("abisee/cnn_dailymail", "3.0.0", split="train",
-                          trust_remote_code=True)
+                          trust_remote_code=False)
     except Exception:
         print("  [WARN] Could not load CNN/DailyMail — skipping text summarization")
         return []

@@ -84,7 +84,7 @@ def convert_vqav2(max_samples: int, image_dir: Path):
     from datasets import load_dataset
 
     print("[*] Loading VQAv2...")
-    ds = load_dataset("merve/vqav2-small", split="validation", trust_remote_code=True)
+    ds = load_dataset("merve/vqav2-small", split="validation")
     if max_samples and len(ds) > max_samples:
         ds = ds.shuffle(seed=42).select(range(max_samples))
 
@@ -114,9 +114,9 @@ def convert_textcaps(max_samples: int, image_dir: Path):
 
     print("[*] Loading TextCaps...")
     try:
-        ds = load_dataset("HuggingFaceM4/TextCaps", split="train", trust_remote_code=True)
+        ds = load_dataset("HuggingFaceM4/TextCaps", split="train")
     except Exception:
-        ds = load_dataset("HuggingFaceM4/TextCaps", split="train[:10000]", trust_remote_code=True)
+        ds = load_dataset("HuggingFaceM4/TextCaps", split="train[:10000]")
 
     if max_samples and len(ds) > max_samples:
         ds = ds.shuffle(seed=42).select(range(max_samples))
@@ -150,7 +150,7 @@ def convert_coco_captions(max_samples: int, image_dir: Path):
 
     print("[*] Loading COCO Captions...")
     try:
-        ds = load_dataset("HuggingFaceM4/COCO", split="train", trust_remote_code=True)
+        ds = load_dataset("HuggingFaceM4/COCO", split="train")
     except Exception:
         try:
             ds = load_dataset("shunk031/MSCOCO", "2017", split="train",
@@ -201,10 +201,10 @@ def convert_gqa(max_samples: int, image_dir: Path):
 
     print("[*] Loading GQA...")
     try:
-        ds = load_dataset("merve/gqa-small", split="train", trust_remote_code=True)
+        ds = load_dataset("merve/gqa-small", split="train")
     except Exception:
         try:
-            ds = load_dataset("leonardlin/GQA", split="train", trust_remote_code=True)
+            ds = load_dataset("leonardlin/GQA", split="train")
         except Exception:
             print("  [WARN] GQA not available — skipping")
             return []
@@ -232,7 +232,7 @@ def convert_docvqa(max_samples: int, image_dir: Path):
     from datasets import load_dataset
 
     print("[*] Loading DocVQA...")
-    ds = load_dataset("lmms-lab/DocVQA", split="train", trust_remote_code=True)
+    ds = load_dataset("lmms-lab/DocVQA", split="train")
     if max_samples and len(ds) > max_samples:
         ds = ds.shuffle(seed=42).select(range(max_samples))
 

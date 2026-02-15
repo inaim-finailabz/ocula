@@ -213,7 +213,7 @@ def download_datasets(model_filter=None, output_dir=None):
 
             try:
                 # Download with streaming for large datasets
-                ds = load_dataset(name, split="train", trust_remote_code=True)
+                ds = load_dataset(name, split="train")
                 ds.save_to_disk(str(target_dir))
                 print(f"    [OK] {len(ds)} examples saved")
             except Exception as e:
