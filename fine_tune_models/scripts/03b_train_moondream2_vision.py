@@ -158,108 +158,82 @@ def train_cuda(config: dict, args):
     trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f"  Trainable LoRA parameters: {trainable / 1e6:.1f}M ({100 * trainable / total_params:.1f}%)")
 
-    # ── Load dataset ──
+    # ── Load & convert dataset to Unsloth vision format ──
+    from unsloth.trainer import UnslothVisionDataCollator
+
     print(f"\n[*] Loading training data: {args.train_data}")
-    train_ds = load_dataset("json", data_files=args.train_data, split="train")
-    val_ds = None
-    if args.val_data and Path(args.val_data).exists():
-        val_ds = load_dataset("json", data_files=args.val_data, split="train")
-        print(f"  Validation: {len(val_ds)} examples")
+
+    def load_jsonl(path):
+        examples = []
+        with open(path) as f:
+            for line in f:
+                examples.append(json.loads(line))
+        return examples
+
+    raw_train = load_jsonl(args.train_data)
 
     max_samples = train_cfg.get("max_samples", args.max_samples)
-    if max_samples and len(train_ds) > max_samples:
-        train_ds = train_ds.shuffle(seed=42).select(range(max_samples))
+    if max_samples and len(raw_train) > max_samples:
+        import random
+        random.seed(42)
+        random.shuffle(raw_train)
+        raw_train = raw_train[:max_samples]
+
+    raw_val = []
+    if args.val_data and Path(args.val_data).exists():
+        raw_val = load_jsonl(args.val_data)
+
+    def convert_to_conversation(sample):
+        """Convert our JSONL format to Unsloth vision format with PIL images."""
+        messages = sample.get("messages", [])
+        image_paths = sample.get("images", [])
+
+        img = None
+        if image_paths:
+            try:
+                img = Image.open(image_paths[0]).convert("RGB")
+                img = img.resize((378, 378))
+            except Exception:
+                img = Image.new("RGB", (378, 378), (128, 128, 128))
+
+        converted_messages = []
+        for msg in messages:
+            role = msg.get("role", "")
+            content = msg.get("content", "")
+
+            if isinstance(content, list):
+                new_content = []
+                for c in content:
+                    if c.get("type") == "image" and img is not None:
+                        new_content.append({"type": "image", "image": img})
+                    elif c.get("type") == "text":
+                        new_content.append({"type": "text", "text": c["text"]})
+                converted_messages.append({"role": role, "content": new_content})
+            elif isinstance(content, str):
+                if role == "user" and img is not None:
+                    converted_messages.append({
+                        "role": role,
+                        "content": [
+                            {"type": "image", "image": img},
+                            {"type": "text", "text": content},
+                        ],
+                    })
+                else:
+                    converted_messages.append({
+                        "role": role,
+                        "content": [{"type": "text", "text": content}],
+                    })
+
+        return {"messages": converted_messages}
+
+    print(f"  Converting {len(raw_train)} training examples to vision format...")
+    train_ds = [convert_to_conversation(s) for s in raw_train]
     print(f"  Training: {len(train_ds)} examples")
 
-    # ── Collator for multimodal data ──
-    from transformers import AutoProcessor
-    processor = AutoProcessor.from_pretrained(
-        model.config._name_or_path, trust_remote_code=True
-    )
-
-    class MoondreamVisionCollator:
-        """Process image + text pairs for Moondream2."""
-        def __init__(self, processor, max_length=2048):
-            self.processor = processor
-            self.max_length = max_length
-
-        def __call__(self, examples):
-            texts = []
-            images_list = []
-
-            for ex in examples:
-                messages = ex.get("messages", [])
-                image_paths = ex.get("images", [])
-
-                user_text = ""
-                assistant_text = ""
-                for msg in messages:
-                    role = msg.get("role", "")
-                    content = msg.get("content", "")
-                    if isinstance(content, list):
-                        for c in content:
-                            if c.get("type") == "text":
-                                if role == "user":
-                                    user_text = c["text"]
-                                elif role == "assistant":
-                                    assistant_text = c["text"]
-                    elif isinstance(content, str):
-                        if role == "user":
-                            user_text = content
-                        elif role == "assistant":
-                            assistant_text = content
-
-                text = f"<image>\n\nQuestion: {user_text}\n\nAnswer: {assistant_text}"
-                texts.append(text)
-
-                imgs = []
-                for img_path in image_paths:
-                    try:
-                        img = Image.open(img_path).convert("RGB")
-                        imgs.append(img)
-                    except Exception:
-                        imgs.append(Image.new("RGB", (378, 378), (128, 128, 128)))
-                images_list.append(imgs if imgs else None)
-
-            try:
-                if any(imgs is not None for imgs in images_list):
-                    batch = self.processor(
-                        text=texts,
-                        images=[imgs[0] if imgs else None for imgs in images_list],
-                        return_tensors="pt",
-                        padding=True,
-                        truncation=True,
-                        max_length=self.max_length,
-                    )
-                else:
-                    batch = self.processor(
-                        text=texts,
-                        return_tensors="pt",
-                        padding=True,
-                        truncation=True,
-                        max_length=self.max_length,
-                    )
-            except Exception as e:
-                print(f"[!] Processor error (will retry text-only): {e}")
-                batch = self.processor.tokenizer(
-                    texts,
-                    return_tensors="pt",
-                    padding=True,
-                    truncation=True,
-                    max_length=self.max_length,
-                )
-
-            labels = batch["input_ids"].clone()
-            if self.processor.tokenizer.pad_token_id is not None:
-                labels[labels == self.processor.tokenizer.pad_token_id] = -100
-            batch["labels"] = labels
-
-            return batch
-
-    collator = MoondreamVisionCollator(
-        processor,
-        max_length=train_cfg.get("max_seq_length", 2048),
-    )
+    val_ds = None
+    if raw_val:
+        val_ds = [convert_to_conversation(s) for s in raw_val]
+        print(f"  Validation: {len(val_ds)} examples")
 
     # ── Training config ──
     epochs = train_cfg.get("epochs", 1)
@@ -287,23 +261,24 @@ def train_cuda(config: dict, args):
         save_steps=500,
         save_total_limit=3,
         max_steps=max_steps if max_steps and max_steps > 0 else -1,
-        eval_strategy="steps" if val_ds else "no",
         report_to=["tensorboard"],
-        dataloader_num_workers=4,
+        dataloader_num_workers=0,
         remove_unused_columns=False,
+        dataset_text_field="",
         dataset_kwargs={"skip_prepare_dataset": True},
         optim="adamw_8bit",
         max_grad_norm=1.0,
+        max_seq_length=train_cfg.get("max_seq_length", 2048),
     )
 
-    # ── Train ──
+    # ── Train with Unsloth's vision collator ──
     trainer = SFTTrainer(
         model=model,
         tokenizer=tokenizer,
         args=sft_config,
         train_dataset=train_ds,
         eval_dataset=val_ds,
-        data_collator=collator,
+        data_collator=UnslothVisionDataCollator(model, tokenizer),
     )
 
     print(f"\n[*] Starting Moondream2 vision SFT via Unsloth on CUDA")
@@ -320,7 +295,7 @@ def train_cuda(config: dict, args):
     # ── Save ──
     print(f"\n[*] Saving LoRA adapters to {output_dir}")
     trainer.save_model(output_dir)
-    processor.save_pretrained(output_dir)
+    tokenizer.save_pretrained(output_dir)
 
     print("[OK] Moondream2 vision fine-tuning complete!")
     print(f"     Next: python 07b_export_moondream2_gguf.py")
