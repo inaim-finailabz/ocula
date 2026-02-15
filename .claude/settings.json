@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(/Volumes/ExternalDisk/projects/Ocula/fine_tune_models/ocula_env/bin/python3:*)"
+    ]
+  }
+}
