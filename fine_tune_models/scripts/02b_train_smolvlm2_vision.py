@@ -294,8 +294,10 @@ def train_cuda_mps(config: dict, args):
         eval_steps=500 if val_ds else None,
         report_to=["tensorboard"],
         logging_dir=f"../logs/ocula-base-vision",
-        dataloader_num_workers=4 if device == "cuda" else 0,
+        dataloader_num_workers=0,
         remove_unused_columns=False,
+        gradient_checkpointing=True,
+        gradient_checkpointing_kwargs={"use_reentrant": False},
         dataset_text_field=None,          # We use a custom collator
         dataset_kwargs={"skip_prepare_dataset": True},
     )
