@@ -29,26 +29,91 @@ import yaml
 
 
 # ── Paths ────────────────────────────────────────────────────────
-LLAMA_CPP_DIR = Path("../../llama.cpp")
+def find_llama_cpp():
+    """Find llama.cpp in common locations relative to scripts dir."""
+    candidates = [
+        Path("../../llama.cpp"),   # Ocula/fine_tune_models/scripts/ → Ocula/llama.cpp
+        Path("../llama.cpp"),      # ocula/scripts/ → ocula/llama.cpp (flat layout)
+    ]
+    for p in candidates:
+        if (p / "convert_hf_to_gguf.py").exists():
+            return p
+    return candidates[0]
+
+LLAMA_CPP_DIR = find_llama_cpp()
 CONVERT_SCRIPT = LLAMA_CPP_DIR / "convert_hf_to_gguf.py"
 QUANTIZE_BIN = LLAMA_CPP_DIR / "build" / "bin" / "llama-quantize"
 
 GGUF_OUTPUT_DIR = Path("../models/gguf")
-MERGED_MODEL_DIR = Path("../models/merged/moondream2-vision-merged")
+MERGED_MODEL_DIRS = [
+    Path("../models/merged/moondream2-vision-merged"),
+    Path("../models/lora_adapters/moondream2-vision-merged"),
+]
 
 DEFAULT_QUANT_TYPES = ["Q4_K_M", "Q8_0"]
 
 
+def detect_cuda():
+    """Check if CUDA is available for building llama.cpp with GPU support."""
+    try:
+        result = subprocess.run(["nvidia-smi"], capture_output=True, text=True)
+        return result.returncode == 0
+    except FileNotFoundError:
+        return False
+
+
+def setup_llama_cpp():
+    """Clone and build llama.cpp automatically if not present."""
+    repo_dir = LLAMA_CPP_DIR.resolve()
+
+    if not repo_dir.exists():
+        print(f"[*] Cloning llama.cpp into {repo_dir}...")
+        subprocess.run(
+            ["git", "clone", "https://github.com/ggerganov/llama.cpp.git", str(repo_dir)],
+            check=True,
+        )
+    elif (repo_dir / ".git").exists():
+        print(f"[*] Updating llama.cpp...")
+        subprocess.run(["git", "-C", str(repo_dir), "pull"], check=True)
+
+    if not QUANTIZE_BIN.resolve().exists():
+        print(f"[*] Building llama.cpp...")
+        build_dir = (LLAMA_CPP_DIR / "build").resolve()
+        build_dir.mkdir(parents=True, exist_ok=True)
+
+        cmake_cmd = ["cmake", ".."]
+        if detect_cuda():
+            cmake_cmd += ["-DGGML_CUDA=ON"]
+            cuda_home = os.environ.get("CUDA_HOME") or os.environ.get("CUDA_PATH")
+            if not cuda_home:
+                for p in ["/usr/local/cuda", "/usr/local/cuda-12.8", "/usr/local/cuda-12"]:
+                    if os.path.isdir(p):
+                        cuda_home = p
+                        break
+            if cuda_home:
+                cmake_cmd += [f"-DCMAKE_CUDA_COMPILER={cuda_home}/bin/nvcc"]
+            print(f"    (with CUDA support{f', toolkit: {cuda_home}' if cuda_home else ''})")
+
+        subprocess.run(cmake_cmd, cwd=str(build_dir), check=True)
+        nproc = os.cpu_count() or 4
+        subprocess.run(["make", f"-j{nproc}"], cwd=str(build_dir), check=True)
+
+    print("[OK] llama.cpp ready")
+
+
 def check_prerequisites():
+    if not CONVERT_SCRIPT.exists() or not QUANTIZE_BIN.exists():
+        print("[*] llama.cpp tools not found — setting up automatically...")
+        setup_llama_cpp()
+
+    # Final check
     errors = []
     if not CONVERT_SCRIPT.exists():
         errors.append(f"  convert_hf_to_gguf.py not found: {CONVERT_SCRIPT}")
-        errors.append(f"  → cd ../../llama.cpp && git pull")
     if not QUANTIZE_BIN.exists():
         errors.append(f"  llama-quantize not found: {QUANTIZE_BIN}")
-        errors.append(f"  → cd ../../llama.cpp && mkdir -p build && cd build && cmake .. && make -j")
     if errors:
-        print("[!] Missing prerequisites:")
+        print("[!] Auto-setup failed:")
         for e in errors:
             print(e)
         sys.exit(1)
@@ -184,7 +249,7 @@ def deploy_to_app(gguf_path: Path, mmproj_path: Path, app_models_dir: Path):
 def main():
     parser = argparse.ArgumentParser(
         description="Export fine-tuned Moondream2 to GGUF for llama.cpp")
-    parser.add_argument("--model-dir", type=Path, default=MERGED_MODEL_DIR)
+    parser.add_argument("--model-dir", type=Path, default=None)
     parser.add_argument("--from-mlx", type=Path, default=None)
     parser.add_argument("--output-dir", type=Path, default=GGUF_OUTPUT_DIR)
     parser.add_argument("--quant-types", nargs="+", default=DEFAULT_QUANT_TYPES)
@@ -196,9 +261,17 @@ def main():
     check_prerequisites()
 
     model_dir = args.from_mlx or args.model_dir
+    if model_dir is None:
+        for candidate in MERGED_MODEL_DIRS:
+            if candidate.exists():
+                model_dir = candidate
+                print(f"[*] Found merged model at: {model_dir}")
+                break
 
-    if not model_dir.exists():
-        print(f"[!] Model directory not found: {model_dir}")
+    if model_dir is None or not model_dir.exists():
+        print(f"[!] Model directory not found. Searched:")
+        for d in MERGED_MODEL_DIRS:
+            print(f"    - {d}")
         print("    Run these first:")
         print("    1. python 03b_train_moondream2_vision.py")
         print("    2. python 06_merge_lora.py --model moondream2")

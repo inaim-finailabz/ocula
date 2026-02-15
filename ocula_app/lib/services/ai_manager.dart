@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'package:path/path.dart' as p;
 import 'package:device_info_plus/device_info_plus.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_llama/flutter_llama.dart';
@@ -51,6 +52,11 @@ class AIManager {
   AITier? _pendingUpgradeTier;
   StreamSubscription<AITier>? _tierReadySub;
 
+  /// Stream that fires whenever the active tier changes (for UI updates).
+  final StreamController<AITier> _activeTierController =
+      StreamController<AITier>.broadcast();
+  Stream<AITier> get activeTierStream => _activeTierController.stream;
+
   AITier? get activeTier => _activeTier;
   AITier? get pendingUpgradeTier => _pendingUpgradeTier;
   bool get isModelLoaded => _textEngine.isModelLoaded;
@@ -66,9 +72,9 @@ class AIManager {
   /// Minimum RAM (MB) required to safely run each tier.
   /// Includes model weight + KV cache + system overhead headroom.
   static const _tierRamRequirementMB = {
-    AITier.free: 2000,       // 437 MB model + 25 MB embed + context → ~1.5 GB total
-    AITier.plus: 3500,       // 900 MB model + context → ~2.5 GB, 1 GB headroom
-    AITier.pro: 5000,        // 1.1 GB model + context → ~3.5 GB, 1.5 GB headroom
+    AITier.free: 2000, // 437 MB model + 25 MB embed + context → ~1.5 GB total
+    AITier.plus: 3500, // 900 MB model + context → ~2.5 GB, 1 GB headroom
+    AITier.pro: 5000, // 1.1 GB model + context → ~3.5 GB, 1.5 GB headroom
     AITier.enterprise: 4000, // variable, conservative default
   };
 
@@ -86,7 +92,9 @@ class AIManager {
     // Enterprise tier is a paid feature — never auto-upgrade to it.
     // Users must explicitly enable it in Settings.
     if (tier == AITier.enterprise) {
-      debugPrint('[AIManager] ⚠ Enterprise tier ready but auto-upgrade disabled — paid feature');
+      debugPrint(
+        '[AIManager] ⚠ Enterprise tier ready but auto-upgrade disabled — paid feature',
+      );
       return;
     }
 
@@ -97,13 +105,17 @@ class AIManager {
     if (newRank > currentRank && newRank > pendingRank) {
       // Hardware gate: don't queue upgrades the device can't handle
       if (!await canDeviceRunTier(tier)) {
-        debugPrint('[AIManager] ⚠ ${tier.name} downloaded but device RAM '
-            'too low (${await deviceRamMB} MB < ${_tierRamRequirementMB[tier]} MB) — skipping');
+        debugPrint(
+          '[AIManager] ⚠ ${tier.name} downloaded but device RAM '
+          'too low (${await deviceRamMB} MB < ${_tierRamRequirementMB[tier]} MB) — skipping',
+        );
         return;
       }
       _pendingUpgradeTier = tier;
-      debugPrint('[AIManager] 🏁 Pending upgrade queued: ${tier.name} '
-          '(current: ${_activeTier?.name ?? "none"}, RAM: ${await deviceRamMB} MB)');
+      debugPrint(
+        '[AIManager] 🏁 Pending upgrade queued: ${tier.name} '
+        '(current: ${_activeTier?.name ?? "none"}, RAM: ${await deviceRamMB} MB)',
+      );
     }
   }
 
@@ -124,14 +136,18 @@ class AIManager {
     final targetRank = _tierRank[target] ?? -1;
     if (targetRank <= currentRank) return false;
 
-    debugPrint('[AIManager] ⬆ Applying pending upgrade: '
-        '${_activeTier?.name ?? "none"} → ${target.name}');
+    debugPrint(
+      '[AIManager] ⬆ Applying pending upgrade: '
+      '${_activeTier?.name ?? "none"} → ${target.name}',
+    );
 
     // Hardware gate: double-check RAM before committing to the switch.
     // RAM availability may have changed since the upgrade was queued.
     if (!await canDeviceRunTier(target)) {
-      debugPrint('[AIManager] ⬆ ${target.name} upgrade cancelled — device RAM '
-          'too low (${await deviceRamMB} MB < ${_tierRamRequirementMB[target]} MB)');
+      debugPrint(
+        '[AIManager] ⬆ ${target.name} upgrade cancelled — device RAM '
+        'too low (${await deviceRamMB} MB < ${_tierRamRequirementMB[target]} MB)',
+      );
       return false;
     }
 
@@ -140,7 +156,9 @@ class AIManager {
       debugPrint('[AIManager] ⬆ Upgrade complete: now on ${target.name}');
       return true;
     } catch (e) {
-      debugPrint('[AIManager] ⬆ Upgrade to ${target.name} failed: $e — staying on ${_activeTier?.name}');
+      debugPrint(
+        '[AIManager] ⬆ Upgrade to ${target.name} failed: $e — staying on ${_activeTier?.name}',
+      );
       return false;
     }
   }
@@ -156,14 +174,17 @@ class AIManager {
         final match = RegExp(r'MemTotal:\s+(\d+)\s+kB').firstMatch(meminfo);
         if (match != null) {
           _deviceRamMB = int.parse(match.group(1)!) ~/ 1024;
-          debugPrint('[AIManager] Actual device RAM: $_deviceRamMB MB (from /proc/meminfo)');
+          debugPrint(
+            '[AIManager] Actual device RAM: $_deviceRamMB MB (from /proc/meminfo)',
+          );
         }
       } catch (_) {
         // Fall through to heuristic
       }
       if (_deviceRamMB == null) {
         final android = await info.androidInfo;
-        _deviceRamMB = android.systemFeatures.contains('android.hardware.ram.low')
+        _deviceRamMB =
+            android.systemFeatures.contains('android.hardware.ram.low')
             ? 2000
             : 6000;
       }
@@ -192,7 +213,9 @@ class AIManager {
     final android = await info.androidInfo;
     _isEmulator = !android.isPhysicalDevice;
     if (_isEmulator!) {
-      debugPrint('[AIManager] Running on Android EMULATOR — will use reduced settings');
+      debugPrint(
+        '[AIManager] Running on Android EMULATOR — will use reduced settings',
+      );
     }
     return _isEmulator!;
   }
@@ -277,11 +300,9 @@ class AIManager {
       }
 
       // Native llama_init_model handles atomic free+load
-      final ok = await _textEngine.loadModel(LlamaConfig(
-        modelPath: modelPath,
-        nGpuLayers: -1,
-        useGpu: true,
-      ));
+      final ok = await _textEngine.loadModel(
+        LlamaConfig(modelPath: modelPath, nGpuLayers: -1, useGpu: true),
+      );
       if (!ok) {
         throw ModelNotReadyException(AITier.enterprise);
       }
@@ -303,13 +324,13 @@ class AIManager {
       // Gate: require a valid enterprise API key
       final apiKey = prefs.getString('enterprise_api_key') ?? '';
       if (!isValidEnterpriseKey(apiKey)) return false;
-      
+
       final useLocal = prefs.getBool('enterprise_use_local') ?? true;
-      
+
       if (useLocal) {
         final modelPath = prefs.getString('enterprise_model_path') ?? '';
         if (modelPath.isEmpty) return false;
-        
+
         final file = File(modelPath);
         return await file.exists();
       } else {
@@ -319,7 +340,7 @@ class AIManager {
         return modelUrl.isNotEmpty && apiKey.isNotEmpty;
       }
     }
-    
+
     final path = await _models.mainModelPath(tier);
     return path != null;
   }
@@ -337,7 +358,9 @@ class AIManager {
     // Prevent re-entrant calls — if a switch is already in progress
     // (e.g. from a concurrent applyPendingUpgrade or autoRoute), bail out.
     if (_isSwitching) {
-      debugPrint('[AIManager] switchEngine: already switching — ignoring ${tier.name}');
+      debugPrint(
+        '[AIManager] switchEngine: already switching — ignoring ${tier.name}',
+      );
       return;
     }
 
@@ -357,15 +380,24 @@ class AIManager {
       // 1. Resolve path — null means "not downloaded at all"
       final mainPath = await _models.mainModelPath(tier);
       if (mainPath == null) {
-        debugPrint('[AIManager] switchEngine: ${tier.name} model path is null — not downloaded');
+        debugPrint(
+          '[AIManager] switchEngine: ${tier.name} model path is null — not downloaded',
+        );
         throw ModelNotReadyException(tier);
       }
 
       // 2. Look up the expected file size from the model registry
       final modelInfo = OculaModelManager.models
-          .where((m) => m.tier == tier && !m.isVisionProjector && !m.isEmbeddingModel)
+          .where(
+            (m) =>
+                m.tier == tier && !m.isVisionProjector && !m.isEmbeddingModel,
+          )
           .firstOrNull;
-      final expectedSize = modelInfo?.sizeBytes;
+      final registryName = modelInfo?.fileName;
+      final actualName = p.basename(mainPath);
+      final expectedSize = (registryName != null && registryName == actualName)
+          ? modelInfo?.sizeBytes
+          : null;
 
       // 3. Full GGUF validation: exists + no .partial + size + magic header
       final isValid = await _models.isValidLocalModel(
@@ -373,21 +405,27 @@ class AIManager {
         expectedSizeBytes: expectedSize,
       );
       if (!isValid) {
-        debugPrint('[AIManager] switchEngine: ${tier.name} model at $mainPath '
-            'failed GGUF validation — not switching');
+        debugPrint(
+          '[AIManager] switchEngine: ${tier.name} model at $mainPath '
+          'failed GGUF validation — not switching',
+        );
         throw ModelNotReadyException(tier);
       }
 
-      debugPrint('[AIManager] switchEngine: ${_activeTier?.name ?? "none"} → ${tier.name} '
-          '(model validated ✓)');
+      debugPrint(
+        '[AIManager] switchEngine: ${_activeTier?.name ?? "none"} → ${tier.name} '
+        '(model validated ✓)',
+      );
 
       // 4. Hardware gate — check RAM before committing to the switch.
       // This prevents unloading a working model only to fail loading the new one.
       if (!await canDeviceRunTier(tier)) {
         final ram = await deviceRamMB;
         final required = _tierRamRequirementMB[tier] ?? 8000;
-        debugPrint('[AIManager] ⚠ ${tier.name} rejected — device RAM '
-            'too low ($ram MB < $required MB)');
+        debugPrint(
+          '[AIManager] ⚠ ${tier.name} rejected — device RAM '
+          'too low ($ram MB < $required MB)',
+        );
         throw ModelNotReadyException(tier);
       }
 
@@ -410,30 +448,38 @@ class AIManager {
       final int gpuLayers;
       final int contextSize;
       if (emulator) {
-        gpuLayers = 0;       // CPU-only — emulator Vulkan is unstable
+        gpuLayers = 0; // CPU-only — emulator Vulkan is unstable
         contextSize = tier == AITier.pro ? 2048 : 1024;
-        debugPrint('[AIManager] Emulator mode: gpuLayers=0, contextSize=$contextSize');
+        debugPrint(
+          '[AIManager] Emulator mode: gpuLayers=0, contextSize=$contextSize',
+        );
       } else if (tier == AITier.pro) {
-        gpuLayers = 0;       // CPU-only — no Metal contention
-        contextSize = 4096;  // Ocula Pro (Qwen3-VL-2B) can handle bigger context
+        gpuLayers = -1; // all layers on GPU — A-series chips handle 2B models fine
+        contextSize = 2048; // keep same as other tiers to reduce memory pressure
       } else {
-        gpuLayers = -1;      // all layers on GPU
+        gpuLayers = -1; // all layers on GPU
         contextSize = 2048;
       }
 
+      // Use more threads on capable devices (most phones have 6-8 cores)
+      final int nThreads = emulator ? 2 : Platform.numberOfProcessors.clamp(4, 8);
+
       try {
-        final loaded = await _textEngine.loadModel(LlamaConfig(
-          modelPath: mainPath,
-          nGpuLayers: gpuLayers,
-          useGpu: gpuLayers != 0,
-          contextSize: contextSize,
-          batchSize: emulator ? 256 : 512,
-          nThreads: emulator ? 2 : 4,
-        ));
+        final loaded = await _textEngine.loadModel(
+          LlamaConfig(
+            modelPath: mainPath,
+            nGpuLayers: gpuLayers,
+            useGpu: gpuLayers != 0,
+            contextSize: contextSize,
+            batchSize: emulator ? 256 : 512,
+            nThreads: nThreads,
+          ),
+        );
         if (!loaded) {
           throw ModelNotReadyException(tier);
         }
         _activeTier = tier;
+        _activeTierController.add(tier);
         debugPrint('[AIManager] switchEngine: ${tier.name} loaded ✓');
 
         // Load dedicated embedding model if available (non-blocking).
@@ -446,13 +492,12 @@ class AIManager {
           final freePath = await _models.mainModelPath(AITier.free);
           if (freePath != null) {
             try {
-              final recovered = await _textEngine.loadModel(LlamaConfig(
-                modelPath: freePath,
-                nGpuLayers: -1,
-                useGpu: true,
-              ));
+              final recovered = await _textEngine.loadModel(
+                LlamaConfig(modelPath: freePath, nGpuLayers: -1, useGpu: true),
+              );
               if (recovered) {
                 _activeTier = AITier.free;
+                _activeTierController.add(AITier.free);
                 debugPrint('[AIManager] Recovered to free tier');
                 return;
               }
@@ -483,7 +528,9 @@ class AIManager {
           final rag = RAGEngine();
           await rag.init();
           if (await rag.needsReindex()) {
-            debugPrint('[AIManager] Embedding model changed — clearing old vectors for re-index');
+            debugPrint(
+              '[AIManager] Embedding model changed — clearing old vectors for re-index',
+            );
             await rag.clear();
             await rag.markEmbeddingModel();
             // The indexer's periodic timer will pick up the re-index automatically
@@ -516,7 +563,8 @@ class AIManager {
     final lower = prompt.toLowerCase();
 
     // 2. Reasoning intent → Ocula Pro (Qwen3-VL-2B)
-    final isReasoning = lower.contains('why') ||
+    final isReasoning =
+        lower.contains('why') ||
         lower.contains('how') ||
         lower.contains('explain') ||
         lower.contains('analyze') ||
@@ -525,7 +573,8 @@ class AIManager {
         lower.contains('contract');
 
     // 3. Spatial intent → Ocula Plus (Moondream 2)
-    final isSpatial = lower.contains('where') ||
+    final isSpatial =
+        lower.contains('where') ||
         lower.contains('count') ||
         lower.contains('find') ||
         lower.contains('point') ||
@@ -549,7 +598,8 @@ class AIManager {
   ///
   /// [intent] helps tailor the system prompt to the data type (contact,
   /// file, photo, etc.) so the model grounds its answer in phone assets.
-  Future<String> ask(String prompt, {
+  Future<String> ask(
+    String prompt, {
     String context = '',
     bool hasImage = false,
     String? imagePath,
@@ -566,7 +616,8 @@ class AIManager {
     // Ocula Pro (pro): 4096 ctx, ~2B params. Good instruction following.
     //   → Richer system prompt, full context, higher token budget.
     final langPrefix = _appLang.promptPrefix;
-    final bool isSmallModel = (_activeTier == null || _activeTier == AITier.free);
+    final bool isSmallModel =
+        (_activeTier == null || _activeTier == AITier.free);
     final bool isProModel = (_activeTier == AITier.pro);
 
     // Pre-summarize context for small models: keep only the most relevant lines
@@ -575,7 +626,10 @@ class AIManager {
     final budgetChars = ragConfig.contextBudgetChars;
     String compactContext = context;
     if (context.isNotEmpty && isSmallModel) {
-      compactContext = _summarizeContext(context, maxChars: (budgetChars * 0.5).round());
+      compactContext = _summarizeContext(
+        context,
+        maxChars: (budgetChars * 0.5).round(),
+      );
     } else if (context.isNotEmpty && !isProModel) {
       compactContext = _summarizeContext(context, maxChars: budgetChars);
     }
@@ -594,11 +648,13 @@ class AIManager {
       if (isSmallModel) {
         // Free tier: absolute minimum prompt. The model can't follow complex rules.
         // "Do not make up" is the most effective anti-hallucination phrase for tiny models.
-        systemMsg = '${langPrefix}Answer using ONLY the data below. Do not make up information. Be brief.';
+        systemMsg =
+            '${langPrefix}Answer using ONLY the data below. Do not make up information. Be brief.';
         userMsg = '$compactContext\n\nQ: $prompt';
       } else if (isProModel) {
         // Ocula Pro: can handle richer instructions and structured output
-        systemMsg = '${langPrefix}You are Ocula, a private on-device phone assistant. '
+        systemMsg =
+            '${langPrefix}You are Ocula, a private on-device phone assistant. '
             'Answer using ONLY the user\'s phone data provided below. '
             'NEVER invent or guess information not in the data.\n'
             'Rules:\n'
@@ -611,7 +667,8 @@ class AIManager {
         userMsg = '$dataLabel:\n$compactContext\n\nQuestion: $prompt';
       } else {
         // Plus tier: moderate instructions with light structure
-        systemMsg = '${langPrefix}You are Ocula, a phone assistant. '
+        systemMsg =
+            '${langPrefix}You are Ocula, a phone assistant. '
             'Answer using ONLY the data provided. Do not make up information. '
             'If the data does not answer the question, say so. '
             'Be specific and brief. Use bullet points for lists.';
@@ -622,20 +679,23 @@ class AIManager {
       // Without data to ground on, models hallucinate more easily.
       // Tell the model explicitly it has no phone data available.
       if (isProModel) {
-        systemMsg = '${langPrefix}You are Ocula, a private on-device phone assistant. '
+        systemMsg =
+            '${langPrefix}You are Ocula, a private on-device phone assistant. '
             'You currently have no phone data for this query. '
             'Do NOT invent contacts, events, or files. '
             'If the user asks about their phone data, tell them you don\'t '
             'have that information yet and suggest checking Settings > Your Data. '
             'For general questions, answer helpfully and concisely.';
       } else {
-        systemMsg = '${langPrefix}You are Ocula, a helpful phone assistant. '
+        systemMsg =
+            '${langPrefix}You are Ocula, a helpful phone assistant. '
             'No phone data available. Do not make up information. Be brief.';
       }
       userMsg = prompt;
     }
 
-    final fullPrompt = '<|im_start|>system\n$systemMsg<|im_end|>\n'
+    final fullPrompt =
+        '<|im_start|>system\n$systemMsg<|im_end|>\n'
         '<|im_start|>user\n$userMsg<|im_end|>\n'
         '<|im_start|>assistant\n';
 
@@ -645,12 +705,19 @@ class AIManager {
     // model without touching the text model. After describing the image we
     // unload only the vision model to free RAM.
     if (imagePath != null) {
-      final projPath = await _models.visionProjectorPath(_activeTier ?? AITier.free);
-      debugPrint('[AIManager] Vision path: tier=${_activeTier?.name}, projPath=${projPath != null ? "found" : "MISSING"}');
+      final projPath = await _models.visionProjectorPath(
+        _activeTier ?? AITier.free,
+      );
+      debugPrint(
+        '[AIManager] Vision path: tier=${_activeTier?.name}, projPath=${projPath != null ? "found" : "MISSING"}',
+      );
       if (projPath != null) {
-        final mainPath = await _models.mainModelPath(_activeTier ?? AITier.free) ?? '';
+        final mainPath =
+            await _models.mainModelPath(_activeTier ?? AITier.free) ?? '';
         try {
-          debugPrint('[AIManager] Loading vision model: ${mainPath.split('/').last}');
+          debugPrint(
+            '[AIManager] Loading vision model: ${mainPath.split('/').last}',
+          );
           final emulator = await isEmulator;
           final loaded = await _visionEngine.loadMultimodalModel(
             MultimodalConfig(
@@ -659,25 +726,36 @@ class AIManager {
               enableVision: true,
               enableAudio: false,
               useGpuForMultimodal: !emulator,
-              extraParams: emulator ? {
-                'nThreads': 2,
-                'nGpuLayers': 0,
-                'contextSize': 1024,
-                'batchSize': 256,
-              } : null,
+              extraParams: emulator
+                  ? {
+                      'nThreads': 2,
+                      'nGpuLayers': 0,
+                      'contextSize': 1024,
+                      'batchSize': 256,
+                    }
+                  : null,
             ),
           );
           debugPrint('[AIManager] Vision model loaded: $loaded');
           if (loaded) {
-            final response = await _visionEngine.describeImage(imagePath, fullPrompt);
-            debugPrint('[AIManager] Vision generated ${response.text.length} chars');
+            final response = await _visionEngine.describeImage(
+              imagePath,
+              fullPrompt,
+            );
+            debugPrint(
+              '[AIManager] Vision generated ${response.text.length} chars',
+            );
             // Free vision model RAM — text engine is untouched
-            try { await _visionEngine.unloadMultimodalModel(); } catch (_) {}
+            try {
+              await _visionEngine.unloadMultimodalModel();
+            } catch (_) {}
             return response.text;
           }
         } catch (e) {
           debugPrint('[AIManager] Vision failed: $e');
-          try { await _visionEngine.unloadMultimodalModel(); } catch (_) {}
+          try {
+            await _visionEngine.unloadMultimodalModel();
+          } catch (_) {}
         }
       }
       // Vision failed or no projector — DON'T fall through to text-only
@@ -698,20 +776,27 @@ class AIManager {
     final configMaxTok = ragConfig.maxResponseTokens;
     final int maxTok = isSmallModel
         ? (configMaxTok * 0.2).round().clamp(40, 150)
-        : (isProModel ? configMaxTok : (configMaxTok * 0.4).round().clamp(80, 300));
+        : (isProModel
+              ? configMaxTok
+              : (configMaxTok * 0.4).round().clamp(80, 300));
     final double temp = isSmallModel ? 0.1 : (isProModel ? 0.5 : 0.3);
     final double repPen = isSmallModel ? 1.8 : 1.3;
 
-    final response = await _textEngine.generate(GenerationParams(
-      prompt: fullPrompt,
-      maxTokens: maxTok,
-      temperature: temp,
-      repeatPenalty: repPen,
-      stopSequences: ['<|im_end|>', '<|im_start|>'],
-    ));
+    final response = await _textEngine.generate(
+      GenerationParams(
+        prompt: fullPrompt,
+        maxTokens: maxTok,
+        temperature: temp,
+        repeatPenalty: repPen,
+        stopSequences: ['<|im_end|>', '<|im_start|>'],
+      ),
+    );
 
     var text = response.text;
-    text = text.replaceAll('<|im_end|>', '').replaceAll('<|im_start|>', '').trim();
+    text = text
+        .replaceAll('<|im_end|>', '')
+        .replaceAll('<|im_start|>', '')
+        .trim();
 
     // Post-process: strip leaked prompt/context.
     // Some models (especially on CPU) echo the user's data/context verbatim.
@@ -735,6 +820,141 @@ class AIManager {
     return text;
   }
 
+  /// Streaming version of [ask]. Yields partial text as tokens arrive.
+  /// The final yield is the complete, post-processed response.
+  /// Falls back to non-streaming [ask] for vision requests.
+  Stream<String> askStream(
+    String prompt, {
+    String context = '',
+    bool hasImage = false,
+    String? imagePath,
+    QueryIntent intent = QueryIntent.chat,
+  }) async* {
+    // Vision path — no streaming support, fall back to blocking
+    if (hasImage && imagePath != null) {
+      final result = await ask(
+        prompt,
+        context: context,
+        hasImage: true,
+        imagePath: imagePath,
+        intent: intent,
+      );
+      yield result;
+      return;
+    }
+
+    // Build the prompt identically to ask()
+    final tier = _activeTier ?? AITier.free;
+    final bool isSmallModel =
+        (_activeTier == null || _activeTier == AITier.free);
+    final bool isProModel = (_activeTier == AITier.pro);
+    final ragConfig = RagConfig();
+    final langPrefix = _appLang.promptPrefix;
+    final budgetChars = ragConfig.contextBudgetChars;
+
+    // Compact context (same logic as ask())
+    String compactContext = context;
+    if (context.isNotEmpty && isSmallModel) {
+      compactContext = _summarizeContext(
+        context, maxChars: (budgetChars * 0.5).round());
+    } else if (context.isNotEmpty && !isProModel) {
+      compactContext = _summarizeContext(context, maxChars: budgetChars);
+    }
+
+    // Build system/user messages (same logic as ask())
+    String systemMsg;
+    String userMsg;
+    if (compactContext.isNotEmpty) {
+      final dataLabel = _intentDataLabel(intent);
+      if (isSmallModel) {
+        systemMsg = '${langPrefix}Answer from data only. Be brief.';
+        userMsg = '$compactContext\n\nQ: $prompt';
+      } else if (isProModel) {
+        systemMsg =
+            '${langPrefix}You are Ocula, a private on-device phone assistant. '
+            'Answer using ONLY the user\'s phone data provided below. '
+            'NEVER invent or guess information not in the data.\n'
+            'Rules:\n'
+            '- Include specific details: names, phone numbers, dates, times, file names.\n'
+            '- Use bullet points for lists of items (contacts, events, files).\n'
+            '- For calendar events, always include date and time.\n'
+            '- For contacts, include phone number or email when available.\n'
+            '- If the data doesn\'t answer the question, say "I don\'t have that information in your phone data."\n'
+            '- End with one short follow-up question the user might ask next.';
+        userMsg = '$dataLabel:\n$compactContext\n\nQuestion: $prompt';
+      } else {
+        systemMsg =
+            '${langPrefix}You are Ocula, a phone assistant. '
+            'Answer using ONLY the data provided. Do not make up information. '
+            'If the data does not answer the question, say so. '
+            'Be specific and brief. Use bullet points for lists.';
+        userMsg = '$dataLabel:\n$compactContext\n\nQ: $prompt';
+      }
+    } else {
+      if (isProModel) {
+        systemMsg =
+            '${langPrefix}You are Ocula, a private on-device phone assistant. '
+            'You currently have no phone data for this query. '
+            'Do NOT invent contacts, events, or files. '
+            'If the user asks about their phone data, tell them you don\'t '
+            'have that information yet and suggest checking Settings > Your Data. '
+            'For general questions, answer helpfully and concisely.';
+      } else {
+        systemMsg =
+            '${langPrefix}You are Ocula, a helpful phone assistant. '
+            'No phone data available. Do not make up information. Be brief.';
+      }
+      userMsg = prompt;
+    }
+
+    final fullPrompt =
+        '<|im_start|>system\n$systemMsg<|im_end|>\n'
+        '<|im_start|>user\n$userMsg<|im_end|>\n'
+        '<|im_start|>assistant\n';
+
+    final configMaxTok = ragConfig.maxResponseTokens;
+    final int maxTok = isSmallModel
+        ? (configMaxTok * 0.2).round().clamp(40, 150)
+        : (isProModel
+              ? configMaxTok
+              : (configMaxTok * 0.4).round().clamp(80, 300));
+    final double temp = isSmallModel ? 0.1 : (isProModel ? 0.5 : 0.3);
+    final double repPen = isSmallModel ? 1.8 : 1.3;
+
+    final buffer = StringBuffer();
+    await for (final token in _textEngine.generateStream(
+      GenerationParams(
+        prompt: fullPrompt,
+        maxTokens: maxTok,
+        temperature: temp,
+        repeatPenalty: repPen,
+        stopSequences: ['<|im_end|>', '<|im_start|>'],
+      ),
+    )) {
+      buffer.write(token);
+      // Yield partial text (cleaned of ChatML artifacts)
+      final partial = buffer.toString()
+          .replaceAll('<|im_end|>', '')
+          .replaceAll('<|im_start|>', '')
+          .trimLeft();
+      yield partial;
+    }
+
+    // Final post-processing on complete text
+    var text = buffer.toString()
+        .replaceAll('<|im_end|>', '')
+        .replaceAll('<|im_start|>', '')
+        .trim();
+    text = stripLeakedContext(text);
+
+    final int maxChars = isSmallModel ? 150 : (isProModel ? 800 : 300);
+    if (text.length > maxChars) {
+      text = _truncateToFirstParagraph(text, maxChars: maxChars);
+    }
+    text = _guardHallucination(text, prompt, compactContext, isSmallModel);
+    yield text;
+  }
+
   /// Truncate rambling output to the first meaningful paragraph or [maxChars].
   /// Priority: paragraph break > 2 sentences > hard character limit.
   String _truncateToFirstParagraph(String text, {int maxChars = 200}) {
@@ -746,9 +966,13 @@ class AIManager {
 
     // No paragraph break — cut after second sentence-ending punctuation
     int sentenceCount = 0;
-    final limit = text.length.clamp(0, maxChars + 50); // small overrun OK for sentence boundary
+    final limit = text.length.clamp(
+      0,
+      maxChars + 50,
+    ); // small overrun OK for sentence boundary
     for (int i = 0; i < limit; i++) {
-      if (i > 0 && '.!?'.contains(text[i]) &&
+      if (i > 0 &&
+          '.!?'.contains(text[i]) &&
           (i + 1 >= text.length || text[i + 1] == ' ' || text[i + 1] == '\n')) {
         sentenceCount++;
         if (sentenceCount >= 2 && i > 40) {
@@ -794,9 +1018,10 @@ class AIManager {
     if (text.length > 30) {
       for (int len = 8; len <= 30; len++) {
         final chunk = text.substring(0, len).toLowerCase();
-        final count = RegExp(RegExp.escape(chunk), caseSensitive: false)
-            .allMatches(lower)
-            .length;
+        final count = RegExp(
+          RegExp.escape(chunk),
+          caseSensitive: false,
+        ).allMatches(lower).length;
         if (count >= 3) {
           debugPrint('[AIManager] Hallucination: repetition loop detected');
           return _fallbackResponse(query, context);
@@ -808,15 +1033,29 @@ class AIManager {
     // Model starts acting as if it's writing a prompt or giving instructions
     // to itself rather than answering the user.
     const rolePlayMarkers = [
-      'as an ai', 'as a language model', 'i am a helpful',
-      'i am an ai', 'sure! here', 'of course!',
-      'instructions:', 'system:', 'user:', 'assistant:',
-      '<|im_start|>', '<|im_end|>', '<s>', '</s>',
-      'write a', 'create a story', 'once upon a time',
+      'as an ai',
+      'as a language model',
+      'i am a helpful',
+      'i am an ai',
+      'sure! here',
+      'of course!',
+      'instructions:',
+      'system:',
+      'user:',
+      'assistant:',
+      '<|im_start|>',
+      '<|im_end|>',
+      '<s>',
+      '</s>',
+      'write a',
+      'create a story',
+      'once upon a time',
     ];
     for (final marker in rolePlayMarkers) {
       if (lower.startsWith(marker)) {
-        debugPrint('[AIManager] Hallucination: role-play/leak marker "$marker"');
+        debugPrint(
+          '[AIManager] Hallucination: role-play/leak marker "$marker"',
+        );
         return _fallbackResponse(query, context);
       }
     }
@@ -824,17 +1063,93 @@ class AIManager {
     // ── 3. Detect zero relevance (no query words in response) ──
     // Extract meaningful words from the query (3+ chars, not stop words)
     const stopWords = {
-      'the', 'and', 'for', 'are', 'but', 'not', 'you', 'all', 'can',
-      'had', 'her', 'was', 'one', 'our', 'out', 'day', 'has', 'his',
-      'how', 'its', 'may', 'new', 'now', 'old', 'see', 'way', 'who',
-      'did', 'get', 'let', 'say', 'she', 'too', 'use', 'what', 'when',
-      'where', 'which', 'will', 'with', 'does', 'have', 'this', 'that',
-      'from', 'they', 'been', 'some', 'than', 'them', 'then', 'were',
-      'about', 'could', 'would', 'should', 'there', 'their', 'these',
-      'those', 'being', 'other', 'after', 'before', 'into', 'just',
-      'like', 'make', 'many', 'also', 'most', 'much', 'only',
-      'over', 'such', 'take', 'very', 'come', 'tell', 'show', 'find',
-      'give', 'know', 'want', 'look', 'need', 'think',
+      'the',
+      'and',
+      'for',
+      'are',
+      'but',
+      'not',
+      'you',
+      'all',
+      'can',
+      'had',
+      'her',
+      'was',
+      'one',
+      'our',
+      'out',
+      'day',
+      'has',
+      'his',
+      'how',
+      'its',
+      'may',
+      'new',
+      'now',
+      'old',
+      'see',
+      'way',
+      'who',
+      'did',
+      'get',
+      'let',
+      'say',
+      'she',
+      'too',
+      'use',
+      'what',
+      'when',
+      'where',
+      'which',
+      'will',
+      'with',
+      'does',
+      'have',
+      'this',
+      'that',
+      'from',
+      'they',
+      'been',
+      'some',
+      'than',
+      'them',
+      'then',
+      'were',
+      'about',
+      'could',
+      'would',
+      'should',
+      'there',
+      'their',
+      'these',
+      'those',
+      'being',
+      'other',
+      'after',
+      'before',
+      'into',
+      'just',
+      'like',
+      'make',
+      'many',
+      'also',
+      'most',
+      'much',
+      'only',
+      'over',
+      'such',
+      'take',
+      'very',
+      'come',
+      'tell',
+      'show',
+      'find',
+      'give',
+      'know',
+      'want',
+      'look',
+      'need',
+      'think',
     };
     final queryWords = queryLower
         .replaceAll(RegExp(r'[^a-z\s]'), '')
@@ -848,15 +1163,21 @@ class AIManager {
 
       // Also check if response references anything from the RAG context
       final contextLower = context.toLowerCase();
-      final hasContextOverlap = contextLower.isNotEmpty &&
-          contextLower.split(RegExp(r'\s+')).where((w) =>
-              w.length >= 4 && lower.contains(w)).length >= 2;
+      final hasContextOverlap =
+          contextLower.isNotEmpty &&
+          contextLower
+                  .split(RegExp(r'\s+'))
+                  .where((w) => w.length >= 4 && lower.contains(w))
+                  .length >=
+              2;
 
       // If response shares no words with query AND no overlap with context,
       // it's very likely hallucinated.
       if (matchRatio == 0 && !hasContextOverlap && text.length > 20) {
-        debugPrint('[AIManager] Hallucination: zero relevance '
-            '(queryWords=$queryWords, matchCount=$matchCount)');
+        debugPrint(
+          '[AIManager] Hallucination: zero relevance '
+          '(queryWords=$queryWords, matchCount=$matchCount)',
+        );
         return _fallbackResponse(query, context);
       }
     }
@@ -865,10 +1186,14 @@ class AIManager {
     // If no RAG context was provided but the model produces specific names,
     // phone numbers, or dates, it's fabricating.
     if (context.isEmpty && isSmallModel) {
-      final hasPhoneNumber = RegExp(r'\d{3}[-.\s]?\d{3}[-.\s]?\d{4}').hasMatch(text);
+      final hasPhoneNumber = RegExp(
+        r'\d{3}[-.\s]?\d{3}[-.\s]?\d{4}',
+      ).hasMatch(text);
       final hasEmail = RegExp(r'\w+@\w+\.\w+').hasMatch(text);
       if (hasPhoneNumber || hasEmail) {
-        debugPrint('[AIManager] Hallucination: invented contact details without context');
+        debugPrint(
+          '[AIManager] Hallucination: invented contact details without context',
+        );
         return 'I don\'t have enough data to answer that. '
             'Try asking about your contacts, calendar, or files '
             'after indexing is complete.';
@@ -885,12 +1210,16 @@ class AIManager {
       return 'I\'m not sure how to answer that. Could you rephrase your question?';
     }
     // Try to extract the most relevant line from context as a simple answer
-    final queryWords = query.toLowerCase()
+    final queryWords = query
+        .toLowerCase()
         .replaceAll(RegExp(r'[^a-z\s]'), '')
         .split(RegExp(r'\s+'))
         .where((w) => w.length >= 3)
         .toSet();
-    final lines = context.split('\n').where((l) => l.trim().length > 10).toList();
+    final lines = context
+        .split('\n')
+        .where((l) => l.trim().length > 10)
+        .toList();
 
     // Score each line by how many query words it contains
     var bestLine = '';
@@ -907,7 +1236,10 @@ class AIManager {
     if (bestLine.isNotEmpty && bestScore >= 1) {
       // Clean up context labels
       return bestLine
-          .replaceAll(RegExp(r'^(CONTACT|CALENDAR EVENT|FILE|PHOTO|EMAIL): '), '')
+          .replaceAll(
+            RegExp(r'^(CONTACT|CALENDAR EVENT|FILE|PHOTO|EMAIL): '),
+            '',
+          )
           .trim();
     }
 
@@ -923,7 +1255,10 @@ class AIManager {
   String _summarizeContext(String context, {int maxChars = 600}) {
     if (context.length <= maxChars) return context;
 
-    final lines = context.split('\n').where((l) => l.trim().isNotEmpty).toList();
+    final lines = context
+        .split('\n')
+        .where((l) => l.trim().isNotEmpty)
+        .toList();
 
     // Remove header/label-only lines to save space
     final contentLines = lines.where((l) {

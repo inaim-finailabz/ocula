@@ -129,11 +129,16 @@ def train_cuda(config: dict, args):
         )
     except Exception as e:
         print(f"[!] Unsloth model not found ({e}), using HF path: {model_path}")
-        model, tokenizer = FastVisionModel.from_pretrained(
-            model_name=model_path,
-            load_in_4bit=args.use_4bit,
-            use_gradient_checkpointing="unsloth",
-        )
+        try:
+            model, tokenizer = FastVisionModel.from_pretrained(
+                model_name=model_path,
+                load_in_4bit=args.use_4bit,
+                use_gradient_checkpointing="unsloth",
+            )
+        except Exception as e2:
+            print(f"[!] FastVisionModel fallback also failed ({e2}).")
+            print("[*] Falling back to Transformers+PEFT CUDA training path.")
+            return train_cuda_hf(config, args)
 
     total_params = sum(p.numel() for p in model.parameters())
     print(f"  Total parameters: {total_params / 1e6:.1f}M")
@@ -323,6 +328,197 @@ def train_cuda(config: dict, args):
     print(f"     LoRA adapters:  {output_dir}")
     print(f"     Merged model:   {merged_dir}")
     print(f"     Next: python 07b_export_moondream2_gguf.py")
+
+
+def train_cuda_hf(config: dict, args):
+    """CUDA fallback using Transformers + PEFT when Unsloth loader is unavailable."""
+    import torch
+    from datasets import load_dataset
+    from transformers import AutoProcessor, AutoModelForCausalLM
+    from peft import LoraConfig
+    from trl import SFTTrainer, SFTConfig
+    from PIL import Image
+
+    model_name = config.get("model", {}).get("name", DEFAULT_MODEL)
+    local_path = config.get("model", {}).get("local_path", "")
+    model_path = local_path if local_path and Path(local_path).exists() else model_name
+    revision = config.get("model", {}).get("revision", "main")
+
+    train_cfg = config.get("training", {})
+    lora_cfg = config.get("lora", {})
+
+    print(f"\n[*] Loading model via Transformers: {model_path} (revision: {revision})")
+    processor = AutoProcessor.from_pretrained(
+        model_path, revision=revision, trust_remote_code=True
+    )
+
+    model_kwargs = {
+        "revision": revision,
+        "trust_remote_code": True,
+        "torch_dtype": torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16,
+        "device_map": "auto",
+    }
+    if args.use_4bit:
+        try:
+            from transformers import BitsAndBytesConfig
+            model_kwargs["quantization_config"] = BitsAndBytesConfig(
+                load_in_4bit=True,
+                bnb_4bit_use_double_quant=True,
+                bnb_4bit_quant_type="nf4",
+                bnb_4bit_compute_dtype=torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16,
+            )
+        except Exception as e:
+            print(f"[WARN] 4-bit unavailable ({e}), continuing in 16-bit.")
+
+    model = AutoModelForCausalLM.from_pretrained(model_path, **model_kwargs)
+    try:
+        model.gradient_checkpointing_enable()
+    except Exception:
+        pass
+
+    total_params = sum(p.numel() for p in model.parameters())
+    print(f"  Total parameters: {total_params / 1e6:.1f}M")
+
+    target_modules = lora_cfg.get("target_modules", [
+        "q_proj", "k_proj", "v_proj", "dense", "fc1", "fc2",
+    ])
+    lora_config = LoraConfig(
+        r=lora_cfg.get("rank", 16),
+        lora_alpha=lora_cfg.get("alpha", 32),
+        lora_dropout=lora_cfg.get("dropout", 0.05),
+        target_modules=target_modules,
+        task_type="CAUSAL_LM",
+        bias="none",
+    )
+
+    print(f"[*] Loading training data: {args.train_data}")
+    train_ds = load_dataset("json", data_files=args.train_data, split="train")
+    val_ds = None
+    if args.val_data and Path(args.val_data).exists():
+        val_ds = load_dataset("json", data_files=args.val_data, split="train")
+
+    max_samples = train_cfg.get("max_samples", args.max_samples)
+    if max_samples and len(train_ds) > max_samples:
+        train_ds = train_ds.shuffle(seed=42).select(range(max_samples))
+    print(f"  Training: {len(train_ds)} examples")
+
+    class MoondreamVisionCollator:
+        def __init__(self, processor, max_length=2048):
+            self.processor = processor
+            self.max_length = max_length
+
+        def __call__(self, examples):
+            texts = []
+            images_list = []
+            for ex in examples:
+                messages = ex.get("messages", [])
+                image_paths = ex.get("images", [])
+                user_text = ""
+                assistant_text = ""
+                for msg in messages:
+                    role = msg.get("role", "")
+                    content = msg.get("content", "")
+                    if isinstance(content, list):
+                        for c in content:
+                            if c.get("type") == "text":
+                                if role == "user":
+                                    user_text = c["text"]
+                                elif role == "assistant":
+                                    assistant_text = c["text"]
+                    elif isinstance(content, str):
+                        if role == "user":
+                            user_text = content
+                        elif role == "assistant":
+                            assistant_text = content
+                text = f"<image>\n\nQuestion: {user_text}\n\nAnswer: {assistant_text}"
+                texts.append(text)
+                imgs = []
+                for img_path in image_paths:
+                    try:
+                        imgs.append(Image.open(img_path).convert("RGB"))
+                    except Exception:
+                        imgs.append(Image.new("RGB", (378, 378), (128, 128, 128)))
+                images_list.append(imgs if imgs else None)
+
+            try:
+                if any(imgs is not None for imgs in images_list):
+                    batch = self.processor(
+                        text=texts,
+                        images=[imgs[0] if imgs else None for imgs in images_list],
+                        return_tensors="pt", padding=True, truncation=True, max_length=self.max_length,
+                    )
+                else:
+                    batch = self.processor(
+                        text=texts, return_tensors="pt", padding=True, truncation=True, max_length=self.max_length
+                    )
+            except Exception:
+                batch = self.processor.tokenizer(
+                    texts, return_tensors="pt", padding=True, truncation=True, max_length=self.max_length
+                )
+            labels = batch["input_ids"].clone()
+            if self.processor.tokenizer.pad_token_id is not None:
+                labels[labels == self.processor.tokenizer.pad_token_id] = -100
+            batch["labels"] = labels
+            return batch
+
+    collator = MoondreamVisionCollator(processor, max_length=train_cfg.get("max_seq_length", 2048))
+
+    epochs = train_cfg.get("epochs", 1)
+    batch_size = train_cfg.get("batch_size", 2)
+    grad_accum = train_cfg.get("gradient_accumulation", 4)
+    lr = train_cfg.get("learning_rate", 1e-4)
+    max_steps = train_cfg.get("max_steps", -1)
+    if args.max_iters:
+        max_steps = args.max_iters
+    output_dir = args.output or DEFAULT_OUTPUT
+
+    sft_config = SFTConfig(
+        output_dir=output_dir,
+        num_train_epochs=epochs,
+        per_device_train_batch_size=batch_size,
+        gradient_accumulation_steps=grad_accum,
+        learning_rate=lr,
+        lr_scheduler_type=train_cfg.get("lr_scheduler", "cosine"),
+        warmup_steps=50,
+        weight_decay=train_cfg.get("weight_decay", 0.01),
+        bf16=torch.cuda.is_bf16_supported(),
+        fp16=not torch.cuda.is_bf16_supported(),
+        logging_steps=10,
+        save_steps=train_cfg.get("save_steps", 200),
+        save_total_limit=train_cfg.get("save_total_limit", 5),
+        max_steps=max_steps if max_steps and max_steps > 0 else -1,
+        eval_strategy="steps" if val_ds else "no",
+        report_to=["tensorboard"],
+        dataloader_num_workers=0,
+        remove_unused_columns=False,
+        dataset_kwargs={"skip_prepare_dataset": True},
+        gradient_checkpointing=True,
+        gradient_checkpointing_kwargs={"use_reentrant": False},
+        max_grad_norm=1.0,
+    )
+
+    trainer = SFTTrainer(
+        model=model,
+        args=sft_config,
+        train_dataset=train_ds,
+        eval_dataset=val_ds,
+        data_collator=collator,
+        peft_config=lora_config,
+    )
+
+    print(f"\n[*] Starting Moondream2 vision SFT on CUDA (Transformers fallback)")
+    print(f"    Epochs: {epochs}, Batch: {batch_size} x {grad_accum} accum, LR: {lr}")
+    print(f"    Output: {output_dir}")
+
+    if args.resume:
+        trainer.train(resume_from_checkpoint=args.resume)
+    else:
+        trainer.train()
+
+    print(f"\n[*] Saving LoRA adapters to {output_dir}")
+    trainer.save_model(output_dir)
+    processor.save_pretrained(output_dir)
+    print("[OK] Moondream2 vision fine-tuning complete (Transformers fallback)!")
 
 
 # ═════════════════════════════════════════════════════════════════

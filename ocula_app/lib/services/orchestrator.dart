@@ -156,13 +156,26 @@ class Orchestrator {
       return OrchestratorResult(state.response);
     }
 
-    // STEP 2: Retrieve context via RAG (also collects linked assets)
-    state = await _retrieve(state);
+    // STEPS 2+3: RAG retrieval and episodic memory in parallel
+    // These are independent DB queries — running them concurrently saves 200-500ms.
+    final results = await Future.wait([
+      _retrieve(AgentState(query: query, hasImage: hasImage, imagePath: imagePath)
+        ..intent = state.intent),
+      _recallMemory(AgentState(query: query, hasImage: hasImage, imagePath: imagePath)
+        ..intent = state.intent),
+    ]);
     if (_cancelled) return OrchestratorResult.empty;
 
-    // STEP 3: Check episodic memory for recent relevant conversations
-    state = await _recallMemory(state);
-    if (_cancelled) return OrchestratorResult.empty;
+    // Merge results back into state
+    final retrieveState = results[0];
+    final memoryState = results[1];
+    state.ragContext = retrieveState.ragContext;
+    state.linkedAssets = retrieveState.linkedAssets;
+    state.stepsCompleted.addAll(retrieveState.stepsCompleted);
+    if (memoryState.ragContext.isNotEmpty) {
+      state.ragContext += memoryState.ragContext;
+    }
+    state.stepsCompleted.addAll(memoryState.stepsCompleted);
 
     // STEP 4: If web intent, check internet permission
     if (state.intent == QueryIntent.web) {
@@ -428,8 +441,12 @@ class Orchestrator {
   Future<AgentState> _routeModel(AgentState state) async {
     // ── Manual override: if user set a specific model, try it first ──
     final overrideTier = RagConfig().modelOverrideTier;
+    debugPrint('[Orchestrator] Route: override=${overrideTier?.name ?? "auto"}, '
+        'activeTier=${_ai.activeTier?.name ?? "none"}, hasImage=${state.hasImage}');
     if (overrideTier != null) {
-      if (await _ai.isTierDownloaded(overrideTier)) {
+      final downloaded = await _ai.isTierDownloaded(overrideTier);
+      debugPrint('[Orchestrator] Override ${overrideTier.name} downloaded=$downloaded');
+      if (downloaded) {
         if (_ai.activeTier == overrideTier) {
           state.modelUsed = overrideTier;
           debugPrint('[Orchestrator] Route: override → ${overrideTier.name} (already loaded)');

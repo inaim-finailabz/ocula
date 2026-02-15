@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
+import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'ai_manager.dart';
@@ -82,14 +83,16 @@ class OculaModelManager {
     ModelInfo(
       fileName: 'SmolVLM2-500M-Video-Instruct-Q8_0.gguf',
       displayName: 'Ocula Lite',
-      downloadUrl: 'https://backend-ocula.finailabz.com/models/SmolVLM2-500M-Video-Instruct-Q8_0.gguf',
+      downloadUrl:
+          'https://backend-ocula.finailabz.com/models/SmolVLM2-500M-Video-Instruct-Q8_0.gguf',
       sizeBytes: 437 * 1024 * 1024, // ~437 MB
       tier: AITier.free,
     ),
     ModelInfo(
       fileName: 'mmproj-SmolVLM2-500M-Video-Instruct-Q8_0.gguf',
       displayName: 'Ocula Lite Vision',
-      downloadUrl: 'https://backend-ocula.finailabz.com/models/mmproj-SmolVLM2-500M-Video-Instruct-Q8_0.gguf',
+      downloadUrl:
+          'https://backend-ocula.finailabz.com/models/mmproj-SmolVLM2-500M-Video-Instruct-Q8_0.gguf',
       sizeBytes: 109 * 1024 * 1024, // ~109 MB
       tier: AITier.free,
       isVisionProjector: true,
@@ -98,7 +101,8 @@ class OculaModelManager {
     ModelInfo(
       fileName: 'all-MiniLM-L6-v2.Q8_0.gguf',
       displayName: 'Ocula Embed',
-      downloadUrl: 'https://backend-ocula.finailabz.com/models/all-MiniLM-L6-v2.Q8_0.gguf',
+      downloadUrl:
+          'https://backend-ocula.finailabz.com/models/all-MiniLM-L6-v2.Q8_0.gguf',
       sizeBytes: 25 * 1024 * 1024, // ~25 MB
       tier: AITier.free,
       isEmbeddingModel: true,
@@ -107,14 +111,16 @@ class OculaModelManager {
     ModelInfo(
       fileName: 'moondream2-text-model-Q4_K_M.gguf',
       displayName: 'Ocula Plus',
-      downloadUrl: 'https://backend-ocula.finailabz.com/models/moondream2-text-model-Q4_K_M.gguf',
+      downloadUrl:
+          'https://backend-ocula.finailabz.com/models/moondream2-text-model-Q4_K_M.gguf',
       sizeBytes: 900 * 1024 * 1024, // ~900 MB (Q4_K_M quantized)
       tier: AITier.plus,
     ),
     ModelInfo(
       fileName: 'moondream2-mmproj-f16-20250414.gguf',
       displayName: 'Ocula Plus Vision',
-      downloadUrl: 'https://backend-ocula.finailabz.com/models/moondream2-mmproj-f16-20250414.gguf',
+      downloadUrl:
+          'https://backend-ocula.finailabz.com/models/moondream2-mmproj-f16-20250414.gguf',
       sizeBytes: 910 * 1024 * 1024, // ~910 MB
       tier: AITier.plus,
       isVisionProjector: true,
@@ -123,14 +129,16 @@ class OculaModelManager {
     ModelInfo(
       fileName: 'Qwen3VL-2B-Thinking-Q4_K_M.gguf',
       displayName: 'Ocula Pro',
-      downloadUrl: 'https://backend-ocula.finailabz.com/models/Qwen3VL-2B-Thinking-Q4_K_M.gguf',
+      downloadUrl:
+          'https://backend-ocula.finailabz.com/models/Qwen3VL-2B-Thinking-Q4_K_M.gguf',
       sizeBytes: 1110 * 1024 * 1024, // ~1.11 GB
       tier: AITier.pro,
     ),
     ModelInfo(
       fileName: 'mmproj-Qwen3VL-2B-Thinking-F16.gguf',
       displayName: 'Ocula Pro Vision',
-      downloadUrl: 'https://backend-ocula.finailabz.com/models/mmproj-Qwen3VL-2B-Thinking-F16.gguf',
+      downloadUrl:
+          'https://backend-ocula.finailabz.com/models/mmproj-Qwen3VL-2B-Thinking-F16.gguf',
       sizeBytes: 819 * 1024 * 1024, // ~819 MB
       tier: AITier.pro,
       isVisionProjector: true,
@@ -141,17 +149,21 @@ class OculaModelManager {
   HttpClient? _httpClient;
   List<ModelInfo> _enterpriseModels = [];
   final Map<String, double> _downloadProgress = {};
-  final StreamController<Map<String, double>> _downloadProgressStreamController = StreamController.broadcast();
+  final StreamController<Map<String, double>>
+  _downloadProgressStreamController = StreamController.broadcast();
 
   /// Emits user-friendly feature names when a tier's models are fully downloaded.
   /// Values: 'Quick Scan', 'Detail & Counting', 'Vision & Deep Analysis'
-  final StreamController<String> _featureReadyController = StreamController.broadcast();
+  final StreamController<String> _featureReadyController =
+      StreamController.broadcast();
 
   /// Emits the AITier enum whenever that tier's models are fully downloaded.
   /// AIManager subscribes to this to set a pending-upgrade flag.
-  final StreamController<AITier> _tierReadyController = StreamController.broadcast();
+  final StreamController<AITier> _tierReadyController =
+      StreamController.broadcast();
 
-  Stream<Map<String, double>> get downloadProgressStream => _downloadProgressStreamController.stream;
+  Stream<Map<String, double>> get downloadProgressStream =>
+      _downloadProgressStreamController.stream;
 
   /// Subscribe to this for user-facing "feature X is ready" notifications.
   Stream<String> get featureReadyStream => _featureReadyController.stream;
@@ -178,12 +190,15 @@ class OculaModelManager {
   /// Intended to run during the splash screen so the user can interact ASAP.
   /// First tries to copy bundled model, then downloads if needed.
   /// Vision projector and embedding model are fetched in the background.
-  Future<bool> ensureFreeModelReady({
-    DownloadProgress? onProgress,
-  }) async {
+  Future<bool> ensureFreeModelReady({DownloadProgress? onProgress}) async {
     // Only the main model (not the projector or embedding) is required to start
     final mainModel = models
-        .where((m) => m.tier == AITier.free && !m.isVisionProjector && !m.isEmbeddingModel)
+        .where(
+          (m) =>
+              m.tier == AITier.free &&
+              !m.isVisionProjector &&
+              !m.isEmbeddingModel,
+        )
         .first;
 
     // Step 1: Try to copy bundled model first (instant)
@@ -222,11 +237,13 @@ class OculaModelManager {
       final copied = await _ensureBundledModelCopied(embedModel.fileName);
       if (!copied) {
         // Fire-and-forget download fallback — don't block splash
-        download(embedModel).then((ok) {
-          if (ok) debugPrint('[ModelManager] Embedding model downloaded');
-        }).catchError((e) {
-          debugPrint('[ModelManager] Embedding model download failed: $e');
-        });
+        download(embedModel)
+            .then((ok) {
+              if (ok) debugPrint('[ModelManager] Embedding model downloaded');
+            })
+            .catchError((e) {
+              debugPrint('[ModelManager] Embedding model download failed: $e');
+            });
       } else {
         debugPrint('[ModelManager] Embedding model copied from bundle');
       }
@@ -240,7 +257,9 @@ class OculaModelManager {
   /// Emits feature-ready notifications as each tier completes.
   /// Each download has a 10-minute timeout so one failure doesn't block the rest.
   Future<void> downloadRemainingInBackground() async {
-    debugPrint('[ModelManager] Starting background download of remaining models...');
+    debugPrint(
+      '[ModelManager] Starting background download of remaining models...',
+    );
 
     // First, ensure the free-tier projector is copied/downloaded
     final freeProjector = models
@@ -251,10 +270,13 @@ class OculaModelManager {
       final copied = await _ensureBundledModelCopied(freeProjector.fileName);
       if (!copied) {
         try {
-          await download(freeProjector, onProgress: (progress, status) {
-            _downloadProgress[freeProjector.fileName] = progress;
-            _downloadProgressStreamController.add(_downloadProgress);
-          }).timeout(const Duration(minutes: 10));
+          await download(
+            freeProjector,
+            onProgress: (progress, status) {
+              _downloadProgress[freeProjector.fileName] = progress;
+              _downloadProgressStreamController.add(_downloadProgress);
+            },
+          ).timeout(const Duration(minutes: 10));
           debugPrint('[ModelManager] ✓ Free projector downloaded');
         } catch (e) {
           debugPrint('[ModelManager] ✗ Free projector download failed: $e');
@@ -279,14 +301,21 @@ class OculaModelManager {
           continue;
         }
         try {
-          debugPrint('[ModelManager] Downloading ${model.fileName} (${model.sizeLabel})...');
-          final ok = await download(model, onProgress: (progress, status) {
-            _downloadProgress[model.fileName] = progress;
-            _downloadProgressStreamController.add(_downloadProgress);
-          }).timeout(const Duration(minutes: 10));
+          debugPrint(
+            '[ModelManager] Downloading ${model.fileName} (${model.sizeLabel})...',
+          );
+          final ok = await download(
+            model,
+            onProgress: (progress, status) {
+              _downloadProgress[model.fileName] = progress;
+              _downloadProgressStreamController.add(_downloadProgress);
+            },
+          ).timeout(const Duration(minutes: 10));
           if (!ok) {
             allReady = false;
-            debugPrint('[ModelManager] ✗ ${model.fileName} download returned false');
+            debugPrint(
+              '[ModelManager] ✗ ${model.fileName} download returned false',
+            );
           } else {
             debugPrint('[ModelManager] ✓ ${model.fileName} downloaded');
           }
@@ -312,10 +341,13 @@ class OculaModelManager {
       final tierModels = modelsForTier(tier);
       for (final model in tierModels) {
         if (!await isDownloaded(model.fileName)) {
-          download(model, onProgress: (progress, status) {
-            _downloadProgress[model.fileName] = progress;
-            _downloadProgressStreamController.add(_downloadProgress);
-          });
+          download(
+            model,
+            onProgress: (progress, status) {
+              _downloadProgress[model.fileName] = progress;
+              _downloadProgressStreamController.add(_downloadProgress);
+            },
+          );
         }
       }
     }
@@ -349,13 +381,14 @@ class OculaModelManager {
     if (file.existsSync()) {
       // Validate that it's a proper model file, not corrupted
       final size = await file.length();
-      if (size > 1024 * 1024) { // At least 1MB for valid model
+      if (size > 1024 * 1024) {
+        // At least 1MB for valid model
         return true;
       }
     }
     return false;
   }
-  
+
   /// Resolve the physical file path of a Flutter asset on disk.
   /// Avoids rootBundle.load() which loads the entire file into RAM.
   /// Returns null if the asset can't be found on disk.
@@ -390,7 +423,9 @@ class OculaModelManager {
         }
       }
 
-      debugPrint('[ModelManager] Bundled asset not found on disk for: $assetKey');
+      debugPrint(
+        '[ModelManager] Bundled asset not found on disk for: $assetKey',
+      );
       debugPrint('[ModelManager] Searched: $candidates');
       return null;
     } catch (e) {
@@ -406,7 +441,9 @@ class OculaModelManager {
   Future<bool> _isValidBundledModel(String fileName) async {
     try {
       // Strategy 1: zero-copy physical path check (iOS/macOS)
-      final physicalPath = await _findBundledAssetPath('assets/models/$fileName');
+      final physicalPath = await _findBundledAssetPath(
+        'assets/models/$fileName',
+      );
       if (physicalPath != null) {
         final file = File(physicalPath);
         final size = await file.length();
@@ -438,11 +475,13 @@ class OculaModelManager {
       }
       return false;
     } catch (e) {
-      debugPrint('[ModelManager] _isValidBundledModel failed for $fileName: $e');
+      debugPrint(
+        '[ModelManager] _isValidBundledModel failed for $fileName: $e',
+      );
       return false;
     }
   }
-  
+
   /// Copy a bundled model to local storage if it doesn't exist.
   /// Uses streamed file copy from the physical asset path to avoid OOM.
   /// Falls back to rootBundle.load() only on platforms where physical path
@@ -453,21 +492,27 @@ class OculaModelManager {
 
     // Already exists locally and is valid
     if (localFile.existsSync() && await localFile.length() > 1024 * 1024) {
-      debugPrint('[ModelManager] $fileName already in local storage, skipping copy');
+      debugPrint(
+        '[ModelManager] $fileName already in local storage, skipping copy',
+      );
       return true;
     }
 
     try {
       // ── Strategy 1: Streamed file copy from physical asset path ──
       // This avoids loading the entire model (100MB+) into RAM.
-      final physicalPath = await _findBundledAssetPath('assets/models/$fileName');
+      final physicalPath = await _findBundledAssetPath(
+        'assets/models/$fileName',
+      );
 
       if (physicalPath != null) {
         final sourceFile = File(physicalPath);
         final sourceSize = await sourceFile.length();
 
         if (sourceSize < 1024 * 1024) {
-          debugPrint('[ModelManager] Bundled $fileName too small (${sourceSize} bytes)');
+          debugPrint(
+            '[ModelManager] Bundled $fileName too small (${sourceSize} bytes)',
+          );
           return false;
         }
 
@@ -476,12 +521,16 @@ class OculaModelManager {
         final header = await raf.read(4);
         await raf.close();
         if (String.fromCharCodes(header) != 'GGUF') {
-          debugPrint('[ModelManager] Bundled $fileName has invalid GGUF header');
+          debugPrint(
+            '[ModelManager] Bundled $fileName has invalid GGUF header',
+          );
           return false;
         }
 
         // Streamed copy — constant memory usage regardless of file size
-        debugPrint('[ModelManager] Copying bundled $fileName (${(sourceSize / (1024 * 1024)).toStringAsFixed(1)} MB) via streamed file copy...');
+        debugPrint(
+          '[ModelManager] Copying bundled $fileName (${(sourceSize / (1024 * 1024)).toStringAsFixed(1)} MB) via streamed file copy...',
+        );
         await localFile.create(recursive: true);
         await sourceFile.copy(localPath);
         debugPrint('[ModelManager] ✓ Copied $fileName to local storage');
@@ -492,25 +541,33 @@ class OculaModelManager {
       // On Android, assets are inside the APK and can only be read via rootBundle.
       // We load into an ImmutableBuffer (native heap, not Dart heap) when possible,
       // then write in chunks to avoid Dart GC pressure.
-      debugPrint('[ModelManager] Physical path not found, falling back to rootBundle for $fileName');
+      debugPrint(
+        '[ModelManager] Physical path not found, falling back to rootBundle for $fileName',
+      );
 
       final bundledData = await rootBundle.load('assets/models/$fileName');
       final bytes = bundledData.buffer.asUint8List();
 
       if (bytes.length < 1024 * 1024) {
-        debugPrint('[ModelManager] Bundled $fileName too small (${bytes.length} bytes)');
+        debugPrint(
+          '[ModelManager] Bundled $fileName too small (${bytes.length} bytes)',
+        );
         return false;
       }
       if (bytes.length > 4) {
         final header = String.fromCharCodes(bytes.take(4));
         if (header != 'GGUF') {
-          debugPrint('[ModelManager] Bundled $fileName has invalid GGUF header');
+          debugPrint(
+            '[ModelManager] Bundled $fileName has invalid GGUF header',
+          );
           return false;
         }
       }
 
       // Write in 4MB chunks to reduce peak Dart heap pressure
-      debugPrint('[ModelManager] Writing $fileName in chunks (${(bytes.length / (1024 * 1024)).toStringAsFixed(1)} MB)...');
+      debugPrint(
+        '[ModelManager] Writing $fileName in chunks (${(bytes.length / (1024 * 1024)).toStringAsFixed(1)} MB)...',
+      );
       await localFile.create(recursive: true);
       final sink = localFile.openWrite();
       const chunkSize = 4 * 1024 * 1024; // 4 MB
@@ -521,7 +578,9 @@ class OculaModelManager {
         await sink.flush();
       }
       await sink.close();
-      debugPrint('[ModelManager] ✓ Copied $fileName via rootBundle (${(bytes.length / (1024 * 1024)).toStringAsFixed(1)} MB)');
+      debugPrint(
+        '[ModelManager] ✓ Copied $fileName via rootBundle (${(bytes.length / (1024 * 1024)).toStringAsFixed(1)} MB)',
+      );
       return true;
     } catch (e, stack) {
       debugPrint('[ModelManager] Failed to copy bundled model $fileName: $e');
@@ -585,7 +644,8 @@ class OculaModelManager {
       // Expected-size gate: reject files that are < 95% of the expected size.
       // This catches downloads that completed HTTP-wise but were truncated
       // (e.g. CDN timeout, partial Range response treated as full).
-      if (expectedSizeBytes != null && size < (expectedSizeBytes * 0.95).round()) {
+      if (expectedSizeBytes != null &&
+          size < (expectedSizeBytes * 0.95).round()) {
         return false;
       }
 
@@ -611,13 +671,17 @@ class OculaModelManager {
     if (tier == AITier.enterprise) {
       return await enterpriseModelPath;
     }
-    
-    final model = models.where((m) => m.tier == tier && !m.isVisionProjector && !m.isEmbeddingModel).firstOrNull;
+
+    final model = models
+        .where(
+          (m) => m.tier == tier && !m.isVisionProjector && !m.isEmbeddingModel,
+        )
+        .firstOrNull;
     if (model == null) return null;
 
     final path = await modelPath(model.fileName);
     if (File(path).existsSync()) return path;
-    return null;
+    return await _findCompatibleTierModelPath(tier, isVisionProjector: false);
   }
 
   /// Get the embedding model path (tier-independent — shared across all tiers).
@@ -633,12 +697,68 @@ class OculaModelManager {
   /// Get vision projector path for a tier (if any).
   /// Only returns paths in local storage (writable, mmap-able).
   Future<String?> visionProjectorPath(AITier tier) async {
-    final model = models.where((m) => m.tier == tier && m.isVisionProjector).firstOrNull;
+    final model = models
+        .where((m) => m.tier == tier && m.isVisionProjector)
+        .firstOrNull;
     if (model == null) return null;
 
     final path = await modelPath(model.fileName);
     if (File(path).existsSync()) return path;
-    return null;
+    return await _findCompatibleTierModelPath(tier, isVisionProjector: true);
+  }
+
+  /// Fallback resolver for tier models when filenames differ from registry
+  /// (e.g. finetuned exports such as Qwen3-VL-2B-finetuned-Q4_K_M.gguf).
+  Future<String?> _findCompatibleTierModelPath(
+    AITier tier, {
+    required bool isVisionProjector,
+  }) async {
+    try {
+      final dir = Directory(await modelsDir);
+      if (!dir.existsSync()) return null;
+
+      final files = dir
+          .listSync()
+          .whereType<File>()
+          .where((f) => f.path.toLowerCase().endsWith('.gguf'))
+          .toList();
+
+      bool matches(File f) {
+        final n = p.basename(f.path).toLowerCase();
+        if (isVisionProjector) {
+          if (tier == AITier.free)
+            return n.contains('mmproj') && n.contains('smolvlm');
+          if (tier == AITier.plus)
+            return n.contains('mmproj') && n.contains('moondream');
+          if (tier == AITier.pro)
+            return n.contains('mmproj') && n.contains('qwen');
+          return false;
+        }
+        if (tier == AITier.free)
+          return n.contains('smolvlm') && !n.contains('mmproj');
+        if (tier == AITier.plus)
+          return n.contains('moondream') && !n.contains('mmproj');
+        if (tier == AITier.pro) {
+          return n.contains('qwen') &&
+              !n.contains('mmproj') &&
+              (n.contains('2b') || n.contains('vl'));
+        }
+        return false;
+      }
+
+      final candidates = files.where(matches).toList()
+        ..sort((a, b) => b.lastModifiedSync().compareTo(a.lastModifiedSync()));
+
+      if (candidates.isEmpty) return null;
+      final chosen = candidates.first.path;
+      debugPrint(
+        '[ModelManager] Using compatible tier model for ${tier.name}: $chosen',
+      );
+      return chosen;
+    } catch (e) {
+      debugPrint('[ModelManager] _findCompatibleTierModelPath failed: $e');
+      return null;
+    }
   }
 
   /// Check if any model for a given tier is downloaded.
@@ -653,6 +773,7 @@ class OculaModelManager {
     }
     return false;
   }
+
   /// Available disk space in bytes.
   Future<int> get availableDiskSpace async {
     // Platform-specific; rough estimate via temp file
@@ -685,7 +806,9 @@ class OculaModelManager {
       // Android emulator can't reach the host's LAN IP or localhost directly;
       // 10.0.2.2 is the emulator's alias for the host machine.
       final uri = Uri.parse(url);
-      if (uri.host == 'localhost' || uri.host == '127.0.0.1' || _isPrivateIp(uri.host)) {
+      if (uri.host == 'localhost' ||
+          uri.host == '127.0.0.1' ||
+          _isPrivateIp(uri.host)) {
         return url.replaceFirst('://${uri.host}:', '://10.0.2.2:');
       }
     }
@@ -698,14 +821,17 @@ class OculaModelManager {
     if (parts.length != 4) return false;
     final a = int.tryParse(parts[0]) ?? -1;
     final b = int.tryParse(parts[1]) ?? -1;
-    return a == 10 || (a == 172 && b >= 16 && b <= 31) || (a == 192 && b == 168);
+    return a == 10 ||
+        (a == 172 && b >= 16 && b <= 31) ||
+        (a == 192 && b == 168);
   }
 
   /// Get the current model server URL.
   Future<String> getModelServerUrl() async {
     if (_cachedModelServerUrl != null) return _cachedModelServerUrl!;
     final prefs = await SharedPreferences.getInstance();
-    _cachedModelServerUrl = prefs.getString(_prefKeyModelServer) ?? defaultModelServerUrl;
+    _cachedModelServerUrl =
+        prefs.getString(_prefKeyModelServer) ?? defaultModelServerUrl;
     return _cachedModelServerUrl!;
   }
 
@@ -718,10 +844,7 @@ class OculaModelManager {
 
   /// Download a model with progress tracking.
   /// Supports resume via Range header if partial file exists.
-  Future<bool> download(
-    ModelInfo model, {
-    DownloadProgress? onProgress,
-  }) async {
+  Future<bool> download(ModelInfo model, {DownloadProgress? onProgress}) async {
     // Ensure model server URL is loaded before downloading
     await getModelServerUrl();
 
@@ -737,7 +860,9 @@ class OculaModelManager {
         return true;
       }
       // Bad file at final path — delete and re-download
-      debugPrint('[ModelManager] ${model.fileName} exists but failed validation — re-downloading');
+      debugPrint(
+        '[ModelManager] ${model.fileName} exists but failed validation — re-downloading',
+      );
       await file.delete().catchError((_) {});
     }
 
@@ -762,7 +887,7 @@ class OculaModelManager {
       }
 
       final response = await request.close();
-      
+
       // If server doesn't support range, start over
       if (response.statusCode == 200) {
         existingBytes = 0;
@@ -784,7 +909,7 @@ class OculaModelManager {
         final progress = (received / total).clamp(0.0, 1.0);
         final mb = (received / (1024 * 1024)).toStringAsFixed(1);
         final totalMb = (total / (1024 * 1024)).toStringAsFixed(0);
-        
+
         onProgress?.call(progress, '$mb / $totalMb MB');
       }
 
@@ -801,10 +926,15 @@ class OculaModelManager {
         expectedSizeBytes: model.sizeBytes,
       );
       if (!valid) {
-        debugPrint('[ModelManager] ✗ ${model.fileName} failed GGUF validation after download — deleting');
+        debugPrint(
+          '[ModelManager] ✗ ${model.fileName} failed GGUF validation after download — deleting',
+        );
         await File(path).delete().catchError((_) {});
         await prefs.setBool('downloading_${model.fileName}', false);
-        onProgress?.call(0.0, 'Error: downloaded file is not a valid GGUF model');
+        onProgress?.call(
+          0.0,
+          'Error: downloaded file is not a valid GGUF model',
+        );
         return false;
       }
 
@@ -820,10 +950,7 @@ class OculaModelManager {
   }
 
   /// Download all models for a tier.
-  Future<bool> downloadTier(
-    AITier tier, {
-    DownloadProgress? onProgress,
-  }) async {
+  Future<bool> downloadTier(AITier tier, {DownloadProgress? onProgress}) async {
     final tierModels = modelsForTier(tier);
     for (int i = 0; i < tierModels.length; i++) {
       final model = tierModels[i];
@@ -832,10 +959,8 @@ class OculaModelManager {
           : '';
       final success = await download(
         model,
-        onProgress: (p, s) => onProgress?.call(
-          (i + p) / tierModels.length,
-          '$prefix$s',
-        ),
+        onProgress: (p, s) =>
+            onProgress?.call((i + p) / tierModels.length, '$prefix$s'),
       );
       if (!success) return false;
     }
@@ -909,7 +1034,7 @@ class OculaModelManager {
       final dir = await modelsDir;
       final modelsDirectory = Directory(dir);
       if (!await modelsDirectory.exists()) return 0;
-      
+
       int totalSize = 0;
       await for (final entity in modelsDirectory.list()) {
         if (entity is File) {
@@ -928,7 +1053,7 @@ class OculaModelManager {
   Future<void> refreshEnterpriseModels() async {
     final prefs = await SharedPreferences.getInstance();
     final isEnabled = prefs.getBool('enterprise_enabled') ?? false;
-    
+
     if (!isEnabled) {
       _enterpriseModels.clear();
       return;
@@ -937,31 +1062,35 @@ class OculaModelManager {
     final useLocal = prefs.getBool('enterprise_use_local') ?? true;
     final modelPath = prefs.getString('enterprise_model_path') ?? '';
     final modelUrl = prefs.getString('enterprise_model_url') ?? '';
-    
+
     _enterpriseModels.clear();
-    
+
     if (useLocal && modelPath.isNotEmpty) {
       // Create a virtual ModelInfo for the local enterprise model
       final fileName = modelPath.split('/').last;
       final file = File(modelPath);
       final sizeBytes = await file.exists() ? await file.length() : 0;
-      
-      _enterpriseModels.add(ModelInfo(
-        fileName: fileName,
-        displayName: 'Enterprise Model',
-        downloadUrl: '', // Local file, no download URL
-        sizeBytes: sizeBytes,
-        tier: AITier.enterprise,
-      ));
+
+      _enterpriseModels.add(
+        ModelInfo(
+          fileName: fileName,
+          displayName: 'Enterprise Model',
+          downloadUrl: '', // Local file, no download URL
+          sizeBytes: sizeBytes,
+          tier: AITier.enterprise,
+        ),
+      );
     } else if (!useLocal && modelUrl.isNotEmpty) {
       // Create a virtual ModelInfo for the remote API
-      _enterpriseModels.add(ModelInfo(
-        fileName: 'enterprise-api',
-        displayName: 'Enterprise API',
-        downloadUrl: modelUrl,
-        sizeBytes: 0, // API, no local size
-        tier: AITier.enterprise,
-      ));
+      _enterpriseModels.add(
+        ModelInfo(
+          fileName: 'enterprise-api',
+          displayName: 'Enterprise API',
+          downloadUrl: modelUrl,
+          sizeBytes: 0, // API, no local size
+          tier: AITier.enterprise,
+        ),
+      );
     }
   }
 
@@ -970,12 +1099,12 @@ class OculaModelManager {
     final prefs = await SharedPreferences.getInstance();
     final isEnabled = prefs.getBool('enterprise_enabled') ?? false;
     final useLocal = prefs.getBool('enterprise_use_local') ?? true;
-    
+
     if (!isEnabled || !useLocal) return null;
-    
+
     final modelPath = prefs.getString('enterprise_model_path') ?? '';
     if (modelPath.isEmpty) return null;
-    
+
     final file = File(modelPath);
     return await file.exists() ? modelPath : null;
   }

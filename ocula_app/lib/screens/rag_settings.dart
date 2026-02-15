@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:path/path.dart' as p;
 import '../services/ai_manager.dart';
 import '../services/model_manager.dart';
 import '../services/rag_config.dart';
@@ -40,12 +41,21 @@ class _RagSettingsState extends State<RagSettings> {
 
     // Look up expected file size from the model registry
     final modelInfo = OculaModelManager.models
-        .where((m) => m.tier == tier && !m.isVisionProjector && !m.isEmbeddingModel)
+        .where(
+          (m) => m.tier == tier && !m.isVisionProjector && !m.isEmbeddingModel,
+        )
         .firstOrNull;
-    final expectedSize = modelInfo?.sizeBytes;
+    final registryName = modelInfo?.fileName;
+    final actualName = p.basename(path);
+    final expectedSize = (registryName != null && registryName == actualName)
+        ? modelInfo?.sizeBytes
+        : null;
 
     // Full GGUF validation with expected size check (catches truncated downloads)
-    final valid = await _models.isValidLocalModel(path, expectedSizeBytes: expectedSize);
+    final valid = await _models.isValidLocalModel(
+      path,
+      expectedSizeBytes: expectedSize,
+    );
     if (!valid) return false;
 
     // RAM gate — same check switchEngine uses before loading
@@ -89,7 +99,7 @@ class _RagSettingsState extends State<RagSettings> {
     }
   }
 
-  void _selectModel(String value) {
+  Future<void> _selectModel(String value) async {
     // 'auto' is always selectable
     if (value != 'auto' && _downloaded[value] != true) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -105,14 +115,48 @@ class _RagSettingsState extends State<RagSettings> {
     }
     setState(() => _modelOverride = value);
     _config.setModelOverride(value);
+
+    // Apply manual override immediately so UI tier label and behavior match.
+    try {
+      final ai = AIManager();
+      if (value == 'auto') return;
+      final tier = switch (value) {
+        'free' => AITier.free,
+        'plus' => AITier.plus,
+        'pro' => AITier.pro,
+        _ => null,
+      };
+      if (tier != null) {
+        await ai.switchEngine(tier);
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Switched to ${_tierDisplayName(value)}'),
+            backgroundColor: Colors.green,
+          ),
+        );
+      }
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Failed to switch model: $e'),
+          backgroundColor: Colors.red,
+        ),
+      );
+    }
   }
 
   String _tierDisplayName(String key) {
     switch (key) {
-      case 'free': return 'Sensor';
-      case 'plus': return 'Specialist';
-      case 'pro': return 'Thinker';
-      default: return 'Auto';
+      case 'free':
+        return 'Sensor';
+      case 'plus':
+        return 'Specialist';
+      case 'pro':
+        return 'Thinker';
+      default:
+        return 'Auto';
     }
   }
 
@@ -143,9 +187,9 @@ class _RagSettingsState extends State<RagSettings> {
             const SizedBox(height: 6),
             Text(
               'Fine-tune how Ocula searches your data and generates responses.',
-              style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                color: Colors.grey[600],
-              ),
+              style: Theme.of(
+                context,
+              ).textTheme.bodySmall?.copyWith(color: Colors.grey[600]),
             ),
             const SizedBox(height: 16),
 
@@ -185,7 +229,8 @@ class _RagSettingsState extends State<RagSettings> {
               max: 1.0,
               divisions: 20,
               valueLabel: '${(_vectorWeight * 100).round()}% semantic',
-              hint: 'Higher = more meaning-based search. Lower = more keyword matching.',
+              hint:
+                  'Higher = more meaning-based search. Lower = more keyword matching.',
               onChanged: (v) {
                 setState(() => _vectorWeight = v);
                 _config.setVectorWeight(v);
@@ -215,7 +260,8 @@ class _RagSettingsState extends State<RagSettings> {
               max: 0.5,
               divisions: 10,
               valueLabel: _minScore.toStringAsFixed(2),
-              hint: 'Minimum relevance score. Higher = stricter, fewer results.',
+              hint:
+                  'Minimum relevance score. Higher = stricter, fewer results.',
               onChanged: (v) {
                 setState(() => _minScore = v);
                 _config.setMinScore(v);
@@ -245,7 +291,8 @@ class _RagSettingsState extends State<RagSettings> {
               max: 1024,
               divisions: 19,
               valueLabel: '$_maxTokens tokens',
-              hint: 'Maximum generation length. Larger models use the full budget.',
+              hint:
+                  'Maximum generation length. Larger models use the full budget.',
               onChanged: (v) {
                 setState(() => _maxTokens = v.round());
                 _config.setMaxResponseTokens(v.round());
@@ -303,8 +350,8 @@ class _RagSettingsState extends State<RagSettings> {
               color: isSelected
                   ? colors.onSecondaryContainer
                   : isAvailable
-                      ? Colors.greenAccent
-                      : colors.onSurface.withAlpha(80),
+                  ? Colors.greenAccent
+                  : colors.onSurface.withAlpha(80),
             ),
           ],
         ],
@@ -334,7 +381,10 @@ class _RagSettingsState extends State<RagSettings> {
             children: [
               Text(
                 label,
-                style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w500),
+                style: const TextStyle(
+                  fontSize: 14,
+                  fontWeight: FontWeight.w500,
+                ),
               ),
               const Spacer(),
               Text(

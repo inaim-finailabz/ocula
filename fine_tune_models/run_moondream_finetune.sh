@@ -10,7 +10,7 @@ set -euo pipefail
 #   ./run_moondream_finetune.sh --mlx        # Force MLX
 #   ./run_moondream_finetune.sh --cuda       # Force CUDA
 #   ./run_moondream_finetune.sh --4bit       # QLoRA 4-bit (CUDA)
-#   ./run_moondream_finetune.sh --from merge # Resume from merge step
+#   ./run_moondream_finetune.sh --from export # Resume from GGUF export
 #
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -32,6 +32,9 @@ TRAIN_ONLY=false
 FROM_STEP=""
 DEPLOY=false
 USE_4BIT=false
+COMPARE_BACKEND="${COMPARE_BACKEND:-api}"
+COMPARE_API_URL="${COMPARE_API_URL:-${LLAMA_API_URL:-http://localhost:8080/v1}}"
+COMPARE_API_KEY="${COMPARE_API_KEY:-${LLAMA_API_KEY:-}}"
 
 # ── Parse args ──
 while [[ $# -gt 0 ]]; do
@@ -56,7 +59,7 @@ while [[ $# -gt 0 ]]; do
             echo "  --train-only  Only train (assumes data already prepared)"
             echo "  --deploy      Copy final GGUF to ocula_app/assets/models/"
             echo "  --4bit        Use 4-bit QLoRA (CUDA only)"
-            echo "  --from STEP   Resume from step: data|train|merge|export"
+            echo "  --from STEP   Resume from step: data|train|export|compare"
             echo "  --max-samples N  Max samples per dataset (default: 8000)"
             exit 0
             ;;
@@ -105,12 +108,12 @@ should_run() {
     local step="$1"
     if [[ -n "$FROM_STEP" ]]; then
         case "$FROM_STEP" in
-            data)   [[ "$step" =~ ^(data|train|merge|export|deploy)$ ]] ;;
-            train)  [[ "$step" =~ ^(train|merge|export|deploy)$ ]] ;;
-            merge)  [[ "$step" =~ ^(merge|export|deploy)$ ]] ;;
-            export) [[ "$step" =~ ^(export|deploy)$ ]] ;;
-            deploy) [[ "$step" == "deploy" ]] ;;
-            *)      true ;;
+            data)    [[ "$step" =~ ^(data|train|export|compare|deploy)$ ]] ;;
+            train)   [[ "$step" =~ ^(train|export|compare|deploy)$ ]] ;;
+            export)  [[ "$step" =~ ^(export|compare|deploy)$ ]] ;;
+            compare) [[ "$step" =~ ^(compare|deploy)$ ]] ;;
+            deploy)  [[ "$step" == "deploy" ]] ;;
+            *)       true ;;
         esac
     else
         true
@@ -168,50 +171,46 @@ if should_run "train"; then
 fi
 
 # ═══════════════════════════════════════════════════════════════
-# STEP 3: Merge LoRA into base model
-# ═══════════════════════════════════════════════════════════════
-
-if should_run "merge"; then
-    echo ""
-    echo -e "${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-    echo -e "${GREEN}  STEP 3/5: Merge LoRA Adapters${NC}"
-    echo -e "${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-    echo ""
-
-    cd scripts
-
-    if [[ "$BACKEND" == "mlx" ]]; then
-        MODEL_PATH=$(grep 'name:' ../configs/moondream2_vision.yaml | head -1 | awk '{print $2}' | tr -d '"')
-        ADAPTER_PATH="../models/lora_adapters/moondream2-vision-mlx"
-        SAVE_PATH="../models/merged/moondream2-vision-merged"
-
-        echo -e "${CYAN}[*] Fusing MLX LoRA adapters...${NC}"
-        "$PYTHON" -m mlx_vlm.fuse \
-            --model "$MODEL_PATH" \
-            --adapter-path "$ADAPTER_PATH" \
-            --save-path "$SAVE_PATH"
-    else
-        "$PYTHON" 06_merge_lora.py --model moondream2 \
-            --adapter-path ../models/lora_adapters/moondream2-vision \
-            --output-path ../models/merged/moondream2-vision-merged
-    fi
-
-    cd ..
-fi
-
-# ═══════════════════════════════════════════════════════════════
-# STEP 4: Export to GGUF
+# STEP 3: Export to GGUF
+# (Merge is handled automatically during training by Unsloth)
 # ═══════════════════════════════════════════════════════════════
 
 if should_run "export"; then
     echo ""
     echo -e "${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-    echo -e "${GREEN}  STEP 4/5: Convert to GGUF + Quantize${NC}"
+    echo -e "${GREEN}  STEP 3/5: Convert to GGUF + Quantize${NC}"
     echo -e "${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo ""
 
     cd scripts
     "$PYTHON" 07b_export_moondream2_gguf.py --quant-types Q4_K_M Q8_0
+    cd ..
+fi
+
+# ═══════════════════════════════════════════════════════════════
+# STEP 4: Compare Base vs Fine-tuned
+# ═══════════════════════════════════════════════════════════════
+
+if should_run "compare"; then
+    echo ""
+    echo -e "${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "${GREEN}  STEP 4/5: Compare Base vs Fine-tuned${NC}"
+    echo -e "${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo ""
+
+    cd scripts
+    compare_args=(--model moondream2 --backend "$COMPARE_BACKEND" --api-url "$COMPARE_API_URL")
+    if [[ -n "$COMPARE_API_KEY" ]]; then
+        compare_args+=(--api-key "$COMPARE_API_KEY")
+    fi
+    if "$PYTHON" 08b_compare_models.py "${compare_args[@]}"; then
+        echo -e "${GREEN}  [OK] Fine-tuned model is BETTER — ready to deploy${NC}"
+    elif [[ $? -eq 1 ]]; then
+        echo -e "${RED}  [!] Fine-tuned model REGRESSED — keeping base model${NC}"
+        echo -e "${YELLOW}  Review: logs/comparisons/${NC}"
+    else
+        echo -e "${YELLOW}  [~] Mixed results — review logs/comparisons/ before deploying${NC}"
+    fi
     cd ..
 fi
 

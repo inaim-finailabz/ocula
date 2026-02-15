@@ -115,8 +115,9 @@ def convert_textcaps(max_samples: int, image_dir: Path):
     print("[*] Loading TextCaps...")
     try:
         ds = load_dataset("HuggingFaceM4/TextCaps", split="train")
-    except Exception:
-        ds = load_dataset("HuggingFaceM4/TextCaps", split="train[:10000]")
+    except Exception as e:
+        print(f"  [WARN] TextCaps unavailable ({e}) — skipping")
+        return []
 
     if max_samples and len(ds) > max_samples:
         ds = ds.shuffle(seed=42).select(range(max_samples))
@@ -151,12 +152,12 @@ def convert_coco_captions(max_samples: int, image_dir: Path):
     print("[*] Loading COCO Captions...")
     try:
         ds = load_dataset("HuggingFaceM4/COCO", split="train")
-    except Exception:
+    except Exception as e1:
         try:
-            ds = load_dataset("shunk031/MSCOCO", "2017", split="train",
-                              trust_remote_code=True)
-        except Exception:
-            print("  [WARN] COCO not available — skipping")
+            # Keep fallback to non-script dataset only. trust_remote_code is removed.
+            ds = load_dataset("yerevann/coco-karpathy", split="train")
+        except Exception as e2:
+            print(f"  [WARN] COCO not available — skipping ({e1}; {e2})")
             return []
 
     if max_samples and len(ds) > max_samples:
@@ -232,21 +233,39 @@ def convert_docvqa(max_samples: int, image_dir: Path):
     from datasets import load_dataset
 
     print("[*] Loading DocVQA...")
-    ds = load_dataset("lmms-lab/DocVQA", split="train")
+    ds = None
+    split_used = None
+    for split in ("train", "validation", "test"):
+        try:
+            ds = load_dataset("lmms-lab/DocVQA", "DocVQA", split=split)
+            split_used = split
+            break
+        except Exception:
+            continue
+    if ds is None:
+        print("  [WARN] DocVQA not available — skipping")
+        return []
+    if split_used != "train":
+        print(f"  [WARN] DocVQA train split unavailable, using '{split_used}'")
     if max_samples and len(ds) > max_samples:
         ds = ds.shuffle(seed=42).select(range(max_samples))
 
     examples = []
     img_dir = image_dir / "docvqa"
     for i, row in enumerate(ds):
-        if row.get("image") is None:
+        img = row.get("image")
+        if img is None:
             continue
-        img_path = save_image(row["image"], img_dir / f"{i:06d}.jpg")
+        img_path = save_image(img, img_dir / f"{i:06d}.jpg")
         if not img_path:
             continue
-        question = row.get("question", "")
+        question = row.get("question", row.get("query", ""))
         answers = row.get("answers", [])
-        answer = answers[0] if isinstance(answers, list) and answers else row.get("answer", "")
+        answer = (
+            answers[0]
+            if isinstance(answers, list) and answers
+            else row.get("answer", row.get("label", ""))
+        )
         if question and answer:
             examples.append(make_vision_example(question, str(answer), img_path))
     return examples

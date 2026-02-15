@@ -11,7 +11,7 @@ set -euo pipefail
 #   ./run_vision_finetune.sh --cuda       # Force CUDA (NVIDIA GPU)
 #   ./run_vision_finetune.sh --data-only  # Only download/prepare data
 #   ./run_vision_finetune.sh --train-only # Only train (data already prepared)
-#   ./run_vision_finetune.sh --from merge # Resume from merge step
+#   ./run_vision_finetune.sh --from export # Resume from GGUF export
 #
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -33,6 +33,9 @@ TRAIN_ONLY=false
 FROM_STEP=""
 DEPLOY=false
 USE_4BIT=false
+COMPARE_BACKEND="${COMPARE_BACKEND:-cli}"
+COMPARE_API_URL="${COMPARE_API_URL:-${LLAMA_API_URL:-http://localhost:8080/v1}}"
+COMPARE_API_KEY="${COMPARE_API_KEY:-${LLAMA_API_KEY:-}}"
 
 # ── Parse args ──
 while [[ $# -gt 0 ]]; do
@@ -57,7 +60,7 @@ while [[ $# -gt 0 ]]; do
             echo "  --train-only  Only train (assumes data already prepared)"
             echo "  --deploy      Copy final GGUF to ocula_app/assets/models/"
             echo "  --4bit        Use 4-bit QLoRA (CUDA only)"
-            echo "  --from STEP   Resume from step: data|train|merge|export"
+            echo "  --from STEP   Resume from step: data|train|export|compare"
             echo "  --max-samples N  Max samples per dataset (default: 10000)"
             exit 0
             ;;
@@ -106,12 +109,12 @@ should_run() {
     local step="$1"
     if [[ -n "$FROM_STEP" ]]; then
         case "$FROM_STEP" in
-            data)   [[ "$step" =~ ^(data|train|merge|export|deploy)$ ]] ;;
-            train)  [[ "$step" =~ ^(train|merge|export|deploy)$ ]] ;;
-            merge)  [[ "$step" =~ ^(merge|export|deploy)$ ]] ;;
-            export) [[ "$step" =~ ^(export|deploy)$ ]] ;;
-            deploy) [[ "$step" == "deploy" ]] ;;
-            *)      true ;;
+            data)    [[ "$step" =~ ^(data|train|export|compare|deploy)$ ]] ;;
+            train)   [[ "$step" =~ ^(train|export|compare|deploy)$ ]] ;;
+            export)  [[ "$step" =~ ^(export|compare|deploy)$ ]] ;;
+            compare) [[ "$step" =~ ^(compare|deploy)$ ]] ;;
+            deploy)  [[ "$step" == "deploy" ]] ;;
+            *)       true ;;
         esac
     else
         true
@@ -124,7 +127,7 @@ should_run() {
 
 if ! $TRAIN_ONLY && should_run "data"; then
     echo -e "${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-    echo -e "${GREEN}  STEP 1/6: Download & Prepare Vision Training Data${NC}"
+    echo -e "${GREEN}  STEP 1/5: Download & Prepare Vision Training Data${NC}"
     echo -e "${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo ""
 
@@ -150,7 +153,7 @@ fi
 if should_run "train"; then
     echo ""
     echo -e "${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-    echo -e "${GREEN}  STEP 2/6: Train SmolVLM2 (LoRA, $BACKEND)${NC}"
+    echo -e "${GREEN}  STEP 2/5: Train SmolVLM2 (LoRA, $BACKEND)${NC}"
     echo -e "${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo ""
 
@@ -173,45 +176,14 @@ if should_run "train"; then
 fi
 
 # ═══════════════════════════════════════════════════════════════
-# STEP 3: Merge LoRA into base model
-# ═══════════════════════════════════════════════════════════════
-
-if should_run "merge"; then
-    echo ""
-    echo -e "${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-    echo -e "${GREEN}  STEP 3/6: Merge LoRA Adapters${NC}"
-    echo -e "${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-    echo ""
-
-    cd scripts
-
-    if [[ "$BACKEND" == "mlx" ]]; then
-        MODEL_PATH=$(grep 'name:' ../configs/smolvlm2_vision.yaml | head -1 | awk '{print $2}' | tr -d '"')
-        ADAPTER_PATH="../models/lora_adapters/smolvlm2-vision-mlx"
-        SAVE_PATH="../models/merged/smolvlm2-vision-merged"
-
-        echo -e "${CYAN}[*] Fusing MLX LoRA adapters...${NC}"
-        "$PYTHON" -m mlx_vlm.fuse \
-            --model "$MODEL_PATH" \
-            --adapter-path "$ADAPTER_PATH" \
-            --save-path "$SAVE_PATH"
-    else
-        "$PYTHON" 06_merge_lora.py --model smolvlm2 \
-            --adapter-path ../models/lora_adapters/smolvlm2-vision \
-            --output-path ../models/merged/smolvlm2-vision-merged
-    fi
-
-    cd ..
-fi
-
-# ═══════════════════════════════════════════════════════════════
-# STEP 4: Export to GGUF
+# STEP 3: Export to GGUF
+# (Merge is handled automatically during training by Unsloth)
 # ═══════════════════════════════════════════════════════════════
 
 if should_run "export"; then
     echo ""
     echo -e "${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-    echo -e "${GREEN}  STEP 4/6: Convert to GGUF + Quantize${NC}"
+    echo -e "${GREEN}  STEP 3/5: Convert to GGUF + Quantize${NC}"
     echo -e "${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo ""
 
@@ -221,18 +193,22 @@ if should_run "export"; then
 fi
 
 # ═══════════════════════════════════════════════════════════════
-# STEP 5: Compare Base vs Fine-tuned (automatic)
+# STEP 4: Compare Base vs Fine-tuned (automatic)
 # ═══════════════════════════════════════════════════════════════
 
-if should_run "export"; then
+if should_run "compare"; then
     echo ""
     echo -e "${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-    echo -e "${GREEN}  STEP 5/6: Compare Base vs Fine-tuned${NC}"
+    echo -e "${GREEN}  STEP 4/5: Compare Base vs Fine-tuned${NC}"
     echo -e "${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo ""
 
     cd scripts
-    if "$PYTHON" 08b_compare_models.py --model smolvlm2; then
+    compare_args=(--model smolvlm2 --backend "$COMPARE_BACKEND" --api-url "$COMPARE_API_URL")
+    if [[ -n "$COMPARE_API_KEY" ]]; then
+        compare_args+=(--api-key "$COMPARE_API_KEY")
+    fi
+    if "$PYTHON" 08b_compare_models.py "${compare_args[@]}"; then
         echo -e "${GREEN}  [OK] Fine-tuned model is BETTER — ready to deploy${NC}"
     elif [[ $? -eq 1 ]]; then
         echo -e "${RED}  [!] Fine-tuned model REGRESSED — keeping base model${NC}"
@@ -244,13 +220,13 @@ if should_run "export"; then
 fi
 
 # ═══════════════════════════════════════════════════════════════
-# STEP 6: Deploy to Ocula app
+# STEP 5: Deploy to Ocula app
 # ═══════════════════════════════════════════════════════════════
 
 if should_run "deploy" && $DEPLOY; then
     echo ""
     echo -e "${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-    echo -e "${GREEN}  STEP 6/6: Deploy to Ocula App${NC}"
+    echo -e "${GREEN}  STEP 5/5: Deploy to Ocula App${NC}"
     echo -e "${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo ""
 

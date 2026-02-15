@@ -91,6 +91,7 @@ class _AssistantScreenState extends State<AssistantScreen>
   final _modelManager = OculaModelManager();
   StreamSubscription? _downloadProgressSubscription;
   StreamSubscription? _featureReadySubscription;
+  StreamSubscription? _tierChangeSubscription;
 
   final List<_Message> _messages = [];
   bool _isThinking = false;
@@ -142,6 +143,11 @@ class _AssistantScreenState extends State<AssistantScreen>
     _featureReadySubscription =
         _modelManager.featureReadyStream.listen((featureName) {
       _showFeatureReady(featureName);
+    });
+
+    // Update tier badge when model switches (e.g. from settings or auto-route).
+    _tierChangeSubscription = _ai.activeTierStream.listen((_) {
+      if (mounted) setState(() {});
     });
   }
 
@@ -569,6 +575,7 @@ class _AssistantScreenState extends State<AssistantScreen>
     _orbSizeController.dispose();
     _downloadProgressSubscription?.cancel();
     _featureReadySubscription?.cancel();
+    _tierChangeSubscription?.cancel();
     super.dispose();
   }
 
