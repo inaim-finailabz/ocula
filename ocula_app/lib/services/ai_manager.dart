@@ -453,16 +453,28 @@ class AIManager {
         debugPrint(
           '[AIManager] Emulator mode: gpuLayers=0, contextSize=$contextSize',
         );
-      } else if (tier == AITier.pro) {
-        gpuLayers = -1; // all layers on GPU — A-series chips handle 2B models fine
-        contextSize = 2048; // keep same as other tiers to reduce memory pressure
+      } else if (Platform.isAndroid) {
+        // Android: partial GPU offload to avoid thermal throttling on
+        // passively-cooled devices (Nothing, Pixel, etc.) and Vulkan
+        // compute inefficiency on Adreno GPUs.
+        if (tier == AITier.pro) {
+          gpuLayers = 12; // 2B model — keep heavier layers on CPU
+          contextSize = 2048;
+        } else if (tier == AITier.plus) {
+          gpuLayers = 16; // medium model — more GPU ok
+          contextSize = 2048;
+        } else {
+          gpuLayers = 20; // small model — mostly GPU
+          contextSize = 2048;
+        }
       } else {
-        gpuLayers = -1; // all layers on GPU
+        // iOS / macOS: Metal is efficient, offload everything
+        gpuLayers = -1;
         contextSize = 2048;
       }
 
-      // Use more threads on capable devices (most phones have 6-8 cores)
-      final int nThreads = emulator ? 2 : Platform.numberOfProcessors.clamp(4, 8);
+      // Thread count: cap at 6 to reduce thermal throttling on passively-cooled phones
+      final int nThreads = emulator ? 2 : Platform.numberOfProcessors.clamp(4, 6);
 
       try {
         final loaded = await _textEngine.loadModel(
@@ -471,7 +483,7 @@ class AIManager {
             nGpuLayers: gpuLayers,
             useGpu: gpuLayers != 0,
             contextSize: contextSize,
-            batchSize: emulator ? 256 : 512,
+            batchSize: emulator ? 256 : (Platform.isAndroid ? 256 : 512),
             nThreads: nThreads,
           ),
         );
