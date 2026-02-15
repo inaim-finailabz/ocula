@@ -154,13 +154,22 @@ def train_cuda_mps(config: dict, args):
 
     model = VisionModel.from_pretrained(
         model_path,
-        dtype=torch.bfloat16 if device == "cuda" else torch.float32,
+        torch_dtype=torch.bfloat16 if device == "cuda" else torch.float32,
         quantization_config=bnb_config,
         trust_remote_code=True,
         device_map="auto" if device == "cuda" else None,
     )
     if device == "mps":
         model = model.to("mps")
+
+    # Ensure ALL non-quantized parts are bfloat16 — SmolVLM's vision encoder
+    # and connector can end up in float32 even when torch_dtype=bf16, causing
+    # dtype mismatch at inputs_merger (image_embeds bf16 vs hidden_states fp32)
+    if device == "cuda":
+        for name, module in model.named_modules():
+            if any(k in name for k in ["vision_model", "connector", "multi_modal_projector"]):
+                module.to(torch.bfloat16)
+        print("  [*] Cast vision components to bfloat16")
 
     total_params = sum(p.numel() for p in model.parameters())
     print(f"  Total parameters: {total_params / 1e6:.1f}M")
