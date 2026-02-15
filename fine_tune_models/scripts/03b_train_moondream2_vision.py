@@ -183,18 +183,50 @@ def train_cuda(config: dict, args):
     if args.val_data and Path(args.val_data).exists():
         raw_val = load_jsonl(args.val_data)
 
+    class LazyImage:
+        """Lazy PIL image that loads from disk only when accessed by the collator."""
+        def __init__(self, path, size=(378, 378)):
+            self._path = path
+            self._size = size
+            self._img = None
+
+        def _load(self):
+            if self._img is None:
+                try:
+                    self._img = Image.open(self._path).convert("RGB")
+                    self._img = self._img.resize(self._size)
+                except Exception:
+                    self._img = Image.new("RGB", self._size, (128, 128, 128))
+            return self._img
+
+        @property
+        def size(self):
+            return self._load().size
+
+        @property
+        def mode(self):
+            return self._load().mode
+
+        def convert(self, *a, **kw):
+            return self._load().convert(*a, **kw)
+
+        def resize(self, *a, **kw):
+            return self._load().resize(*a, **kw)
+
+        def copy(self):
+            return self._load().copy()
+
+        def __getattr__(self, name):
+            return getattr(self._load(), name)
+
     def convert_to_conversation(sample):
-        """Convert our JSONL format to Unsloth vision format with PIL images."""
+        """Convert our JSONL format to Unsloth vision format with lazy images."""
         messages = sample.get("messages", [])
         image_paths = sample.get("images", [])
 
         img = None
         if image_paths:
-            try:
-                img = Image.open(image_paths[0]).convert("RGB")
-                img = img.resize((378, 378))
-            except Exception:
-                img = Image.new("RGB", (378, 378), (128, 128, 128))
+            img = LazyImage(image_paths[0], size=(378, 378))
 
         converted_messages = []
         for msg in messages:
