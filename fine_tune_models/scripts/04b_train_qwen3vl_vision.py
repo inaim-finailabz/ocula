@@ -191,51 +191,14 @@ def train_cuda(config: dict, args):
     if args.val_data and Path(args.val_data).exists():
         raw_val = load_jsonl(args.val_data)
 
-    class LazyImage:
-        """Lazy PIL image that loads from disk only when accessed by the collator."""
-        def __init__(self, path, size=(512, 512)):
-            self._path = path
-            self._size = size
-            self._img = None
-
-        def _load(self):
-            if self._img is None:
-                try:
-                    self._img = Image.open(self._path).convert("RGB")
-                    self._img = self._img.resize(self._size)
-                except Exception:
-                    self._img = Image.new("RGB", self._size, (128, 128, 128))
-            return self._img
-
-        # PIL Image interface — collator calls these
-        @property
-        def size(self):
-            return self._load().size
-
-        @property
-        def mode(self):
-            return self._load().mode
-
-        def convert(self, *a, **kw):
-            return self._load().convert(*a, **kw)
-
-        def resize(self, *a, **kw):
-            return self._load().resize(*a, **kw)
-
-        def copy(self):
-            return self._load().copy()
-
-        def __getattr__(self, name):
-            return getattr(self._load(), name)
-
     def convert_to_conversation(sample):
-        """Convert our JSONL format to Unsloth vision format with lazy images."""
+        """Convert our JSONL format to Unsloth vision format with file paths.
+        Unsloth natively supports local file paths — no need to pre-load PIL images."""
         messages = sample.get("messages", [])
         image_paths = sample.get("images", [])
 
-        img = None
-        if image_paths:
-            img = LazyImage(image_paths[0], size=(512, 512))
+        # Unsloth accepts local file paths directly (also PIL, URL, base64)
+        img = image_paths[0] if image_paths else None
 
         converted_messages = []
         for msg in messages:
