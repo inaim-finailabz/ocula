@@ -84,7 +84,7 @@ def convert_vqav2(max_samples: int, image_dir: Path):
     from datasets import load_dataset
 
     print("[*] Loading VQAv2...")
-    ds = load_dataset("merve/vqav2-small", split="validation", trust_remote_code=True)
+    ds = load_dataset("merve/vqav2-small", split="validation")
     if max_samples and len(ds) > max_samples:
         ds = ds.shuffle(seed=42).select(range(max_samples))
 
@@ -113,9 +113,13 @@ def convert_textcaps(max_samples: int, image_dir: Path):
 
     print("[*] Loading TextCaps...")
     try:
-        ds = load_dataset("HuggingFaceM4/TextCaps", split="train", trust_remote_code=True)
+        ds = load_dataset("HuggingFaceM4/TextCaps", split="train")
     except Exception:
-        ds = load_dataset("HuggingFaceM4/TextCaps", split="train[:10000]", trust_remote_code=True)
+        try:
+            ds = load_dataset("lmms-lab/TextCaps", split="train")
+        except Exception:
+            print("  [WARN] TextCaps not available — skipping")
+            return []
 
     if max_samples and len(ds) > max_samples:
         ds = ds.shuffle(seed=42).select(range(max_samples))
@@ -147,7 +151,7 @@ def convert_docvqa(max_samples: int, image_dir: Path):
     from datasets import load_dataset
 
     print("[*] Loading DocVQA...")
-    ds = load_dataset("lmms-lab/DocVQA", split="train", trust_remote_code=True)
+    ds = load_dataset("lmms-lab/DocVQA", "DocVQA", split="train")
     if max_samples and len(ds) > max_samples:
         ds = ds.shuffle(seed=42).select(range(max_samples))
 
@@ -171,7 +175,7 @@ def convert_chartqa(max_samples: int, image_dir: Path):
     from datasets import load_dataset
 
     print("[*] Loading ChartQA...")
-    ds = load_dataset("HuggingFaceM4/ChartQA", split="train", trust_remote_code=True)
+    ds = load_dataset("HuggingFaceM4/ChartQA", split="train")
     if max_samples and len(ds) > max_samples:
         ds = ds.shuffle(seed=42).select(range(max_samples))
 
@@ -197,10 +201,10 @@ def convert_infovqa(max_samples: int, image_dir: Path):
 
     print("[*] Loading InfoVQA...")
     try:
-        ds = load_dataset("lmms-lab/InfoVQA", split="train", trust_remote_code=True)
+        ds = load_dataset("lmms-lab/InfoVQA", split="train")
     except Exception:
         try:
-            ds = load_dataset("vidore/infovqa_test_subsampled", split="test", trust_remote_code=True)
+            ds = load_dataset("vidore/infovqa_test_subsampled", split="test")
         except Exception:
             print("  [WARN] InfoVQA not available — skipping")
             return []
@@ -231,7 +235,7 @@ def convert_ai2d(max_samples: int, image_dir: Path):
     from datasets import load_dataset
 
     print("[*] Loading AI2D...")
-    ds = load_dataset("lmms-lab/ai2d", split="test", trust_remote_code=True)
+    ds = load_dataset("lmms-lab/ai2d", split="test")
     if max_samples and len(ds) > max_samples:
         ds = ds.shuffle(seed=42).select(range(max_samples))
 
@@ -262,7 +266,7 @@ def convert_scienceqa(max_samples: int, image_dir: Path):
 
     print("[*] Loading ScienceQA...")
     try:
-        ds = load_dataset("derek-thomas/ScienceQA", split="train", trust_remote_code=True)
+        ds = load_dataset("derek-thomas/ScienceQA", split="train")
     except Exception:
         print("  [WARN] ScienceQA not available — skipping")
         return []
