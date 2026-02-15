@@ -188,7 +188,7 @@ if should_run "export"; then
     echo ""
 
     cd scripts
-    "$PYTHON" 07a_export_smolvlm2_gguf.py --quant-types Q8_0
+    "$PYTHON" 07a_export_smolvlm2_gguf.py --quant-types Q4_K_M Q8_0
     cd ..
 fi
 

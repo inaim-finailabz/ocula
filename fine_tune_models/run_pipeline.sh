@@ -2,28 +2,26 @@
 set -euo pipefail
 #
 # Ocula MLOps Pipeline Orchestrator
-# End-to-end: Data Prep → Train → Merge → Quantize → Evaluate → Deploy
+# ==================================
+# Runs end-to-end training pipelines for all vision models.
+# Delegates to individual model pipelines for actual execution.
 #
 # Usage:
-#   ./run_pipeline.sh --all                    # Full pipeline, all models
-#   ./run_pipeline.sh --model smolvlm2         # Single model end-to-end
-#   ./run_pipeline.sh --model moondream2 --from train  # Resume from training
-#   ./run_pipeline.sh --stages train,merge,quantize    # Specific stages
-#   ./run_pipeline.sh --all --dry-run          # Preview what would run
+#   ./run_pipeline.sh                             # All models, full pipeline
+#   ./run_pipeline.sh --model smolvlm2            # Single model
+#   ./run_pipeline.sh --model qwen3vl --from export  # Resume from export
+#   ./run_pipeline.sh --all --deploy              # Full pipeline + deploy
+#   ./run_pipeline.sh --all --dry-run             # Preview what would run
 #
-# Stages (in order):
-#   prepare  → Format raw data into training datasets
-#   train    → Fine-tune model (LoRA/QLoRA/full)
-#   merge    → Merge LoRA adapter into base model
-#   quantize → Convert to GGUF + quantize
-#   evaluate → Benchmark base vs fine-tuned
-#   deploy   → Copy GGUF to model server / local
+# Models:
+#   smolvlm2   → SmolVLM2-500M  (Lite tier, image detection + docs)
+#   moondream2 → Moondream2-2B  (Plus tier, image understanding + VQA)
+#   qwen3vl    → Qwen3-VL-2B   (Pro tier, document + chart + reasoning)
+#   minilm     → MiniLM-L6     (Embedding model, sentence similarity)
 #
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SCRIPTS="${SCRIPT_DIR}/scripts"
 LOGS="${SCRIPT_DIR}/logs"
-PYTHON="${PYTHON:-python3}"
 
 # ── Colors ──────────────────────────────────────────────────────
 RED='\033[0;31m'
@@ -37,15 +35,15 @@ NC='\033[0m'
 # ── Defaults ────────────────────────────────────────────────────
 MODEL="all"
 BACKEND="auto"
-STAGES="prepare,train,merge,quantize,evaluate,deploy"
-FROM_STAGE=""
-DEPLOY_TARGET="local"
+FROM_STEP=""
+DEPLOY=false
+USE_4BIT=false
+MAX_SAMPLES=10000
 DRY_RUN=false
-SKIP_EVAL=false
-NO_DEPLOY=false
+NO_COMPARE=false
 LOG_FILE=""
+COMPARE_BACKEND="${COMPARE_BACKEND:-cli}"
 
-ALL_STAGES=(prepare train merge quantize evaluate deploy)
 ALL_MODELS=(smolvlm2 moondream2 qwen3vl minilm)
 
 # ─────────────────────────────────────────────────────────────────
@@ -59,30 +57,29 @@ ${CYAN}Usage:${NC}
 ${CYAN}Options:${NC}
   --all                  Train all models (default)
   --model MODEL          Train specific model: smolvlm2|moondream2|qwen3vl|minilm
-  --backend BACKEND      Force backend: cuda|mlx|auto (default: auto)
-  --stages STAGES        Comma-separated stages to run (default: all)
-  --from STAGE           Start from this stage (skip earlier stages)
-  --deploy-target TGT    Deploy target: local|ssh://...|http://... (default: local)
-  --skip-eval            Skip evaluation stage
-  --no-deploy            Skip deployment stage
+  --backend BACKEND      Force backend: cuda|mlx|mps|cpu|auto (default: auto)
+  --from STEP            Resume from step: data|train|export|compare|deploy
+  --deploy               Deploy final GGUFs to ocula_app/assets/models/
+  --4bit                 Use 4-bit QLoRA (CUDA only)
+  --max-samples N        Max training samples per dataset (default: 10000)
+  --no-compare           Skip comparison step
   --dry-run              Preview pipeline without executing
   --log FILE             Log all output to file
   -h, --help             Show this help
 
-${CYAN}Stages:${NC}
-  prepare   Format raw data → training datasets
-  train     Fine-tune model (LoRA/QLoRA/full)
-  merge     Merge LoRA adapter → full model weights
-  quantize  Convert merged model → GGUF + quantize
-  evaluate  Benchmark base vs fine-tuned models
-  deploy    Copy GGUF to model server
+${CYAN}Pipeline Steps (per model):${NC}
+  1. data     → Download and prepare model-specific training data
+  2. train    → Fine-tune with LoRA/QLoRA (merge handled by Unsloth)
+  3. export   → Convert to GGUF + quantize (Q4_K_M, Q8_0)
+  4. compare  → Compare base vs fine-tuned via local CLI inference
+  5. deploy   → Copy GGUF to ocula_app/assets/models/
 
 ${CYAN}Examples:${NC}
-  $0 --all                                      # Full pipeline
+  $0 --all                                      # Full pipeline, all models
   $0 --model smolvlm2 --backend mlx             # Single model on Apple Silicon
-  $0 --model qwen3vl --from merge               # Resume from merge step
-  $0 --stages train,merge --model moondream2     # Only train + merge
-  $0 --all --skip-eval --no-deploy              # Train everything, stop before deploy
+  $0 --model qwen3vl --from export              # Resume from export step
+  $0 --all --deploy --4bit                      # Full pipeline, QLoRA, deploy
+  $0 --model moondream2 --from compare          # Re-run comparison only
 
 EOF
     exit 0
@@ -94,58 +91,17 @@ while [[ $# -gt 0 ]]; do
         --all) MODEL="all"; shift ;;
         --model) MODEL="$2"; shift 2 ;;
         --backend) BACKEND="$2"; shift 2 ;;
-        --stages) STAGES="$2"; shift 2 ;;
-        --from) FROM_STAGE="$2"; shift 2 ;;
-        --deploy-target) DEPLOY_TARGET="$2"; shift 2 ;;
-        --skip-eval) SKIP_EVAL=true; shift ;;
-        --no-deploy) NO_DEPLOY=true; shift ;;
+        --from) FROM_STEP="$2"; shift 2 ;;
+        --deploy) DEPLOY=true; shift ;;
+        --4bit) USE_4BIT=true; shift ;;
+        --max-samples) MAX_SAMPLES="$2"; shift 2 ;;
+        --no-compare) NO_COMPARE=true; shift ;;
         --dry-run) DRY_RUN=true; shift ;;
         --log) LOG_FILE="$2"; shift 2 ;;
         -h|--help) usage ;;
         *) echo -e "${RED}Unknown option: $1${NC}"; usage ;;
     esac
 done
-
-# ── Resolve stages ──────────────────────────────────────────────
-resolve_stages() {
-    local result=()
-
-    if [[ -n "$FROM_STAGE" ]]; then
-        local found=false
-        for s in "${ALL_STAGES[@]}"; do
-            if [[ "$s" == "$FROM_STAGE" ]]; then
-                found=true
-            fi
-            if [[ "$found" == true ]]; then
-                result+=("$s")
-            fi
-        done
-        if [[ "$found" == false ]]; then
-            echo -e "${RED}Unknown stage: ${FROM_STAGE}${NC}"
-            echo "Valid stages: ${ALL_STAGES[*]}"
-            exit 1
-        fi
-    else
-        IFS=',' read -ra result <<< "$STAGES"
-    fi
-
-    # Apply skip flags
-    if [[ "$SKIP_EVAL" == true ]]; then
-        result=("${result[@]/evaluate/}")
-    fi
-    if [[ "$NO_DEPLOY" == true ]]; then
-        result=("${result[@]/deploy/}")
-    fi
-
-    # Remove empty entries
-    local clean=()
-    for s in "${result[@]}"; do
-        [[ -n "$s" ]] && clean+=("$s")
-    done
-    echo "${clean[@]}"
-}
-
-ACTIVE_STAGES=($(resolve_stages))
 
 # ── Resolve models ──────────────────────────────────────────────
 if [[ "$MODEL" == "all" ]]; then
@@ -155,8 +111,8 @@ else
 fi
 
 # ── Logging ─────────────────────────────────────────────────────
+mkdir -p "$LOGS"
 if [[ -z "$LOG_FILE" ]]; then
-    mkdir -p "$LOGS"
     LOG_FILE="${LOGS}/pipeline_$(date +%Y%m%d_%H%M%S).log"
 fi
 
@@ -166,82 +122,54 @@ log() {
     echo -e "$msg" | sed 's/\x1b\[[0-9;]*m//g' >> "$LOG_FILE"
 }
 
-# ── Stage runner ────────────────────────────────────────────────
-run_stage() {
-    local stage=$1
-    local model=$2
-    local exit_code=0
+# ── Build common args for individual pipeline scripts ───────────
+build_args() {
+    local model="$1"
+    local args=()
 
-    log "${CYAN}▸ ${stage}${NC} (${model})"
-
-    if [[ "$DRY_RUN" == true ]]; then
-        log "  ${DIM}[DRY RUN] Would run ${stage} for ${model}${NC}"
-        return 0
-    fi
-
-    case "$stage" in
-        prepare)
-            $PYTHON "${SCRIPTS}/01_prepare_data.py" \
-                --input ../data/raw/ \
-                --output ../data/processed/ \
-                2>&1 | tee -a "$LOG_FILE" || exit_code=$?
-            ;;
-
-        train)
-            local script=""
-            case "$model" in
-                smolvlm2)   script="02_train_smolvlm2.py" ;;
-                moondream2) script="03_train_moondream2.py" ;;
-                qwen3vl)    script="04_train_qwen3vl.py" ;;
-                minilm)     script="05_train_minilm.py" ;;
-            esac
-
-            local backend_arg=""
-            if [[ "$BACKEND" != "auto" ]] && [[ "$model" != "minilm" ]]; then
-                backend_arg="--backend ${BACKEND}"
-            fi
-
-            $PYTHON "${SCRIPTS}/${script}" ${backend_arg} \
-                2>&1 | tee -a "$LOG_FILE" || exit_code=$?
-            ;;
-
-        merge)
-            if [[ "$model" == "minilm" ]]; then
-                log "  ${DIM}Skip merge for embedding model (full fine-tune)${NC}"
-                return 0
-            fi
-
-            local backend_arg=""
-            if [[ "$BACKEND" != "auto" ]]; then
-                backend_arg="--backend ${BACKEND}"
-            fi
-
-            $PYTHON "${SCRIPTS}/06_merge_lora.py" \
-                --model "$model" ${backend_arg} \
-                2>&1 | tee -a "$LOG_FILE" || exit_code=$?
-            ;;
-
-        quantize)
-            $PYTHON "${SCRIPTS}/07_quantize_gguf.py" \
-                --model "$model" \
-                2>&1 | tee -a "$LOG_FILE" || exit_code=$?
-            ;;
-
-        evaluate)
-            $PYTHON "${SCRIPTS}/08_evaluate.py" \
-                --model "$model" \
-                2>&1 | tee -a "$LOG_FILE" || exit_code=$?
-            ;;
-
-        deploy)
-            bash "${SCRIPTS}/09_deploy.sh" \
-                --model "$model" \
-                --target "$DEPLOY_TARGET" \
-                2>&1 | tee -a "$LOG_FILE" || exit_code=$?
-            ;;
+    # Backend
+    case "$BACKEND" in
+        mlx)  args+=(--mlx) ;;
+        cuda) args+=(--cuda) ;;
+        mps)  args+=(--mps) ;;
+        cpu)  ;; # default fallback
+        auto) ;; # let sub-script auto-detect
     esac
 
-    return $exit_code
+    # Resume from step
+    if [[ -n "$FROM_STEP" ]]; then
+        args+=(--from "$FROM_STEP")
+    fi
+
+    # Deploy
+    if $DEPLOY; then
+        args+=(--deploy)
+    fi
+
+    # 4-bit QLoRA
+    if $USE_4BIT; then
+        args+=(--4bit)
+    fi
+
+    # Max samples
+    args+=(--max-samples "$MAX_SAMPLES")
+
+    echo "${args[@]}"
+}
+
+# ── Map model → individual pipeline script ──────────────────────
+get_pipeline_script() {
+    local model="$1"
+    case "$model" in
+        smolvlm2)   echo "${SCRIPT_DIR}/run_vision_finetune.sh" ;;
+        moondream2) echo "${SCRIPT_DIR}/run_moondream_finetune.sh" ;;
+        qwen3vl)    echo "${SCRIPT_DIR}/run_qwen3vl_finetune.sh" ;;
+        minilm)     echo "${SCRIPT_DIR}/scripts/05_train_minilm.py" ;;
+        *)
+            log "${RED}Unknown model: ${model}${NC}"
+            return 1
+            ;;
+    esac
 }
 
 # ─────────────────────────────────────────────────────────────────
@@ -252,67 +180,87 @@ echo ""
 echo -e "${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 echo -e "${BOLD}  Ocula MLOps Pipeline${NC}"
 echo -e "${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-echo -e "  Models:  ${CYAN}${ACTIVE_MODELS[*]}${NC}"
-echo -e "  Stages:  ${CYAN}${ACTIVE_STAGES[*]}${NC}"
-echo -e "  Backend: ${CYAN}${BACKEND}${NC}"
-echo -e "  Deploy:  ${CYAN}${DEPLOY_TARGET}${NC}"
-echo -e "  Log:     ${DIM}${LOG_FILE}${NC}"
-if [[ "$DRY_RUN" == true ]]; then
-    echo -e "  Mode:    ${YELLOW}DRY RUN${NC}"
+echo -e "  Models:      ${CYAN}${ACTIVE_MODELS[*]}${NC}"
+echo -e "  Backend:     ${CYAN}${BACKEND}${NC}"
+echo -e "  Max Samples: ${CYAN}${MAX_SAMPLES}${NC}"
+echo -e "  Deploy:      ${CYAN}${DEPLOY}${NC}"
+echo -e "  Compare:     ${CYAN}$(if $NO_COMPARE; then echo "SKIP"; else echo "${COMPARE_BACKEND}"; fi)${NC}"
+if [[ -n "$FROM_STEP" ]]; then
+    echo -e "  Resume From: ${CYAN}${FROM_STEP}${NC}"
 fi
+if [[ "$DRY_RUN" == true ]]; then
+    echo -e "  Mode:        ${YELLOW}DRY RUN${NC}"
+fi
+echo -e "  Log:         ${DIM}${LOG_FILE}${NC}"
 echo -e "${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 echo ""
 
+# ── Check Python (for minilm) ──
+if [[ -z "${PYTHON:-}" && -x "$SCRIPT_DIR/ocula_env/bin/python3" ]]; then
+    PYTHON="$SCRIPT_DIR/ocula_env/bin/python3"
+else
+    PYTHON="${PYTHON:-python3}"
+fi
+
 # Track results
-declare -A STAGE_RESULTS
+declare -A MODEL_RESULTS
 PIPELINE_START=$(date +%s)
 TOTAL=0
 PASSED=0
 FAILED=0
-SKIPPED=0
 
-# Data preparation runs once (not per-model)
-if [[ " ${ACTIVE_STAGES[*]} " == *" prepare "* ]]; then
-    log "${BOLD}── Stage: prepare ──${NC}"
-    ((TOTAL++))
-    if run_stage "prepare" "all"; then
-        STAGE_RESULTS["prepare:all"]="OK"
-        ((PASSED++))
-    else
-        STAGE_RESULTS["prepare:all"]="FAILED"
-        ((FAILED++))
-        log "${RED}[!] Data preparation failed — aborting pipeline${NC}"
-        # Don't abort — downstream stages might still work with existing data
-    fi
-    echo ""
-fi
-
-# Per-model stages
 for model in "${ACTIVE_MODELS[@]}"; do
+    ((TOTAL++))
     log "${BOLD}── Model: ${model} ──${NC}"
 
-    for stage in "${ACTIVE_STAGES[@]}"; do
-        # Skip prepare (already ran) and handle stage ordering
-        [[ "$stage" == "prepare" ]] && continue
+    pipeline_script="$(get_pipeline_script "$model")"
+    if [[ ! -f "$pipeline_script" ]]; then
+        log "  ${RED}Pipeline script not found: ${pipeline_script}${NC}"
+        MODEL_RESULTS["$model"]="FAILED"
+        ((FAILED++))
+        continue
+    fi
 
-        ((TOTAL++))
+    if [[ "$DRY_RUN" == true ]]; then
+        local_args=$(build_args "$model")
+        log "  ${DIM}[DRY RUN] Would run: bash ${pipeline_script} ${local_args}${NC}"
+        MODEL_RESULTS["$model"]="DRY_RUN"
+        continue
+    fi
 
-        if run_stage "$stage" "$model"; then
-            STAGE_RESULTS["${stage}:${model}"]="OK"
+    if [[ "$model" == "minilm" ]]; then
+        # MiniLM is a simple embedding model — just run the Python script
+        log "  ${CYAN}Training MiniLM embedding model...${NC}"
+        if $PYTHON "$pipeline_script" 2>&1 | tee -a "$LOG_FILE"; then
+            MODEL_RESULTS["$model"]="OK"
             ((PASSED++))
-            log "  ${GREEN}✓ ${stage} complete${NC}"
+            log "  ${GREEN}MiniLM training complete${NC}"
         else
-            STAGE_RESULTS["${stage}:${model}"]="FAILED"
+            MODEL_RESULTS["$model"]="FAILED"
             ((FAILED++))
-            log "  ${RED}✗ ${stage} failed${NC}"
-
-            # Critical failures stop downstream for this model
-            if [[ "$stage" == "train" ]]; then
-                log "  ${YELLOW}⚠ Training failed — skipping merge/quantize/deploy for ${model}${NC}"
-                break
-            fi
+            log "  ${RED}MiniLM training failed${NC}"
         fi
-    done
+        continue
+    fi
+
+    # Vision models — delegate to individual pipeline script
+    local_args=$(build_args "$model")
+
+    # Export compare backend so sub-scripts inherit it
+    export COMPARE_BACKEND
+
+    log "  ${CYAN}Running: bash ${pipeline_script} ${local_args}${NC}"
+    echo ""
+
+    if bash "$pipeline_script" $local_args 2>&1 | tee -a "$LOG_FILE"; then
+        MODEL_RESULTS["$model"]="OK"
+        ((PASSED++))
+        log "  ${GREEN}${model} pipeline complete${NC}"
+    else
+        MODEL_RESULTS["$model"]="FAILED"
+        ((FAILED++))
+        log "  ${RED}${model} pipeline failed${NC}"
+    fi
     echo ""
 done
 
@@ -333,39 +281,26 @@ if [[ $FAILED -gt 0 ]]; then
 fi
 echo ""
 
-# Detailed breakdown
-echo -e "  ${DIM}Stage Results:${NC}"
-printf "  %-12s" ""
+# Model breakdown
+echo -e "  ${DIM}Model Results:${NC}"
 for model in "${ACTIVE_MODELS[@]}"; do
-    printf "%-14s" "$model"
-done
-echo ""
-
-for stage in "${ACTIVE_STAGES[@]}"; do
-    printf "  %-12s" "$stage"
-    for model in "${ACTIVE_MODELS[@]}"; do
-        local_key="${stage}:${model}"
-        if [[ "$stage" == "prepare" ]]; then
-            local_key="prepare:all"
-        fi
-        status="${STAGE_RESULTS[$local_key]:-—}"
-        case "$status" in
-            OK)     printf "${GREEN}%-14s${NC}" "✓" ;;
-            FAILED) printf "${RED}%-14s${NC}" "✗" ;;
-            *)      printf "${DIM}%-14s${NC}" "—" ;;
-        esac
-    done
-    echo ""
+    status="${MODEL_RESULTS[$model]:-—}"
+    case "$status" in
+        OK)      echo -e "    ${GREEN}✓${NC} ${model}" ;;
+        FAILED)  echo -e "    ${RED}✗${NC} ${model}" ;;
+        DRY_RUN) echo -e "    ${DIM}~${NC} ${model} (dry run)" ;;
+        *)       echo -e "    ${DIM}—${NC} ${model}" ;;
+    esac
 done
 
 echo ""
 echo -e "  Log: ${DIM}${LOG_FILE}${NC}"
 
-# List deployed models
-if [[ " ${ACTIVE_STAGES[*]} " == *" deploy "* ]] && [[ $PASSED -gt 0 ]]; then
+if $DEPLOY && [[ $PASSED -gt 0 ]]; then
     echo ""
     echo -e "  ${GREEN}Deployed models ready for app rebuild:${NC}"
     echo -e "    cd ocula_app && flutter build ios --release"
+    echo -e "    cd ocula_app && flutter build apk --release"
 fi
 
 echo ""
