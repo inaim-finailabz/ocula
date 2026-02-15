@@ -276,8 +276,8 @@ def convert_paragraph_captioning(max_samples: int, output_dir: Path, image_dir: 
         ds = load_dataset("merve/image-paragraph-captioning", split="train")
     except Exception:
         try:
-            print("  [*] Trying fallback: google/docci...")
-            ds = load_dataset("google/docci", split="train")
+            print("  [*] Trying fallback: nlphuji/flickr30k...")
+            ds = load_dataset("nlphuji/flickr30k", split="test")
         except Exception as e:
             print(f"  [WARN] Could not load paragraph captioning: {e}")
             return []
@@ -303,6 +303,9 @@ def convert_paragraph_captioning(max_samples: int, output_dir: Path, image_dir: 
             continue
 
         caption = row.get("caption", row.get("text", ""))
+        if isinstance(caption, list):
+            # flickr30k returns list of captions — join for paragraph-style
+            caption = " ".join(c for c in caption if c)
         if not caption or len(caption) < 20:
             continue
 
