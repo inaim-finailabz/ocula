@@ -250,6 +250,10 @@ def train_cuda(config: dict, args):
 
     output_dir = args.output or DEFAULT_OUTPUT
 
+    # ── Checkpoint settings ──
+    save_steps = train_cfg.get("save_steps", 100)
+    save_total_limit = train_cfg.get("save_total_limit", 5)
+
     sft_config = SFTConfig(
         output_dir=output_dir,
         num_train_epochs=epochs,
@@ -262,8 +266,9 @@ def train_cuda(config: dict, args):
         bf16=torch.cuda.is_bf16_supported(),
         fp16=not torch.cuda.is_bf16_supported(),
         logging_steps=1,
-        save_steps=500,
-        save_total_limit=3,
+        save_steps=save_steps,
+        save_total_limit=save_total_limit,
+        save_strategy="steps",
         max_steps=max_steps if max_steps and max_steps > 0 else -1,
         report_to=["tensorboard"],
         dataloader_num_workers=0,
@@ -289,19 +294,44 @@ def train_cuda(config: dict, args):
     print(f"    Epochs: {epochs}, Batch: {batch_size} × {grad_accum} accum, LR: {lr}")
     print(f"    Max steps: {max_steps if max_steps and max_steps > 0 else 'unlimited'}")
     print(f"    4-bit: {args.use_4bit}")
+    print(f"    Checkpoints: every {save_steps} steps, keep {save_total_limit}")
     print(f"    Output: {output_dir}")
 
-    if args.resume:
-        trainer.train(resume_from_checkpoint=args.resume)
+    # ── Auto-resume from latest checkpoint if available ──
+    resume_ckpt = args.resume
+    if not resume_ckpt:
+        # Check for existing checkpoints in output_dir to auto-resume after crash
+        ckpt_dir = Path(output_dir)
+        if ckpt_dir.exists():
+            checkpoints = sorted(ckpt_dir.glob("checkpoint-*"), key=os.path.getmtime)
+            if checkpoints:
+                resume_ckpt = str(checkpoints[-1])
+                print(f"    Auto-resuming from: {resume_ckpt}")
+
+    if resume_ckpt:
+        trainer.train(resume_from_checkpoint=resume_ckpt)
     else:
         trainer.train()
 
-    # ── Save ──
+    # ── Save LoRA adapters ──
     print(f"\n[*] Saving LoRA adapters to {output_dir}")
     trainer.save_model(output_dir)
     tokenizer.save_pretrained(output_dir)
 
+    # ── Save merged model (pre-quantization) for future fine-tuning ──
+    merged_dir = str(Path(output_dir).parent / "qwen3vl-vision-merged")
+    print(f"\n[*] Saving merged model (base + LoRA) to {merged_dir}")
+    print(f"    This allows future fine-tuning without retraining from scratch.")
+
+    model.save_pretrained_merged(
+        merged_dir,
+        tokenizer,
+        save_method="merged_16bit",
+    )
+
     print("[OK] Qwen3-VL vision fine-tuning complete!")
+    print(f"     LoRA adapters:  {output_dir}")
+    print(f"     Merged model:   {merged_dir}")
     print(f"     Next: python 07c_export_qwen3vl_gguf.py")
 
 

@@ -272,6 +272,10 @@ def train_cuda_mps(config: dict, args):
 
     output_dir = args.output or DEFAULT_OUTPUT
 
+    # ── Checkpoint settings ──
+    save_steps = train_cfg.get("save_steps", 100)
+    save_total_limit = train_cfg.get("save_total_limit", 5)
+
     sft_config = SFTConfig(
         output_dir=output_dir,
         num_train_epochs=epochs,
@@ -284,8 +288,9 @@ def train_cuda_mps(config: dict, args):
         bf16=(device == "cuda"),
         fp16=False,
         logging_steps=10,
-        save_steps=500,
-        save_total_limit=3,
+        save_steps=save_steps,
+        save_total_limit=save_total_limit,
+        save_strategy="steps",
         eval_strategy="steps" if val_ds else "no",
         eval_steps=500 if val_ds else None,
         report_to=["tensorboard"],
@@ -308,19 +313,42 @@ def train_cuda_mps(config: dict, args):
 
     print(f"\n[*] Starting vision SFT on {device.upper()}")
     print(f"    Epochs: {epochs}, Batch: {batch_size} × {grad_accum} accum, LR: {lr}")
+    print(f"    Checkpoints: every {save_steps} steps, keep {save_total_limit}")
     print(f"    Output: {output_dir}")
 
-    if args.resume:
-        trainer.train(resume_from_checkpoint=args.resume)
+    # ── Auto-resume from latest checkpoint if available ──
+    resume_ckpt = args.resume
+    if not resume_ckpt:
+        ckpt_dir = Path(output_dir)
+        if ckpt_dir.exists():
+            checkpoints = sorted(ckpt_dir.glob("checkpoint-*"), key=os.path.getmtime)
+            if checkpoints:
+                resume_ckpt = str(checkpoints[-1])
+                print(f"    Auto-resuming from: {resume_ckpt}")
+
+    if resume_ckpt:
+        trainer.train(resume_from_checkpoint=resume_ckpt)
     else:
         trainer.train()
 
-    # ── Save ──
+    # ── Save LoRA adapters ──
     print(f"\n[*] Saving LoRA adapters to {output_dir}")
     trainer.save_model(output_dir)
     processor.save_pretrained(output_dir)
 
+    # ── Save merged model (pre-quantization) for future fine-tuning ──
+    merged_dir = str(Path(output_dir).parent / "smolvlm2-vision-merged")
+    print(f"\n[*] Saving merged model (base + LoRA) to {merged_dir}")
+    print(f"    This allows future fine-tuning without retraining from scratch.")
+
+    from peft import PeftModel
+    merged_model = trainer.model.merge_and_unload()
+    merged_model.save_pretrained(merged_dir)
+    processor.save_pretrained(merged_dir)
+
     print("[OK] SmolVLM2 vision fine-tuning complete!")
+    print(f"     LoRA adapters:  {output_dir}")
+    print(f"     Merged model:   {merged_dir}")
     print(f"     Next: python 06_merge_lora.py --model ocula-base")
     print(f"     Then: python 07_quantize_gguf.py --model ocula-base")
 
