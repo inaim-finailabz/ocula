@@ -118,9 +118,12 @@ def train_cuda_mps(config: dict, args):
     from datasets import load_dataset
     from transformers import (
         AutoProcessor,
-        AutoModelForVision2Seq,
         BitsAndBytesConfig,
     )
+    try:
+        from transformers import AutoModelForImageTextToText as VisionModel
+    except ImportError:
+        from transformers import AutoModelForVision2Seq as VisionModel
     from peft import LoraConfig
     from trl import SFTTrainer, SFTConfig
     from PIL import Image
@@ -153,9 +156,9 @@ def train_cuda_mps(config: dict, args):
     print(f"\n[*] Loading model: {model_path}")
     processor = AutoProcessor.from_pretrained(model_path, trust_remote_code=True)
 
-    model = AutoModelForVision2Seq.from_pretrained(
+    model = VisionModel.from_pretrained(
         model_path,
-        torch_dtype=torch.bfloat16 if device == "cuda" else torch.float32,
+        dtype=torch.bfloat16 if device == "cuda" else torch.float32,
         quantization_config=bnb_config,
         trust_remote_code=True,
         device_map="auto" if device == "cuda" else None,
@@ -614,14 +617,18 @@ def _test_mlx(model_name, adapter_path):
 
 def _test_transformers(model_name, adapter_path, backend):
     import torch
-    from transformers import AutoProcessor, AutoModelForVision2Seq
+    from transformers import AutoProcessor
     from peft import PeftModel
+    try:
+        from transformers import AutoModelForImageTextToText as VisionModel
+    except ImportError:
+        from transformers import AutoModelForVision2Seq as VisionModel
 
     device = "cuda" if backend == "cuda" else "mps" if backend == "mps" else "cpu"
 
     processor = AutoProcessor.from_pretrained(model_name, trust_remote_code=True)
-    model = AutoModelForVision2Seq.from_pretrained(
-        model_name, torch_dtype=torch.bfloat16, trust_remote_code=True
+    model = VisionModel.from_pretrained(
+        model_name, dtype=torch.bfloat16, trust_remote_code=True
     )
     model = PeftModel.from_pretrained(model, adapter_path)
     model = model.to(device)
