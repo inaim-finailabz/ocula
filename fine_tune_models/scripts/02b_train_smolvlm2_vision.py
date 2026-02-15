@@ -132,10 +132,6 @@ def train_cuda_mps(config: dict, args):
     local_path = config.get("model", {}).get("local_path", "")
     model_path = local_path if local_path and Path(local_path).exists() else model_name
 
-    # MLX uses special "-mlx" model repos for compatible weights.
-    if isinstance(model_path, str) and model_path == "HuggingFaceTB/SmolVLM2-500M-Video-Instruct":
-        model_path = "HuggingFaceTB/SmolVLM2-500M-Video-Instruct-mlx"
-
     train_cfg = config.get("training", {})
     lora_cfg = config.get("lora", {})
 
