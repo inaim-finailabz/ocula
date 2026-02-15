@@ -157,7 +157,7 @@ def train_cuda(config: dict, args):
 
     model = FastVisionModel.get_peft_model(
         model,
-        finetune_vision_modules=True,
+        finetune_vision_modules=False,     # SmolVLM2's SigLIP encoder doesn't support Unsloth gradient hooks
         finetune_language_modules=True,
         finetune_attention_modules=True,
         finetune_mlp_modules=True,
