@@ -226,10 +226,10 @@ def train_cuda_mps(config: dict, args):
 
             # Process with the multimodal processor
             if any(imgs is not None for imgs in images_list):
-                # Flatten images for batch processing
+                # SmolVLM expects images as list-of-lists: [[img1], [img2], ...]
                 batch = self.processor(
                     text=texts,
-                    images=[imgs[0] if imgs else None for imgs in images_list],
+                    images=[[imgs[0]] if imgs else [] for imgs in images_list],
                     return_tensors="pt",
                     padding=True,
                     truncation=True,
