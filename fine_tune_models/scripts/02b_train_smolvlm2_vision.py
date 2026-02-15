@@ -162,14 +162,25 @@ def train_cuda_mps(config: dict, args):
     if device == "mps":
         model = model.to("mps")
 
-    # Ensure ALL non-quantized parts are bfloat16 — SmolVLM's vision encoder
-    # and connector can end up in float32 even when torch_dtype=bf16, causing
-    # dtype mismatch at inputs_merger (image_embeds bf16 vs hidden_states fp32)
+    # Monkey-patch inputs_merger to cast vision hidden states to match embed dtype.
+    # SmolVLM's vision encoder outputs float32 through gradient checkpointing
+    # boundaries even when the model is loaded in bfloat16. The mismatch crashes
+    # at modeling_smolvlm.py:573 where image_embeds (bf16) != hidden_states (fp32).
     if device == "cuda":
-        for name, module in model.named_modules():
-            if any(k in name for k in ["vision_model", "connector", "multi_modal_projector"]):
-                module.to(torch.bfloat16)
-        print("  [*] Cast vision components to bfloat16")
+        inner_model = model.model if hasattr(model, "model") else model
+        original_inputs_merger = inner_model.inputs_merger
+
+        def patched_inputs_merger(
+            input_ids, inputs_embeds, image_hidden_states, *args, **kwargs
+        ):
+            if image_hidden_states is not None and inputs_embeds is not None:
+                image_hidden_states = image_hidden_states.to(inputs_embeds.dtype)
+            return original_inputs_merger(
+                input_ids, inputs_embeds, image_hidden_states, *args, **kwargs
+            )
+
+        inner_model.inputs_merger = patched_inputs_merger
+        print("  [*] Patched inputs_merger for dtype consistency")
 
     total_params = sum(p.numel() for p in model.parameters())
     print(f"  Total parameters: {total_params / 1e6:.1f}M")
