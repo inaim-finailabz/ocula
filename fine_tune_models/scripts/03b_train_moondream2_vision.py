@@ -5,23 +5,18 @@ Moondream2 Vision-Language Fine-tuning
 Proper multimodal SFT using the processor (image + text jointly).
 
 Supports:
-  • CUDA  — HuggingFace Transformers + PEFT LoRA + SFTTrainer (TRL)
+  • CUDA  — Unsloth FastVisionModel + SFTTrainer (fast, handles 4-bit natively)
   • MLX   — mlx-vlm LoRA fine-tuning on Apple Silicon
   • MPS   — PyTorch MPS fallback (slower than MLX on Apple Silicon)
-
-Key difference from 03_train_moondream2.py:
-  This script uses **AutoProcessor** (not just tokenizer) so the model
-  learns from image pixels + text together.  The old script was text-only.
 
 Moondream2 architecture notes:
   - Uses SigLIP vision encoder (378×378 images)
   - Custom Phi-1.5 based language model
   - Model class: AutoModelForCausalLM with integrated vision support
-  - Processor handles image + text jointly via moondream's generate()
 
 Prerequisites:
-  pip install transformers>=4.46 peft>=0.13 trl>=0.12 \
-              datasets accelerate bitsandbytes pillow einops
+  # For CUDA (recommended):
+  pip install unsloth trl datasets pillow einops
   # For MLX:
   pip install mlx-vlm>=0.1.2
 
@@ -29,7 +24,7 @@ Usage:
     python 03b_train_moondream2_vision.py
     python 03b_train_moondream2_vision.py --backend cuda --use-4bit
     python 03b_train_moondream2_vision.py --backend mlx
-    python 03b_train_moondream2_vision.py --resume ../models/lora_adapters/moondream2-vision/checkpoint-500
+    python 03b_train_moondream2_vision.py --resume checkpoint-500
 """
 
 import argparse
@@ -93,30 +88,22 @@ def detect_backend() -> str:
 
 
 # ═════════════════════════════════════════════════════════════════
-# CUDA / MPS Training (HuggingFace Transformers + TRL SFTTrainer)
+# CUDA Training via Unsloth (handles 4-bit, LoRA, peft internally)
 # ═════════════════════════════════════════════════════════════════
 
-def train_cuda_mps(config: dict, args):
+def train_cuda(config: dict, args):
     """
-    Moondream2 vision LoRA fine-tuning with SFTTrainer.
+    Moondream2 vision LoRA fine-tuning using Unsloth + SFTTrainer.
 
-    Moondream2 uses a custom architecture:
-      • SigLIP vision encoder (378×378)
-      • Phi-1.5 based language model
-      • Custom projection between vision & language
-
-    We use AutoModelForCausalLM with trust_remote_code=True
-    since Moondream2 registers its own model class.
-    The processor handles image tokenization internally.
+    Unsloth handles:
+      - 4-bit quantization (no manual BitsAndBytesConfig)
+      - LoRA injection (no manual get_peft_model)
+      - Gradient checkpointing
+      - 2x faster training with fused kernels
     """
     import torch
     from datasets import load_dataset
-    from transformers import (
-        AutoProcessor,
-        AutoModelForCausalLM,
-        BitsAndBytesConfig,
-    )
-    from peft import LoraConfig
+    from unsloth import FastVisionModel
     from trl import SFTTrainer, SFTConfig
     from PIL import Image
 
@@ -128,58 +115,51 @@ def train_cuda_mps(config: dict, args):
     train_cfg = config.get("training", {})
     lora_cfg = config.get("lora", {})
 
-    device = "cuda" if args.backend == "cuda" else "mps"
+    # ── Load model with Unsloth ──
+    # Try unsloth-optimized variant first, fall back to HF path
+    unsloth_model = f"unsloth/{model_name.split('/')[-1]}"
+    print(f"\n[*] Loading model via Unsloth: {unsloth_model}")
+    print(f"    (fallback: {model_path})")
 
-    # ── Quantization ──
-    bnb_config = None
-    if args.backend == "cuda" and args.use_4bit:
-        bnb_config = BitsAndBytesConfig(
-            load_in_4bit=True,
-            bnb_4bit_quant_type="nf4",
-            bnb_4bit_compute_dtype=torch.bfloat16,
-            bnb_4bit_use_double_quant=True,
+    try:
+        model, tokenizer = FastVisionModel.from_pretrained(
+            model_name=unsloth_model,
+            load_in_4bit=args.use_4bit,
+            use_gradient_checkpointing="unsloth",
         )
-        print("[*] Using 4-bit QLoRA (saves VRAM)")
-
-    # ── Load model + processor ──
-    print(f"\n[*] Loading model: {model_path} (revision: {revision})")
-    processor = AutoProcessor.from_pretrained(
-        model_path, revision=revision, trust_remote_code=True
-    )
-
-    # Moondream2 uses AutoModelForCausalLM with trust_remote_code
-    # (it registers its own model class internally)
-    model = AutoModelForCausalLM.from_pretrained(
-        model_path,
-        revision=revision,
-        torch_dtype=torch.bfloat16 if device == "cuda" else torch.float32,
-        quantization_config=bnb_config,
-        trust_remote_code=True,
-        device_map="auto" if device == "cuda" else None,
-    )
-    if device == "mps":
-        model = model.to("mps")
+    except Exception as e:
+        print(f"[!] Unsloth model not found ({e}), using HF path: {model_path}")
+        model, tokenizer = FastVisionModel.from_pretrained(
+            model_name=model_path,
+            load_in_4bit=args.use_4bit,
+            use_gradient_checkpointing="unsloth",
+        )
 
     total_params = sum(p.numel() for p in model.parameters())
     print(f"  Total parameters: {total_params / 1e6:.1f}M")
 
-    # ── LoRA config ──
-    # Moondream2's Phi-1.5 backbone uses these projection names
-    target_modules = lora_cfg.get("target_modules", [
-        "q_proj", "k_proj", "v_proj", "dense",
-        "fc1", "fc2",
-    ])
-    lora_config = LoraConfig(
-        r=lora_cfg.get("rank", 16),
-        lora_alpha=lora_cfg.get("alpha", 32),
-        lora_dropout=lora_cfg.get("dropout", 0.05),
-        target_modules=target_modules,
-        task_type="CAUSAL_LM",
+    # ── Configure LoRA via Unsloth ──
+    r = lora_cfg.get("rank", 16)
+    lora_alpha = lora_cfg.get("alpha", 32)
+    lora_dropout = lora_cfg.get("dropout", 0)
+
+    model = FastVisionModel.get_peft_model(
+        model,
+        finetune_vision_modules=True,
+        finetune_language_modules=True,
+        finetune_attention_modules=True,
+        finetune_mlp_modules=True,
+        r=r,
+        lora_alpha=lora_alpha,
+        lora_dropout=lora_dropout,
         bias="none",
     )
 
+    trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    print(f"  Trainable LoRA parameters: {trainable / 1e6:.1f}M ({100 * trainable / total_params:.1f}%)")
+
     # ── Load dataset ──
-    print(f"[*] Loading training data: {args.train_data}")
+    print(f"\n[*] Loading training data: {args.train_data}")
     train_ds = load_dataset("json", data_files=args.train_data, split="train")
     val_ds = None
     if args.val_data and Path(args.val_data).exists():
@@ -192,15 +172,13 @@ def train_cuda_mps(config: dict, args):
     print(f"  Training: {len(train_ds)} examples")
 
     # ── Collator for multimodal data ──
-    class MoondreamVisionCollator:
-        """
-        Process image + text pairs for Moondream2.
+    from transformers import AutoProcessor
+    processor = AutoProcessor.from_pretrained(
+        model.config._name_or_path, trust_remote_code=True
+    )
 
-        Moondream2's processor:
-          - Accepts images through its encode_image() method
-          - Text is processed with the tokenizer
-          - We use the processor's chat template to format conversations
-        """
+    class MoondreamVisionCollator:
+        """Process image + text pairs for Moondream2."""
         def __init__(self, processor, max_length=2048):
             self.processor = processor
             self.max_length = max_length
@@ -213,9 +191,6 @@ def train_cuda_mps(config: dict, args):
                 messages = ex.get("messages", [])
                 image_paths = ex.get("images", [])
 
-                # Build conversation text
-                # Moondream2 uses a simple format:
-                #   <image>\n\nQuestion: {question}\n\nAnswer: {answer}
                 user_text = ""
                 assistant_text = ""
                 for msg in messages:
@@ -234,11 +209,9 @@ def train_cuda_mps(config: dict, args):
                         elif role == "assistant":
                             assistant_text = content
 
-                # Moondream2's prompt format
                 text = f"<image>\n\nQuestion: {user_text}\n\nAnswer: {assistant_text}"
                 texts.append(text)
 
-                # Load images
                 imgs = []
                 for img_path in image_paths:
                     try:
@@ -248,7 +221,6 @@ def train_cuda_mps(config: dict, args):
                         imgs.append(Image.new("RGB", (378, 378), (128, 128, 128)))
                 images_list.append(imgs if imgs else None)
 
-            # Process with the multimodal processor
             try:
                 if any(imgs is not None for imgs in images_list):
                     batch = self.processor(
@@ -267,8 +239,8 @@ def train_cuda_mps(config: dict, args):
                         truncation=True,
                         max_length=self.max_length,
                     )
-            except Exception:
-                # Fallback: tokenize text only (for debugging)
+            except Exception as e:
+                print(f"[!] Processor error (will retry text-only): {e}")
                 batch = self.processor.tokenizer(
                     texts,
                     return_tensors="pt",
@@ -277,7 +249,6 @@ def train_cuda_mps(config: dict, args):
                     max_length=self.max_length,
                 )
 
-            # Labels = input_ids
             labels = batch["input_ids"].clone()
             if self.processor.tokenizer.pad_token_id is not None:
                 labels[labels == self.processor.tokenizer.pad_token_id] = -100
@@ -291,14 +262,13 @@ def train_cuda_mps(config: dict, args):
     )
 
     # ── Training config ──
-    epochs = train_cfg.get("epochs", 2)
+    epochs = train_cfg.get("epochs", 1)
     batch_size = train_cfg.get("batch_size", 4)
     grad_accum = train_cfg.get("gradient_accumulation", 4)
-    lr = train_cfg.get("learning_rate", 1e-4)
-
-    if device == "mps":
-        batch_size = min(batch_size, 2)
-        grad_accum = max(grad_accum, 8)
+    lr = train_cfg.get("learning_rate", 2e-4)
+    max_steps = train_cfg.get("max_steps", -1)
+    if args.max_iters:
+        max_steps = args.max_iters
 
     output_dir = args.output or DEFAULT_OUTPUT
 
@@ -309,36 +279,37 @@ def train_cuda_mps(config: dict, args):
         gradient_accumulation_steps=grad_accum,
         learning_rate=lr,
         lr_scheduler_type=train_cfg.get("lr_scheduler", "cosine"),
-        warmup_ratio=train_cfg.get("warmup_ratio", 0.05),
+        warmup_steps=5,
         weight_decay=train_cfg.get("weight_decay", 0.01),
-        bf16=(device == "cuda"),
-        fp16=False,
-        logging_steps=10,
+        bf16=torch.cuda.is_bf16_supported(),
+        fp16=not torch.cuda.is_bf16_supported(),
+        logging_steps=1,
         save_steps=500,
         save_total_limit=3,
+        max_steps=max_steps if max_steps and max_steps > 0 else -1,
         eval_strategy="steps" if val_ds else "no",
-        eval_steps=500 if val_ds else None,
         report_to=["tensorboard"],
-        logging_dir=f"../logs/moondream2-vision",
-        dataloader_num_workers=4 if device == "cuda" else 0,
+        dataloader_num_workers=4,
         remove_unused_columns=False,
-        dataset_text_field=None,
         dataset_kwargs={"skip_prepare_dataset": True},
-        gradient_checkpointing=True,  # Moondream2 is 1.8B — needs this
+        optim="adamw_8bit",
+        max_grad_norm=1.0,
     )
 
     # ── Train ──
     trainer = SFTTrainer(
         model=model,
+        tokenizer=tokenizer,
         args=sft_config,
         train_dataset=train_ds,
         eval_dataset=val_ds,
         data_collator=collator,
-        peft_config=lora_config,
     )
 
-    print(f"\n[*] Starting Moondream2 vision SFT on {device.upper()}")
+    print(f"\n[*] Starting Moondream2 vision SFT via Unsloth on CUDA")
     print(f"    Epochs: {epochs}, Batch: {batch_size} × {grad_accum} accum, LR: {lr}")
+    print(f"    Max steps: {max_steps if max_steps and max_steps > 0 else 'unlimited'}")
+    print(f"    4-bit: {args.use_4bit}")
     print(f"    Output: {output_dir}")
 
     if args.resume:
@@ -352,8 +323,182 @@ def train_cuda_mps(config: dict, args):
     processor.save_pretrained(output_dir)
 
     print("[OK] Moondream2 vision fine-tuning complete!")
-    print(f"     Next: python 06_merge_lora.py --model moondream2")
-    print(f"     Then: python 07b_export_moondream2_gguf.py")
+    print(f"     Next: python 07b_export_moondream2_gguf.py")
+
+
+# ═════════════════════════════════════════════════════════════════
+# MPS Training (fallback for Apple Silicon without MLX)
+# ═════════════════════════════════════════════════════════════════
+
+def train_mps(config: dict, args):
+    """MPS fallback — uses HuggingFace Transformers + PEFT directly."""
+    import torch
+    from datasets import load_dataset
+    from transformers import AutoProcessor, AutoModelForCausalLM
+    from peft import LoraConfig
+    from trl import SFTTrainer, SFTConfig
+    from PIL import Image
+
+    model_name = config.get("model", {}).get("name", DEFAULT_MODEL)
+    local_path = config.get("model", {}).get("local_path", "")
+    model_path = local_path if local_path and Path(local_path).exists() else model_name
+    revision = config.get("model", {}).get("revision", "2025-01-09")
+
+    train_cfg = config.get("training", {})
+    lora_cfg = config.get("lora", {})
+
+    print(f"\n[*] Loading model: {model_path} (revision: {revision})")
+    processor = AutoProcessor.from_pretrained(
+        model_path, revision=revision, trust_remote_code=True
+    )
+    model = AutoModelForCausalLM.from_pretrained(
+        model_path,
+        revision=revision,
+        torch_dtype=torch.float32,
+        trust_remote_code=True,
+    )
+    model = model.to("mps")
+    model.gradient_checkpointing_enable()
+
+    total_params = sum(p.numel() for p in model.parameters())
+    print(f"  Total parameters: {total_params / 1e6:.1f}M")
+
+    target_modules = lora_cfg.get("target_modules", [
+        "q_proj", "k_proj", "v_proj", "dense", "fc1", "fc2",
+    ])
+    lora_config = LoraConfig(
+        r=lora_cfg.get("rank", 16),
+        lora_alpha=lora_cfg.get("alpha", 32),
+        lora_dropout=lora_cfg.get("dropout", 0.05),
+        target_modules=target_modules,
+        task_type="CAUSAL_LM",
+        bias="none",
+    )
+
+    print(f"[*] Loading training data: {args.train_data}")
+    train_ds = load_dataset("json", data_files=args.train_data, split="train")
+    val_ds = None
+    if args.val_data and Path(args.val_data).exists():
+        val_ds = load_dataset("json", data_files=args.val_data, split="train")
+
+    max_samples = train_cfg.get("max_samples", args.max_samples)
+    if max_samples and len(train_ds) > max_samples:
+        train_ds = train_ds.shuffle(seed=42).select(range(max_samples))
+    print(f"  Training: {len(train_ds)} examples")
+
+    class MoondreamVisionCollator:
+        def __init__(self, processor, max_length=2048):
+            self.processor = processor
+            self.max_length = max_length
+
+        def __call__(self, examples):
+            texts = []
+            images_list = []
+            for ex in examples:
+                messages = ex.get("messages", [])
+                image_paths = ex.get("images", [])
+                user_text = ""
+                assistant_text = ""
+                for msg in messages:
+                    role = msg.get("role", "")
+                    content = msg.get("content", "")
+                    if isinstance(content, list):
+                        for c in content:
+                            if c.get("type") == "text":
+                                if role == "user":
+                                    user_text = c["text"]
+                                elif role == "assistant":
+                                    assistant_text = c["text"]
+                    elif isinstance(content, str):
+                        if role == "user":
+                            user_text = content
+                        elif role == "assistant":
+                            assistant_text = content
+                text = f"<image>\n\nQuestion: {user_text}\n\nAnswer: {assistant_text}"
+                texts.append(text)
+                imgs = []
+                for img_path in image_paths:
+                    try:
+                        imgs.append(Image.open(img_path).convert("RGB"))
+                    except Exception:
+                        imgs.append(Image.new("RGB", (378, 378), (128, 128, 128)))
+                images_list.append(imgs if imgs else None)
+
+            try:
+                if any(imgs is not None for imgs in images_list):
+                    batch = self.processor(
+                        text=texts,
+                        images=[imgs[0] if imgs else None for imgs in images_list],
+                        return_tensors="pt", padding=True, truncation=True, max_length=self.max_length,
+                    )
+                else:
+                    batch = self.processor(text=texts, return_tensors="pt", padding=True, truncation=True, max_length=self.max_length)
+            except Exception as e:
+                print(f"[!] Processor error: {e}")
+                batch = self.processor.tokenizer(texts, return_tensors="pt", padding=True, truncation=True, max_length=self.max_length)
+            labels = batch["input_ids"].clone()
+            if self.processor.tokenizer.pad_token_id is not None:
+                labels[labels == self.processor.tokenizer.pad_token_id] = -100
+            batch["labels"] = labels
+            return batch
+
+    collator = MoondreamVisionCollator(processor, max_length=train_cfg.get("max_seq_length", 2048))
+
+    epochs = train_cfg.get("epochs", 1)
+    batch_size = min(train_cfg.get("batch_size", 4), 2)
+    grad_accum = max(train_cfg.get("gradient_accumulation", 4), 8)
+    lr = train_cfg.get("learning_rate", 1e-4)
+    max_steps = train_cfg.get("max_steps", -1)
+    if args.max_iters:
+        max_steps = args.max_iters
+    output_dir = args.output or DEFAULT_OUTPUT
+
+    sft_config = SFTConfig(
+        output_dir=output_dir,
+        num_train_epochs=epochs,
+        per_device_train_batch_size=batch_size,
+        gradient_accumulation_steps=grad_accum,
+        learning_rate=lr,
+        lr_scheduler_type=train_cfg.get("lr_scheduler", "cosine"),
+        warmup_steps=100,
+        weight_decay=train_cfg.get("weight_decay", 0.01),
+        bf16=False,
+        logging_steps=10,
+        save_steps=500,
+        save_total_limit=3,
+        max_steps=max_steps if max_steps and max_steps > 0 else -1,
+        eval_strategy="steps" if val_ds else "no",
+        report_to=["tensorboard"],
+        dataloader_num_workers=0,
+        remove_unused_columns=False,
+        dataset_kwargs={"skip_prepare_dataset": True},
+        gradient_checkpointing=True,
+        gradient_checkpointing_kwargs={"use_reentrant": False},
+        max_grad_norm=1.0,
+    )
+
+    trainer = SFTTrainer(
+        model=model,
+        args=sft_config,
+        train_dataset=train_ds,
+        eval_dataset=val_ds,
+        data_collator=collator,
+        peft_config=lora_config,
+    )
+
+    print(f"\n[*] Starting Moondream2 vision SFT on MPS")
+    print(f"    Epochs: {epochs}, Batch: {batch_size} × {grad_accum} accum, LR: {lr}")
+    print(f"    Output: {output_dir}")
+
+    if args.resume:
+        trainer.train(resume_from_checkpoint=args.resume)
+    else:
+        trainer.train()
+
+    print(f"\n[*] Saving LoRA adapters to {output_dir}")
+    trainer.save_model(output_dir)
+    processor.save_pretrained(output_dir)
+    print("[OK] Moondream2 vision fine-tuning complete!")
 
 
 # ═════════════════════════════════════════════════════════════════
@@ -394,8 +539,8 @@ def train_mlx(config: dict, args):
         n_train = sum(1 for _ in f)
     print(f"[*] Training examples: {n_train:,}")
 
-    batch_size = mlx_cfg.get("batch_size", 2)
-    epochs = train_cfg.get("epochs", 2)
+    batch_size = mlx_cfg.get("batch_size", 1)
+    epochs = train_cfg.get("epochs", 1)
     iters = (n_train * epochs) // batch_size
     max_steps = train_cfg.get("max_steps")
     if max_steps:
@@ -436,7 +581,6 @@ def train_mlx(config: dict, args):
     print(f"    LR:           {mlx_train_config['learning_rate']}")
     print(f"    Output:       {output_dir}")
 
-    # mlx-vlm >=0.2 CLI: --model-path, --dataset, --steps, --output-path
     cmd = [
         sys.executable, "-m", "mlx_vlm.lora",
         "--model-path", model_path,
@@ -450,12 +594,9 @@ def train_mlx(config: dict, args):
         "--steps", str(iters),
         "--print-every", str(mlx_train_config["steps_per_report"]),
         "--save-after-epoch",
-        # Data already has correct {"type": "image"} format — disable mlx-vlm's
-        # own template pre-processing which strips image tokens (num_images=0).
         "--apply-chat-template",
     ]
 
-    # Resume from existing adapter
     adapter_weights = Path(output_dir) / "adapters.safetensors"
     if adapter_weights.exists():
         cmd.extend(["--adapter-path", output_dir])
@@ -505,7 +646,6 @@ def test_model(config: dict, args):
 
 def _test_mlx(model_name, adapter_path):
     from mlx_vlm import load as mlx_load, generate as mlx_generate
-    from PIL import Image
 
     model, processor = mlx_load(model_name, adapter_path=adapter_path)
 
@@ -555,7 +695,7 @@ def _test_transformers(model_name, adapter_path, backend):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Moondream2 Vision-Language Fine-tuning (MLX + CUDA)")
+        description="Moondream2 Vision-Language Fine-tuning (Unsloth + MLX)")
 
     parser.add_argument("--backend", choices=["cuda", "mlx", "mps", "cpu", "auto"],
                         default="auto")
@@ -582,8 +722,10 @@ def main():
 
     if backend == "mlx":
         train_mlx(config, args)
-    elif backend in ("cuda", "mps", "cpu"):
-        train_cuda_mps(config, args)
+    elif backend == "cuda":
+        train_cuda(config, args)
+    elif backend in ("mps", "cpu"):
+        train_mps(config, args)
     else:
         print(f"[!] Unknown backend: {backend}")
         sys.exit(1)
