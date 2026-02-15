@@ -2,7 +2,7 @@
 # For improving image detection + document understanding (Pro tier / Thinker)
 
 model:
-  name: "Qwen/Qwen3-VL-2B"
+  name: "Qwen/Qwen3-VL-2B-Instruct"
   local_path: "../models/base/qwen3-vl-2b"
   type: "vlm"
   params: "2B"
