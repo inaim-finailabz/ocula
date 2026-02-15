@@ -24,3 +24,4 @@ plugins {
 }
 
 include(":app")
+include(":models_pack")

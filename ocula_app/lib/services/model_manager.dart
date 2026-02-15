@@ -389,15 +389,42 @@ class OculaModelManager {
     return false;
   }
 
+  // ── Play Asset Delivery (Android) ──────────────────────────────
+  static const _assetPackChannel = MethodChannel('com.finailabz.ocula/asset_pack');
+
+  /// On Android with Play Store install, check if the model file is available
+  /// in the Play Asset Delivery "models_pack" asset pack.
+  /// Returns the file path if found, null otherwise.
+  Future<String?> _findAssetPackPath(String fileName) async {
+    if (!Platform.isAndroid) return null;
+    try {
+      final path = await _assetPackChannel.invokeMethod<String>(
+        'getAssetPackPath',
+        {'packName': 'models_pack', 'fileName': fileName},
+      );
+      if (path != null) {
+        debugPrint('[ModelManager] Found model in asset pack: $path');
+      }
+      return path;
+    } catch (e) {
+      // Asset pack not available (sideloaded APK, not from Play Store)
+      debugPrint('[ModelManager] Asset pack not available: $e');
+      return null;
+    }
+  }
+
   /// Resolve the physical file path of a Flutter asset on disk.
   /// Avoids rootBundle.load() which loads the entire file into RAM.
   /// Returns null if the asset can't be found on disk.
   ///
   /// iOS/macOS: assets live as real files inside the .app bundle
-  /// Android:   assets are inside the APK zip — no physical path available
+  /// Android:   checks Play Asset Delivery first, then returns null (rootBundle fallback)
   Future<String?> _findBundledAssetPath(String assetKey) async {
-    // Android assets are packed inside the APK; no filesystem path exists.
-    if (Platform.isAndroid) return null;
+    // Android: try Play Asset Delivery pack first (Play Store installs)
+    if (Platform.isAndroid) {
+      final fileName = assetKey.split('/').last;
+      return await _findAssetPackPath(fileName);
+    }
 
     try {
       // On iOS & macOS, Flutter assets are physically on disk inside the app bundle.

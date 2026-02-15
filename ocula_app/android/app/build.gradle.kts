@@ -35,10 +35,16 @@ android {
             signingConfig = signingConfigs.getByName("debug")
         }
     }
+
+    // Play Asset Delivery: models delivered as fast-follow asset pack
+    assetPacks += listOf(":models_pack")
 }
 
 dependencies {
     coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.4")
+    // Play Asset Delivery for on-demand/fast-follow model downloads
+    implementation("com.google.android.play:asset-delivery:2.3.0")
+    implementation("com.google.android.play:asset-delivery-ktx:2.3.0")
 }
 
 flutter {
