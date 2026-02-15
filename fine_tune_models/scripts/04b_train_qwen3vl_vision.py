@@ -5,7 +5,7 @@ Qwen3-VL-2B Vision-Language Fine-tuning
 Proper multimodal SFT using the processor (image + text jointly).
 
 Supports:
-  • CUDA  — HuggingFace Transformers + PEFT LoRA + SFTTrainer (TRL)
+  • CUDA  — Unsloth FastVisionModel + SFTTrainer (fast, handles 4-bit natively)
   • MLX   — mlx-vlm LoRA fine-tuning on Apple Silicon
   • MPS   — PyTorch MPS fallback (slower than MLX on Apple Silicon)
 
@@ -17,13 +17,11 @@ Qwen3-VL architecture notes:
   - Uses Qwen2VL's vision encoder with dynamic resolution
   - Rotary position embeddings for images (RoPE-2D)
   - Native ChatML template with <|im_start|>/<|im_end|>
-  - Model class: Qwen2_5_VLForConditionalGeneration (latest) or
-                  Qwen2VLForConditionalGeneration
   - Thinking mode with /think and /no_think tags
 
 Prerequisites:
-  pip install transformers>=4.46 peft>=0.13 trl>=0.12 \
-              datasets accelerate bitsandbytes pillow qwen-vl-utils
+  # For CUDA (recommended):
+  pip install unsloth trl datasets pillow
   # For MLX:
   pip install mlx-vlm>=0.1.2
 
@@ -48,7 +46,7 @@ import yaml
 # Defaults
 # ─────────────────────────────────────────────────────────────────
 
-DEFAULT_MODEL   = "Qwen/Qwen3-VL-2B"
+DEFAULT_MODEL   = "Qwen/Qwen3-VL-2B-Instruct"
 DEFAULT_CONFIG  = "../configs/qwen3vl_vision.yaml"
 DEFAULT_TRAIN   = "../data/vision_qwen3vl/qwen3vl_vision_train.jsonl"
 DEFAULT_VAL     = "../data/vision_qwen3vl/qwen3vl_vision_val.jsonl"
@@ -95,107 +93,80 @@ def detect_backend() -> str:
 
 
 # ═════════════════════════════════════════════════════════════════
-# CUDA / MPS Training (HuggingFace Transformers + TRL SFTTrainer)
+# CUDA Training via Unsloth (handles 4-bit, LoRA, peft internally)
 # ═════════════════════════════════════════════════════════════════
 
-def train_cuda_mps(config: dict, args):
+def train_cuda(config: dict, args):
     """
-    Qwen3-VL-2B vision LoRA fine-tuning with SFTTrainer.
+    Qwen3-VL-2B vision LoRA fine-tuning using Unsloth + SFTTrainer.
 
-    Qwen3-VL uses:
-      • ViT-based vision encoder with dynamic resolution (RoPE-2D)
-      • Qwen2.5 language model backbone
-      • Native <|vision_start|>...<|vision_end|> tokens
-      • ChatML template (<|im_start|>user\n...<|im_end|>)
-
-    We use AutoModelForVision2Seq / Qwen2VLForConditionalGeneration
-    with the Qwen3-VL processor for proper multimodal encoding.
+    Unsloth handles:
+      - 4-bit quantization (no manual BitsAndBytesConfig)
+      - LoRA injection (no manual get_peft_model)
+      - Gradient checkpointing
+      - 2x faster training with fused kernels
     """
     import torch
     from datasets import load_dataset
-    from transformers import (
-        AutoProcessor,
-        BitsAndBytesConfig,
-    )
-    from peft import LoraConfig
+    from unsloth import FastVisionModel
+    from unsloth.chat_templates import get_chat_template
     from trl import SFTTrainer, SFTConfig
     from PIL import Image
-
-    # Try Qwen3-VL specific class, fall back to AutoModelForVision2Seq
-    try:
-        from transformers import Qwen2_5_VLForConditionalGeneration as QwenVLModel
-        print("[*] Using Qwen2_5_VLForConditionalGeneration")
-    except ImportError:
-        try:
-            from transformers import Qwen2VLForConditionalGeneration as QwenVLModel
-            print("[*] Using Qwen2VLForConditionalGeneration")
-        except ImportError:
-            from transformers import AutoModelForVision2Seq as QwenVLModel
-            print("[*] Using AutoModelForVision2Seq (generic)")
 
     model_name = config.get("model", {}).get("name", DEFAULT_MODEL)
     local_path = config.get("model", {}).get("local_path", "")
     model_path = local_path if local_path and Path(local_path).exists() else model_name
 
+    # Unsloth needs the unsloth/ prefixed name for optimized loading
+    # Fall back to original path if unsloth variant isn't available
+    unsloth_model = f"unsloth/{model_name.split('/')[-1]}"
+
     train_cfg = config.get("training", {})
     lora_cfg = config.get("lora", {})
 
-    device = "cuda" if args.backend == "cuda" else "mps"
+    # ── Load model with Unsloth ──
+    print(f"\n[*] Loading model via Unsloth: {unsloth_model}")
+    print(f"    (fallback: {model_path})")
 
-    # ── Quantization ──
-    bnb_config = None
-    if args.backend == "cuda" and args.use_4bit:
-        bnb_config = BitsAndBytesConfig(
-            load_in_4bit=True,
-            bnb_4bit_quant_type="nf4",
-            bnb_4bit_compute_dtype=torch.bfloat16,
-            bnb_4bit_use_double_quant=False,
+    try:
+        model, tokenizer = FastVisionModel.from_pretrained(
+            model_name=unsloth_model,
+            load_in_4bit=args.use_4bit,
+            use_gradient_checkpointing="unsloth",
         )
-        print("[*] Using 4-bit QLoRA (saves VRAM)")
-
-    # ── Load model + processor ──
-    print(f"\n[*] Loading model: {model_path}")
-
-    # Qwen3-VL processor handles image resizing, dynamic resolution,
-    # and vision token insertion automatically
-    processor = AutoProcessor.from_pretrained(
-        model_path, trust_remote_code=True
-    )
-
-    model = QwenVLModel.from_pretrained(
-        model_path,
-        torch_dtype=torch.bfloat16 if device == "cuda" else torch.float32,
-        quantization_config=bnb_config,
-        trust_remote_code=True,
-        device_map="auto" if device == "cuda" else None,
-        attn_implementation="sdpa" if device == "cuda" else None,
-    )
-    if device == "mps":
-        model = model.to("mps")
-
-    # Enable gradient checkpointing — essential for 2B model on 16GB
-    model.gradient_checkpointing_enable()
+    except Exception as e:
+        print(f"[!] Unsloth model not found ({e}), using HF path: {model_path}")
+        model, tokenizer = FastVisionModel.from_pretrained(
+            model_name=model_path,
+            load_in_4bit=args.use_4bit,
+            use_gradient_checkpointing="unsloth",
+        )
 
     total_params = sum(p.numel() for p in model.parameters())
     print(f"  Total parameters: {total_params / 1e6:.1f}M")
 
-    # ── LoRA config ──
-    # Qwen3-VL uses standard transformer projection names
-    target_modules = lora_cfg.get("target_modules", [
-        "q_proj", "k_proj", "v_proj", "o_proj",
-        "gate_proj", "up_proj", "down_proj",
-    ])
-    lora_config = LoraConfig(
-        r=lora_cfg.get("rank", 16),
-        lora_alpha=lora_cfg.get("alpha", 32),
-        lora_dropout=lora_cfg.get("dropout", 0.05),
-        target_modules=target_modules,
-        task_type="CAUSAL_LM",
+    # ── Configure LoRA via Unsloth ──
+    r = lora_cfg.get("rank", 16)
+    lora_alpha = lora_cfg.get("alpha", 32)
+    lora_dropout = lora_cfg.get("dropout", 0)
+
+    model = FastVisionModel.get_peft_model(
+        model,
+        finetune_vision_modules=True,
+        finetune_language_modules=True,
+        finetune_attention_modules=True,
+        finetune_mlp_modules=True,
+        r=r,
+        lora_alpha=lora_alpha,
+        lora_dropout=lora_dropout,
         bias="none",
     )
 
+    trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    print(f"  Trainable LoRA parameters: {trainable / 1e6:.1f}M ({100 * trainable / total_params:.1f}%)")
+
     # ── Load dataset ──
-    print(f"[*] Loading training data: {args.train_data}")
+    print(f"\n[*] Loading training data: {args.train_data}")
     train_ds = load_dataset("json", data_files=args.train_data, split="train")
     val_ds = None
     if args.val_data and Path(args.val_data).exists():
@@ -208,16 +179,11 @@ def train_cuda_mps(config: dict, args):
     print(f"  Training: {len(train_ds)} examples")
 
     # ── Collator for multimodal data ──
-    class QwenVisionCollator:
-        """
-        Process image + text pairs for Qwen3-VL.
+    from transformers import AutoProcessor
+    processor = AutoProcessor.from_pretrained(model.config._name_or_path, trust_remote_code=True)
 
-        Qwen3-VL's processor:
-          - Handles dynamic resolution: images are split into tiles
-          - Inserts <|vision_start|>...<|vision_end|> tokens
-          - Uses ChatML template with <|im_start|>/<|im_end|>
-          - Supports min_pixels and max_pixels for resolution control
-        """
+    class QwenVisionCollator:
+        """Process image + text pairs for Qwen3-VL via its processor."""
         def __init__(self, processor, max_length=4096):
             self.processor = processor
             self.max_length = max_length
@@ -230,8 +196,6 @@ def train_cuda_mps(config: dict, args):
                 messages = ex.get("messages", [])
                 image_paths = ex.get("images", [])
 
-                # Qwen3-VL uses its own chat template
-                # Format: [{"role": "user", "content": [{"type": "image", "image": "path"}, {"type": "text", "text": "..."}]}]
                 qwen_messages = []
                 for msg in messages:
                     role = msg.get("role", "")
@@ -240,7 +204,6 @@ def train_cuda_mps(config: dict, args):
                         qwen_content = []
                         for c in content:
                             if c.get("type") == "image":
-                                # Load the image for Qwen's processor
                                 if image_paths:
                                     qwen_content.append({
                                         "type": "image",
@@ -258,13 +221,11 @@ def train_cuda_mps(config: dict, args):
                             "content": [{"type": "text", "text": content}],
                         })
 
-                # Apply chat template
                 text = self.processor.apply_chat_template(
                     qwen_messages, tokenize=False, add_generation_prompt=False
                 )
                 texts.append(text)
 
-                # Load images
                 imgs = []
                 for img_path in image_paths:
                     try:
@@ -274,7 +235,6 @@ def train_cuda_mps(config: dict, args):
                         imgs.append(Image.new("RGB", (448, 448), (128, 128, 128)))
                 images_list.append(imgs if imgs else None)
 
-            # Process with the Qwen3-VL processor
             try:
                 if any(imgs is not None for imgs in images_list):
                     batch = self.processor(
@@ -294,7 +254,6 @@ def train_cuda_mps(config: dict, args):
                         max_length=self.max_length,
                     )
             except Exception as e:
-                # Don't silently fall back to text-only — surface the error
                 print(f"[!] Processor error (will retry text-only): {e}")
                 batch = self.processor.tokenizer(
                     texts,
@@ -304,7 +263,6 @@ def train_cuda_mps(config: dict, args):
                     max_length=self.max_length,
                 )
 
-            # Labels = input_ids
             labels = batch["input_ids"].clone()
             if self.processor.tokenizer.pad_token_id is not None:
                 labels[labels == self.processor.tokenizer.pad_token_id] = -100
@@ -318,14 +276,13 @@ def train_cuda_mps(config: dict, args):
     )
 
     # ── Training config ──
-    epochs = train_cfg.get("epochs", 3)
+    epochs = train_cfg.get("epochs", 1)
     batch_size = train_cfg.get("batch_size", 2)
-    grad_accum = train_cfg.get("gradient_accumulation", 8)
-    lr = train_cfg.get("learning_rate", 5e-5)
-
-    if device == "mps":
-        batch_size = min(batch_size, 1)
-        grad_accum = max(grad_accum, 16)
+    grad_accum = train_cfg.get("gradient_accumulation", 4)
+    lr = train_cfg.get("learning_rate", 2e-4)
+    max_steps = train_cfg.get("max_steps", -1)
+    if args.max_iters:
+        max_steps = args.max_iters
 
     output_dir = args.output or DEFAULT_OUTPUT
 
@@ -336,39 +293,37 @@ def train_cuda_mps(config: dict, args):
         gradient_accumulation_steps=grad_accum,
         learning_rate=lr,
         lr_scheduler_type=train_cfg.get("lr_scheduler", "cosine"),
-        warmup_ratio=train_cfg.get("warmup_ratio", 0.05),
+        warmup_steps=5,
         weight_decay=train_cfg.get("weight_decay", 0.01),
-        bf16=(device == "cuda"),
-        fp16=False,
-        logging_steps=10,
+        bf16=torch.cuda.is_bf16_supported(),
+        fp16=not torch.cuda.is_bf16_supported(),
+        logging_steps=1,
         save_steps=500,
         save_total_limit=3,
+        max_steps=max_steps if max_steps and max_steps > 0 else -1,
         eval_strategy="steps" if val_ds else "no",
-        eval_steps=500 if val_ds else None,
         report_to=["tensorboard"],
-        logging_dir=f"../logs/qwen3vl-vision",
-        dataloader_num_workers=4 if device == "cuda" else 0,
+        dataloader_num_workers=4,
         remove_unused_columns=False,
-        dataset_text_field=None,
         dataset_kwargs={"skip_prepare_dataset": True},
-        gradient_checkpointing=True,
-        gradient_checkpointing_kwargs={"use_reentrant": False},
-        optim="paged_adamw_8bit" if args.use_4bit else "adamw_torch",
+        optim="adamw_8bit",
         max_grad_norm=1.0,
     )
 
     # ── Train ──
     trainer = SFTTrainer(
         model=model,
+        tokenizer=tokenizer,
         args=sft_config,
         train_dataset=train_ds,
         eval_dataset=val_ds,
         data_collator=collator,
-        peft_config=lora_config,
     )
 
-    print(f"\n[*] Starting Qwen3-VL vision SFT on {device.upper()}")
+    print(f"\n[*] Starting Qwen3-VL vision SFT via Unsloth on CUDA")
     print(f"    Epochs: {epochs}, Batch: {batch_size} × {grad_accum} accum, LR: {lr}")
+    print(f"    Max steps: {max_steps if max_steps and max_steps > 0 else 'unlimited'}")
+    print(f"    4-bit: {args.use_4bit}")
     print(f"    Output: {output_dir}")
 
     if args.resume:
@@ -382,8 +337,188 @@ def train_cuda_mps(config: dict, args):
     processor.save_pretrained(output_dir)
 
     print("[OK] Qwen3-VL vision fine-tuning complete!")
-    print(f"     Next: python 06_merge_lora.py --model qwen3vl")
-    print(f"     Then: python 07c_export_qwen3vl_gguf.py")
+    print(f"     Next: python 07c_export_qwen3vl_gguf.py")
+
+
+# ═════════════════════════════════════════════════════════════════
+# MPS Training (fallback for Apple Silicon without MLX)
+# ═════════════════════════════════════════════════════════════════
+
+def train_mps(config: dict, args):
+    """
+    MPS fallback — uses HuggingFace Transformers + PEFT directly.
+    Slower than MLX on Apple Silicon. Use train_mlx() instead when possible.
+    """
+    import torch
+    from datasets import load_dataset
+    from transformers import AutoProcessor
+    from peft import LoraConfig
+    from trl import SFTTrainer, SFTConfig
+    from PIL import Image
+
+    try:
+        from transformers import Qwen2_5_VLForConditionalGeneration as QwenVLModel
+    except ImportError:
+        try:
+            from transformers import Qwen2VLForConditionalGeneration as QwenVLModel
+        except ImportError:
+            from transformers import AutoModelForVision2Seq as QwenVLModel
+
+    model_name = config.get("model", {}).get("name", DEFAULT_MODEL)
+    local_path = config.get("model", {}).get("local_path", "")
+    model_path = local_path if local_path and Path(local_path).exists() else model_name
+
+    train_cfg = config.get("training", {})
+    lora_cfg = config.get("lora", {})
+
+    print(f"\n[*] Loading model: {model_path}")
+
+    processor = AutoProcessor.from_pretrained(model_path, trust_remote_code=True)
+    model = QwenVLModel.from_pretrained(
+        model_path,
+        torch_dtype=torch.float32,
+        trust_remote_code=True,
+    )
+    model = model.to("mps")
+    model.gradient_checkpointing_enable()
+
+    total_params = sum(p.numel() for p in model.parameters())
+    print(f"  Total parameters: {total_params / 1e6:.1f}M")
+
+    target_modules = lora_cfg.get("target_modules", [
+        "q_proj", "k_proj", "v_proj", "o_proj",
+        "gate_proj", "up_proj", "down_proj",
+    ])
+    lora_config = LoraConfig(
+        r=lora_cfg.get("rank", 16),
+        lora_alpha=lora_cfg.get("alpha", 32),
+        lora_dropout=lora_cfg.get("dropout", 0.05),
+        target_modules=target_modules,
+        task_type="CAUSAL_LM",
+        bias="none",
+    )
+
+    print(f"[*] Loading training data: {args.train_data}")
+    train_ds = load_dataset("json", data_files=args.train_data, split="train")
+    val_ds = None
+    if args.val_data and Path(args.val_data).exists():
+        val_ds = load_dataset("json", data_files=args.val_data, split="train")
+
+    max_samples = train_cfg.get("max_samples", args.max_samples)
+    if max_samples and len(train_ds) > max_samples:
+        train_ds = train_ds.shuffle(seed=42).select(range(max_samples))
+    print(f"  Training: {len(train_ds)} examples")
+
+    class QwenVisionCollator:
+        def __init__(self, processor, max_length=4096):
+            self.processor = processor
+            self.max_length = max_length
+
+        def __call__(self, examples):
+            texts = []
+            images_list = []
+            for ex in examples:
+                messages = ex.get("messages", [])
+                image_paths = ex.get("images", [])
+                qwen_messages = []
+                for msg in messages:
+                    role = msg.get("role", "")
+                    content = msg.get("content", "")
+                    if isinstance(content, list):
+                        qwen_content = []
+                        for c in content:
+                            if c.get("type") == "image" and image_paths:
+                                qwen_content.append({"type": "image", "image": image_paths[0]})
+                            elif c.get("type") == "text":
+                                qwen_content.append({"type": "text", "text": c["text"]})
+                        qwen_messages.append({"role": role, "content": qwen_content})
+                    elif isinstance(content, str):
+                        qwen_messages.append({"role": role, "content": [{"type": "text", "text": content}]})
+                text = self.processor.apply_chat_template(qwen_messages, tokenize=False, add_generation_prompt=False)
+                texts.append(text)
+                imgs = []
+                for img_path in image_paths:
+                    try:
+                        imgs.append(Image.open(img_path).convert("RGB"))
+                    except Exception:
+                        imgs.append(Image.new("RGB", (448, 448), (128, 128, 128)))
+                images_list.append(imgs if imgs else None)
+
+            try:
+                if any(imgs is not None for imgs in images_list):
+                    batch = self.processor(
+                        text=texts,
+                        images=[imgs[0] if imgs else None for imgs in images_list],
+                        return_tensors="pt", padding=True, truncation=True, max_length=self.max_length,
+                    )
+                else:
+                    batch = self.processor(text=texts, return_tensors="pt", padding=True, truncation=True, max_length=self.max_length)
+            except Exception as e:
+                print(f"[!] Processor error: {e}")
+                batch = self.processor.tokenizer(texts, return_tensors="pt", padding=True, truncation=True, max_length=self.max_length)
+            labels = batch["input_ids"].clone()
+            if self.processor.tokenizer.pad_token_id is not None:
+                labels[labels == self.processor.tokenizer.pad_token_id] = -100
+            batch["labels"] = labels
+            return batch
+
+    collator = QwenVisionCollator(processor, max_length=train_cfg.get("max_seq_length", 4096))
+
+    epochs = train_cfg.get("epochs", 1)
+    batch_size = 1
+    grad_accum = max(train_cfg.get("gradient_accumulation", 8), 16)
+    lr = train_cfg.get("learning_rate", 5e-5)
+    max_steps = train_cfg.get("max_steps", -1)
+    if args.max_iters:
+        max_steps = args.max_iters
+    output_dir = args.output or DEFAULT_OUTPUT
+
+    sft_config = SFTConfig(
+        output_dir=output_dir,
+        num_train_epochs=epochs,
+        per_device_train_batch_size=batch_size,
+        gradient_accumulation_steps=grad_accum,
+        learning_rate=lr,
+        lr_scheduler_type=train_cfg.get("lr_scheduler", "cosine"),
+        warmup_steps=100,
+        weight_decay=train_cfg.get("weight_decay", 0.01),
+        bf16=False,
+        logging_steps=10,
+        save_steps=500,
+        save_total_limit=3,
+        max_steps=max_steps if max_steps and max_steps > 0 else -1,
+        eval_strategy="steps" if val_ds else "no",
+        report_to=["tensorboard"],
+        dataloader_num_workers=0,
+        remove_unused_columns=False,
+        dataset_kwargs={"skip_prepare_dataset": True},
+        gradient_checkpointing=True,
+        gradient_checkpointing_kwargs={"use_reentrant": False},
+        max_grad_norm=1.0,
+    )
+
+    trainer = SFTTrainer(
+        model=model,
+        args=sft_config,
+        train_dataset=train_ds,
+        eval_dataset=val_ds,
+        data_collator=collator,
+        peft_config=lora_config,
+    )
+
+    print(f"\n[*] Starting Qwen3-VL vision SFT on MPS")
+    print(f"    Epochs: {epochs}, Batch: {batch_size} × {grad_accum} accum, LR: {lr}")
+    print(f"    Output: {output_dir}")
+
+    if args.resume:
+        trainer.train(resume_from_checkpoint=args.resume)
+    else:
+        trainer.train()
+
+    print(f"\n[*] Saving LoRA adapters to {output_dir}")
+    trainer.save_model(output_dir)
+    processor.save_pretrained(output_dir)
+    print("[OK] Qwen3-VL vision fine-tuning complete!")
 
 
 # ═════════════════════════════════════════════════════════════════
@@ -592,7 +727,7 @@ def _test_transformers(model_name, adapter_path, backend):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Qwen3-VL-2B Vision-Language Fine-tuning (MLX + CUDA)")
+        description="Qwen3-VL-2B Vision-Language Fine-tuning (Unsloth + MLX)")
 
     parser.add_argument("--backend", choices=["cuda", "mlx", "mps", "cpu", "auto"],
                         default="auto")
@@ -619,8 +754,10 @@ def main():
 
     if backend == "mlx":
         train_mlx(config, args)
-    elif backend in ("cuda", "mps", "cpu"):
-        train_cuda_mps(config, args)
+    elif backend == "cuda":
+        train_cuda(config, args)
+    elif backend in ("mps", "cpu"):
+        train_mps(config, args)
     else:
         print(f"[!] Unknown backend: {backend}")
         sys.exit(1)
