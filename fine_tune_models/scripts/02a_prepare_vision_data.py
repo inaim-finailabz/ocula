@@ -392,9 +392,15 @@ def convert_infovqa(max_samples: int, output_dir: Path, image_dir: Path):
     print("[*] Loading InfoVQA...")
     try:
         ds = load_dataset("lmms-lab/InfoVQA", split="train")
-    except Exception as e:
-        print(f"  [WARN] Could not load InfoVQA: {e}")
-        return []
+    except Exception:
+        try:
+            ds = load_dataset("lmms-lab/InfoVQA", split="validation")
+        except Exception:
+            try:
+                ds = load_dataset("docile-benchmark/InfoVQA", split="train")
+            except Exception as e:
+                print(f"  [WARN] Could not load InfoVQA: {e}")
+                return []
 
     if max_samples and len(ds) > max_samples:
         ds = ds.shuffle(seed=42).select(range(max_samples))
@@ -432,9 +438,12 @@ def convert_ai2d(max_samples: int, output_dir: Path, image_dir: Path):
     print("[*] Loading AI2D...")
     try:
         ds = load_dataset("lmms-lab/ai2d", split="train")
-    except Exception as e:
-        print(f"  [WARN] Could not load AI2D: {e}")
-        return []
+    except Exception:
+        try:
+            ds = load_dataset("lmms-lab/ai2d", split="test")
+        except Exception as e:
+            print(f"  [WARN] Could not load AI2D: {e}")
+            return []
 
     if max_samples and len(ds) > max_samples:
         ds = ds.shuffle(seed=42).select(range(max_samples))
