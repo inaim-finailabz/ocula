@@ -168,7 +168,7 @@ def train_cuda_mps(config: dict, args):
         quantization_config=bnb_config,
         trust_remote_code=True,
         device_map="auto" if device == "cuda" else None,
-        attn_implementation="flash_attention_2" if device == "cuda" else None,
+        attn_implementation="sdpa" if device == "cuda" else None,
     )
     if device == "mps":
         model = model.to("mps")
