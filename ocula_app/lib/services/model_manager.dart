@@ -81,10 +81,10 @@ class OculaModelManager {
   static const models = [
     // ── OCULA LITE: Always-on, fast & capable ──
     ModelInfo(
-      fileName: 'SmolVLM2-500M-Video-Instruct-Q8_0.gguf',
+      fileName: 'SmolVLM2-500M-Video-Instruct-finetuned-Q8_0.gguf',
       displayName: 'Ocula Lite',
       downloadUrl:
-          'https://backend-ocula.finailabz.com/models/SmolVLM2-500M-Video-Instruct-Q8_0.gguf',
+          'https://backend-ocula.finailabz.com/models/SmolVLM2-500M-Video-Instruct-finetuned-Q8_0.gguf',
       sizeBytes: 437 * 1024 * 1024, // ~437 MB
       tier: AITier.free,
     ),
