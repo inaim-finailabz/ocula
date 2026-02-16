@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:path/path.dart' as p;
 import '../services/ai_manager.dart';
@@ -34,8 +35,9 @@ class _RagSettingsState extends State<RagSettings> {
     _load();
   }
 
-  /// Validate a tier the same way switchEngine does: path + expected size + RAM.
-  Future<bool> _isTierReady(AITier tier) async {
+  /// Validate a tier the same way switchEngine does.
+  /// For multimodal tiers, optionally require the vision projector too.
+  Future<bool> _isTierReady(AITier tier, {bool requireVision = false}) async {
     final path = await _models.mainModelPath(tier);
     if (path == null) return false;
 
@@ -58,7 +60,14 @@ class _RagSettingsState extends State<RagSettings> {
     );
     if (!valid) return false;
 
-    // RAM gate — same check switchEngine uses before loading
+    if (requireVision) {
+      final projPath = await _models.visionProjectorPath(tier);
+      if (projPath == null) return false;
+      final projValid = await _models.isValidLocalModel(projPath);
+      if (!projValid) return false;
+    }
+
+    // RAM gate — same check switchEngine uses before loading.
     return await AIManager().canDeviceRunTier(tier);
   }
 
@@ -67,8 +76,8 @@ class _RagSettingsState extends State<RagSettings> {
 
     // Check if each tier is fully ready (downloaded + valid size + enough RAM)
     final freeOk = await _isTierReady(AITier.free);
-    final plusOk = await _isTierReady(AITier.plus);
-    final proOk = await _isTierReady(AITier.pro);
+    final plusOk = await _isTierReady(AITier.plus, requireVision: true);
+    final proOk = await _isTierReady(AITier.pro, requireVision: true);
 
     if (!mounted) return;
     setState(() {
@@ -100,39 +109,141 @@ class _RagSettingsState extends State<RagSettings> {
   }
 
   Future<void> _selectModel(String value) async {
-    // 'auto' is always selectable
-    if (value != 'auto' && _downloaded[value] != true) {
+    setState(() => _modelOverride = value);
+    _config.setModelOverride(value);
+
+    // 'auto' keeps intent-based routing.
+    if (value == 'auto') return;
+
+    final tier = switch (value) {
+      'free' => AITier.free,
+      'plus' => AITier.plus,
+      'pro' => AITier.pro,
+      _ => null,
+    };
+    if (tier == null) return;
+
+    final ai = AIManager();
+    final canRun = await ai.canDeviceRunTier(tier);
+    if (!canRun) {
+      if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(
-            '${_tierDisplayName(value)} is not downloaded yet. '
-            'It will download automatically in the background.',
+            '${_tierDisplayName(value)} needs more device memory. '
+            'Keeping current model.',
+          ),
+          backgroundColor: Colors.orange,
+        ),
+      );
+      final fallbackKey = _tierKey(ai.activeTier ?? AITier.free);
+      if (fallbackKey != null) {
+        setState(() => _modelOverride = fallbackKey);
+        _config.setModelOverride(fallbackKey);
+      }
+      return;
+    }
+
+    // If already ready, switch now. Otherwise download in background and
+    // auto-switch when ready.
+    final requireVision = tier == AITier.plus || tier == AITier.pro;
+    if (await _isTierReady(tier, requireVision: requireVision)) {
+      await _switchToTierWithFeedback(tier, value);
+      return;
+    }
+
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          '${_tierDisplayName(value)} is downloading in background. '
+          'Ocula will switch automatically when ready.',
+        ),
+        backgroundColor: Colors.orange,
+      ),
+    );
+    unawaited(_downloadTierAndAutoSwitch(tier, value));
+  }
+
+  Future<void> _downloadTierAndAutoSwitch(AITier tier, String tierKey) async {
+    final ok = await _models.downloadTier(tier);
+    if (!mounted) return;
+
+    if (!ok) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Download failed for ${_tierDisplayName(tierKey)}.'),
+          backgroundColor: Colors.red,
+        ),
+      );
+      await _load();
+      return;
+    }
+
+    final requireVision = tier == AITier.plus || tier == AITier.pro;
+    final ready = await _isTierReady(tier, requireVision: requireVision);
+    if (!mounted) return;
+    setState(() => _downloaded[tierKey] = ready);
+    if (!ready) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            '${_tierDisplayName(tierKey)} downloaded, but device cannot run it right now.',
           ),
           backgroundColor: Colors.orange,
         ),
       );
       return;
     }
-    setState(() => _modelOverride = value);
-    _config.setModelOverride(value);
 
-    // Apply manual override immediately so UI tier label and behavior match.
+    // User may have changed selection while downloading.
+    if (_modelOverride != tierKey) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('${_tierDisplayName(tierKey)} is ready to use.'),
+          backgroundColor: Colors.green,
+        ),
+      );
+      return;
+    }
+
+    await _switchToTierWithFeedback(tier, tierKey, downloadedNow: true);
+  }
+
+  Future<void> _switchToTierWithFeedback(
+    AITier tier,
+    String tierKey, {
+    bool downloadedNow = false,
+  }) async {
     try {
       final ai = AIManager();
-      if (value == 'auto') return;
-      final tier = switch (value) {
-        'free' => AITier.free,
-        'plus' => AITier.plus,
-        'pro' => AITier.pro,
-        _ => null,
-      };
-      if (tier != null) {
-        await ai.switchEngine(tier);
-        if (!mounted) return;
+      await ai.switchEngine(tier);
+      final active = ai.activeTier;
+      if (!mounted) return;
+      if (active == tier) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('Switched to ${_tierDisplayName(value)}'),
+            content: Text(
+              downloadedNow
+                  ? '${_tierDisplayName(tierKey)} is ready and now active.'
+                  : 'Switched to ${_tierDisplayName(tierKey)}',
+            ),
             backgroundColor: Colors.green,
+          ),
+        );
+      } else {
+        final fallbackKey = _tierKey(active);
+        if (fallbackKey != null) {
+          setState(() => _modelOverride = fallbackKey);
+          _config.setModelOverride(fallbackKey);
+        }
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              'Could not switch to ${_tierDisplayName(tierKey)}. '
+              'Still using ${_tierDisplayName(fallbackKey ?? "free")}.',
+            ),
+            backgroundColor: Colors.orange,
           ),
         );
       }
@@ -157,6 +268,20 @@ class _RagSettingsState extends State<RagSettings> {
         return 'Thinker';
       default:
         return 'Auto';
+    }
+  }
+
+  String? _tierKey(AITier? tier) {
+    if (tier == null) return null;
+    switch (tier) {
+      case AITier.free:
+        return 'free';
+      case AITier.plus:
+        return 'plus';
+      case AITier.pro:
+        return 'pro';
+      case AITier.enterprise:
+        return null;
     }
   }
 

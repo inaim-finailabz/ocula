@@ -455,10 +455,16 @@ class Orchestrator {
         }
         try {
           await _ai.switchEngine(overrideTier);
-          state.modelUsed = overrideTier;
-          debugPrint('[Orchestrator] Route: override → ${overrideTier.name}');
-          state.stepsCompleted.add('route_model');
-          return state;
+          if (_ai.activeTier == overrideTier) {
+            state.modelUsed = overrideTier;
+            debugPrint('[Orchestrator] Route: override → ${overrideTier.name}');
+            state.stepsCompleted.add('route_model');
+            return state;
+          }
+          debugPrint(
+            '[Orchestrator] Override ${overrideTier.name} requested but active tier is '
+            '${_ai.activeTier?.name ?? "none"} — falling back to auto',
+          );
         } catch (e) {
           debugPrint('[Orchestrator] Override ${overrideTier.name} failed: $e — falling back to auto');
         }

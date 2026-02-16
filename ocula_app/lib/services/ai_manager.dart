@@ -440,66 +440,128 @@ class AIManager {
       // The native code does it atomically and safely.
 
       // ── Load the new model ──
-      // Tier-appropriate settings:
-      //   free/plus: full GPU (-1) + 2048 context — small models, fit easily
-      //   pro:       CPU only (0) + 2048 context — avoids Metal OOM on 2B model
-      // Emulator override: CPU-only + reduced context (Vulkan is unstable, RAM is limited)
+      // Build platform/tier-specific load attempts.
       final bool emulator = await isEmulator;
-      final int gpuLayers;
-      final int contextSize;
+      final int nThreads = emulator
+          ? 2
+          : Platform.numberOfProcessors.clamp(4, 6);
+
+      final List<LlamaConfig> attempts = [];
       if (emulator) {
-        gpuLayers = 0; // CPU-only — emulator Vulkan is unstable
-        contextSize = tier == AITier.pro ? 2048 : 1024;
+        final contextSize = tier == AITier.pro ? 2048 : 1024;
         debugPrint(
           '[AIManager] Emulator mode: gpuLayers=0, contextSize=$contextSize',
         );
+        attempts.add(
+          LlamaConfig(
+            modelPath: mainPath,
+            nGpuLayers: 0,
+            useGpu: false,
+            contextSize: contextSize,
+            batchSize: 256,
+            nThreads: nThreads,
+          ),
+        );
       } else if (Platform.isAndroid) {
-        // Android: partial GPU offload to avoid thermal throttling on
-        // passively-cooled devices (Nothing, Pixel, etc.) and Vulkan
-        // compute inefficiency on Adreno GPUs.
+        final int gpuLayers;
         if (tier == AITier.pro) {
-          gpuLayers = 12; // 2B model — keep heavier layers on CPU
-          contextSize = 2048;
+          gpuLayers = 12;
         } else if (tier == AITier.plus) {
-          gpuLayers = 16; // medium model — more GPU ok
-          contextSize = 2048;
+          gpuLayers = 16;
         } else {
-          gpuLayers = 20; // small model — mostly GPU
-          contextSize = 2048;
+          gpuLayers = 20;
         }
-      } else {
-        // iOS / macOS: Metal is efficient, offload everything
-        gpuLayers = -1;
-        contextSize = 2048;
-      }
-
-      // Thread count: cap at 6 to reduce thermal throttling on passively-cooled phones
-      final int nThreads = emulator ? 2 : Platform.numberOfProcessors.clamp(4, 6);
-
-      try {
-        final loaded = await _textEngine.loadModel(
+        attempts.add(
           LlamaConfig(
             modelPath: mainPath,
             nGpuLayers: gpuLayers,
             useGpu: gpuLayers != 0,
-            contextSize: contextSize,
-            batchSize: emulator ? 256 : (Platform.isAndroid ? 256 : 512),
+            contextSize: 2048,
+            batchSize: 256,
             nThreads: nThreads,
           ),
         );
-        if (!loaded) {
-          throw ModelNotReadyException(tier);
+      } else {
+        // iOS/macOS: for Pro tier, try progressively safer configs to avoid
+        // transient Metal/OOM fallbacks that bounce back to Lite.
+        if (tier == AITier.pro) {
+          attempts.add(
+            LlamaConfig(
+              modelPath: mainPath,
+              nGpuLayers: -1,
+              useGpu: true,
+              contextSize: 2048,
+              batchSize: 512,
+              nThreads: nThreads,
+            ),
+          );
+          attempts.add(
+            LlamaConfig(
+              modelPath: mainPath,
+              nGpuLayers: 24,
+              useGpu: true,
+              contextSize: 1536,
+              batchSize: 256,
+              nThreads: nThreads,
+            ),
+          );
+          attempts.add(
+            LlamaConfig(
+              modelPath: mainPath,
+              nGpuLayers: 12,
+              useGpu: true,
+              contextSize: 1024,
+              batchSize: 128,
+              nThreads: nThreads,
+            ),
+          );
+          attempts.add(
+            LlamaConfig(
+              modelPath: mainPath,
+              nGpuLayers: 0,
+              useGpu: false,
+              contextSize: 1024,
+              batchSize: 128,
+              nThreads: nThreads,
+            ),
+          );
+        } else {
+          attempts.add(
+            LlamaConfig(
+              modelPath: mainPath,
+              nGpuLayers: -1,
+              useGpu: true,
+              contextSize: 2048,
+              batchSize: 512,
+              nThreads: nThreads,
+            ),
+          );
         }
-        _activeTier = tier;
-        _activeTierController.add(tier);
-        debugPrint('[AIManager] switchEngine: ${tier.name} loaded ✓');
+      }
 
-        // Load dedicated embedding model if available (non-blocking).
-        // This runs alongside the text model — separate native instance.
-        _loadEmbeddingModelIfAvailable();
-      } catch (e) {
-        debugPrint('[AIManager] loadModel(${tier.name}) failed: $e');
-        // Recovery: try to reload free model so we're never stuck with nothing
+      Object? lastLoadError;
+      var loaded = false;
+      for (var i = 0; i < attempts.length; i++) {
+        final cfg = attempts[i];
+        try {
+          debugPrint(
+            '[AIManager] loadModel(${tier.name}) attempt ${i + 1}/${attempts.length} '
+            'gpu=${cfg.nGpuLayers} ctx=${cfg.contextSize} batch=${cfg.batchSize}',
+          );
+          loaded = await _textEngine.loadModel(cfg);
+          if (loaded) break;
+          lastLoadError = ModelNotReadyException(tier);
+        } catch (e) {
+          lastLoadError = e;
+          debugPrint('[AIManager] loadModel(${tier.name}) attempt ${i + 1} failed: $e');
+        }
+      }
+
+      if (!loaded) {
+        debugPrint('[AIManager] loadModel(${tier.name}) failed after retries');
+        // Recovery: try to reload free model so we're never stuck with nothing.
+        // Important: still throw for the requested tier so callers know switch
+        // did not succeed.
         if (tier != AITier.free) {
           final freePath = await _models.mainModelPath(AITier.free);
           if (freePath != null) {
@@ -511,13 +573,20 @@ class AIManager {
                 _activeTier = AITier.free;
                 _activeTierController.add(AITier.free);
                 debugPrint('[AIManager] Recovered to free tier');
-                return;
               }
             } catch (_) {}
           }
         }
-        rethrow;
+        throw lastLoadError ?? ModelNotReadyException(tier);
       }
+
+      _activeTier = tier;
+      _activeTierController.add(tier);
+      debugPrint('[AIManager] switchEngine: ${tier.name} loaded ✓');
+
+      // Load dedicated embedding model if available (non-blocking).
+      // This runs alongside the text model — separate native instance.
+      _loadEmbeddingModelIfAvailable();
     } finally {
       _isSwitching = false;
     }
@@ -736,7 +805,30 @@ class AIManager {
       );
 
       if (mainPath == null || projPath == null) {
-        unavailableReason = 'The vision model files are not ready yet.';
+        if (projPath == null) {
+          final visionModel = OculaModelManager.models
+              .where((m) => m.tier == tier && m.isVisionProjector)
+              .firstOrNull;
+          if (visionModel != null) {
+            try {
+              final status = await _models.getStatus(visionModel.fileName);
+              if (status == ModelStatus.notDownloaded) {
+                debugPrint(
+                  '[AIManager] Vision projector missing for ${tier.name}. Starting background download...',
+                );
+                unawaited(_models.download(visionModel));
+              }
+              unavailableReason =
+                  'The vision add-on is downloading in the background.';
+            } catch (_) {
+              unavailableReason = 'The vision model files are not ready yet.';
+            }
+          } else {
+            unavailableReason = 'This model tier has no vision projector configured.';
+          }
+        } else {
+          unavailableReason = 'The vision model files are not ready yet.';
+        }
       } else {
         final mainValid = await _models.isValidLocalModel(mainPath);
         final projValid = await _models.isValidLocalModel(projPath);
@@ -837,7 +929,9 @@ class AIManager {
         maxTokens: maxTok,
         temperature: temp,
         repeatPenalty: repPen,
-        stopSequences: ['<|im_end|>', '<|im_start|>'],
+        // Some models emit <|im_start|> as their first token, which can
+        // prematurely stop generation at 0 tokens.
+        stopSequences: ['<|im_end|>'],
       ),
     );
 
@@ -850,6 +944,30 @@ class AIManager {
     // Post-process: strip leaked prompt/context.
     // Some models (especially on CPU) echo the user's data/context verbatim.
     text = stripLeakedContext(text);
+
+    // Recovery for silent outputs (0 tokens / empty text).
+    // Some non-ChatML models can stop immediately on the templated prompt.
+    if (text.isEmpty) {
+      debugPrint(
+        '[AIManager] Empty generation detected; retrying with plain prompt format',
+      );
+      final fallbackPrompt =
+          'System: $systemMsg\n\nUser: $userMsg\n\nAssistant:';
+      final retry = await _textEngine.generate(
+        GenerationParams(
+          prompt: fallbackPrompt,
+          maxTokens: maxTok,
+          temperature: temp,
+          repeatPenalty: repPen,
+          stopSequences: ['<|im_end|>'],
+        ),
+      );
+      text = retry.text
+          .replaceAll('<|im_end|>', '')
+          .replaceAll('<|im_start|>', '')
+          .trim();
+      text = stripLeakedContext(text);
+    }
 
     // Post-process: truncate rambling output.
     // Small models: aggressive truncation at 150 chars.
@@ -977,7 +1095,7 @@ class AIManager {
         maxTokens: maxTok,
         temperature: temp,
         repeatPenalty: repPen,
-        stopSequences: ['<|im_end|>', '<|im_start|>'],
+        stopSequences: ['<|im_end|>'],
       ),
     )) {
       buffer.write(token);
