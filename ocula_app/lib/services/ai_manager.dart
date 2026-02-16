@@ -485,14 +485,16 @@ class AIManager {
         // iOS/macOS: for Pro tier, try progressively safer configs to avoid
         // transient Metal/OOM fallbacks that bounce back to Lite.
         if (tier == AITier.pro) {
+          // Safe-first ordering: start with lower-memory configs before
+          // attempting full-GPU/high-batch variants.
           attempts.add(
             LlamaConfig(
               modelPath: mainPath,
-              nGpuLayers: -1,
+              nGpuLayers: 12,
               useGpu: true,
-              contextSize: 2048,
-              batchSize: 512,
-              nThreads: nThreads,
+              contextSize: 1024,
+              batchSize: 128,
+              nThreads: nThreads.clamp(3, 4),
             ),
           );
           attempts.add(
@@ -502,17 +504,7 @@ class AIManager {
               useGpu: true,
               contextSize: 1536,
               batchSize: 256,
-              nThreads: nThreads,
-            ),
-          );
-          attempts.add(
-            LlamaConfig(
-              modelPath: mainPath,
-              nGpuLayers: 12,
-              useGpu: true,
-              contextSize: 1024,
-              batchSize: 128,
-              nThreads: nThreads,
+              nThreads: nThreads.clamp(3, 4),
             ),
           );
           attempts.add(
@@ -522,6 +514,16 @@ class AIManager {
               useGpu: false,
               contextSize: 1024,
               batchSize: 128,
+              nThreads: nThreads.clamp(3, 4),
+            ),
+          );
+          attempts.add(
+            LlamaConfig(
+              modelPath: mainPath,
+              nGpuLayers: -1,
+              useGpu: true,
+              contextSize: 2048,
+              batchSize: 512,
               nThreads: nThreads,
             ),
           );
