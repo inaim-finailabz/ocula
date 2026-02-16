@@ -47,6 +47,11 @@
 	<string>Ocula uses speech recognition to understand your voice commands.</string>
 	<key>UIApplicationSupportsIndirectInputEvents</key>
 	<true/>
+	<key>BGTaskSchedulerPermittedIdentifiers</key>
+	<array>
+		<string>com.finailabz.ocula.background-refresh</string>
+		<string>com.finailabz.ocula.background-processing</string>
+	</array>
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>fetch</string>

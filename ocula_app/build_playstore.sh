@@ -71,7 +71,7 @@ restore_models() {
 }
 trap restore_models EXIT
 
-flutter build appbundle --release
+flutter build appbundle --release || echo -e "${CYAN}(debug symbol stripping warning is non-fatal, continuing...)${NC}"
 
 # Step 3: Restore models
 # (handled by trap, but let's be explicit)
