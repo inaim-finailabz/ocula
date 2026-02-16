@@ -13,6 +13,7 @@ func mtmd_bridge_load(
     _ nGpuLayers: Int32,
     _ contextSize: Int32,
     _ batchSize: Int32,
+    _ imageMinTokens: Int32,
     _ useGpu: Bool
 ) -> Bool
 
@@ -144,12 +145,15 @@ class FlutterLlamaMultimodalHandler: NSObject, FlutterPlugin, FlutterStreamHandl
             let nGpuLayers = (args["extraParams"] as? [String: Any])?["nGpuLayers"] as? Int ?? 99
             let contextSize = (args["extraParams"] as? [String: Any])?["contextSize"] as? Int ?? 2048
             let batchSize = (args["extraParams"] as? [String: Any])?["batchSize"] as? Int ?? 512
+            let imageMinTokens = (args["extraParams"] as? [String: Any])?["imageMinTokens"] as? Int
+                ?? (textModelPath.lowercased().contains("qwen") ? 1024 : -1)
             
             let success = textModelPath.withCString { modelPtr in
                 mmprojPath.withCString { mmprojPtr in
                     mtmd_bridge_load(modelPtr, mmprojPtr,
                                      Int32(nThreads), Int32(nGpuLayers),
-                                     Int32(contextSize), Int32(batchSize), useGpu)
+                                     Int32(contextSize), Int32(batchSize),
+                                     Int32(imageMinTokens), useGpu)
                 }
             }
             

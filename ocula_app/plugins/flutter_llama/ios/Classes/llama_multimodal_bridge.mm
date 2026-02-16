@@ -85,6 +85,7 @@ bool mtmd_bridge_load(const char *model_path,
                       int32_t     n_gpu_layers,
                       int32_t     context_size,
                       int32_t     batch_size,
+                      int32_t     image_min_tokens,
                       bool        use_gpu) {
     std::lock_guard<std::mutex> lock(mm_mutex);
     NSLog(@"[mtmd_bridge] Loading model: %s", model_path);
@@ -137,6 +138,7 @@ bool mtmd_bridge_load(const char *model_path,
     struct mtmd_context_params mtmd_params = mtmd_context_params_default();
     mtmd_params.use_gpu   = use_gpu;
     mtmd_params.n_threads = n_threads;
+    mtmd_params.image_min_tokens = image_min_tokens;
 #if TARGET_OS_SIMULATOR
     mtmd_params.use_gpu = false;
 #endif
@@ -155,6 +157,9 @@ bool mtmd_bridge_load(const char *model_path,
 
     NSLog(@"[mtmd_bridge] Multimodal model loaded OK. vision=%d audio=%d",
           mtmd_support_vision(mm_mtmd), mtmd_support_audio(mm_mtmd));
+    if (image_min_tokens > 0) {
+        NSLog(@"[mtmd_bridge] image_min_tokens=%d", image_min_tokens);
+    }
     return true;
 }
 

@@ -108,6 +108,8 @@ class FlutterLlamaMultimodalPlugin : FlutterPlugin, MethodCallHandler, EventChan
                 val nGpuLayers  = (extraParams?.get("nGpuLayers") as? Int) ?: 99
                 val contextSize = (extraParams?.get("contextSize") as? Int) ?: 2048
                 val batchSize   = (extraParams?.get("batchSize") as? Int) ?: 512
+                val imageMinTokens = (extraParams?.get("imageMinTokens") as? Int)
+                    ?: if (textModelPath.lowercase().contains("qwen")) 1024 else -1
 
                 // Verify files exist
                 if (!File(textModelPath).exists()) {
@@ -121,7 +123,7 @@ class FlutterLlamaMultimodalPlugin : FlutterPlugin, MethodCallHandler, EventChan
 
                 val success = nativeLoadMultimodalModel(
                     textModelPath, mmprojPath,
-                    nThreads, nGpuLayers, contextSize, batchSize, useGpu
+                    nThreads, nGpuLayers, contextSize, batchSize, imageMinTokens, useGpu
                 )
 
                 modelLoaded = success
@@ -356,7 +358,7 @@ class FlutterLlamaMultimodalPlugin : FlutterPlugin, MethodCallHandler, EventChan
     private external fun nativeLoadMultimodalModel(
         modelPath: String, mmprojPath: String,
         nThreads: Int, nGpuLayers: Int,
-        contextSize: Int, batchSize: Int,
+        contextSize: Int, batchSize: Int, imageMinTokens: Int,
         useGpu: Boolean
     ): Boolean
 

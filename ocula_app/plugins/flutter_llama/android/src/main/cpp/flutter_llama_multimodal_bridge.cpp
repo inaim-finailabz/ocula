@@ -98,6 +98,7 @@ Java_net_nativemind_flutter_1llama_FlutterLlamaMultimodalPlugin_nativeLoadMultim
     jint    n_gpu_layers,
     jint    context_size,
     jint    batch_size,
+    jint    image_min_tokens,
     jboolean use_gpu
 ) {
     std::lock_guard<std::mutex> lock(mm_mutex);
@@ -169,6 +170,7 @@ Java_net_nativemind_flutter_1llama_FlutterLlamaMultimodalPlugin_nativeLoadMultim
     struct mtmd_context_params mtmd_params = mtmd_context_params_default();
     mtmd_params.use_gpu   = use_gpu;
     mtmd_params.n_threads = n_threads;
+    mtmd_params.image_min_tokens = image_min_tokens;
 
     mm_mtmd = mtmd_init_from_file(mmproj, mm_model, mtmd_params);
     if (!mm_mtmd) {
@@ -186,6 +188,9 @@ Java_net_nativemind_flutter_1llama_FlutterLlamaMultimodalPlugin_nativeLoadMultim
 
     LOGI("Multimodal model loaded OK. vision=%d audio=%d",
          mtmd_support_vision(mm_mtmd), mtmd_support_audio(mm_mtmd));
+    if (image_min_tokens > 0) {
+        LOGI("image_min_tokens=%d", image_min_tokens);
+    }
 
     env->ReleaseStringUTFChars(model_path, path);
     env->ReleaseStringUTFChars(mmproj_path, mmproj);
