@@ -55,9 +55,9 @@ class AgentState {
     List<String>? stepsCompleted,
     DateTime? timestamp,
     List<LinkedAsset>? linkedAssets,
-  })  : stepsCompleted = stepsCompleted ?? [],
-        timestamp = timestamp ?? DateTime.now(),
-        linkedAssets = linkedAssets ?? [];
+  }) : stepsCompleted = stepsCompleted ?? [],
+       timestamp = timestamp ?? DateTime.now(),
+       linkedAssets = linkedAssets ?? [];
 }
 
 // ──────────────────────────────────────────
@@ -88,6 +88,10 @@ class Orchestrator {
   /// Returns true if user grants permission, false if denied.
   Future<bool> Function()? onAskInternet;
 
+  /// Callback when web search is allowed but network is currently offline.
+  /// Returns true if user agreed to open settings / enable connectivity.
+  Future<bool> Function()? onAskEnableConnectivity;
+
   Orchestrator({
     AIManager? ai,
     RAGEngine? rag,
@@ -95,11 +99,12 @@ class Orchestrator {
     NetworkPermission? network,
     LocalData? localData,
     this.onAskInternet,
-  })  : _ai = ai ?? AIManager(),
-        _rag = rag ?? RAGEngine(),
-        _memory = memory ?? EpisodicMemory(),
-        _network = network ?? NetworkPermission(),
-        _localData = localData ?? LocalData();
+    this.onAskEnableConnectivity,
+  }) : _ai = ai ?? AIManager(),
+       _rag = rag ?? RAGEngine(),
+       _memory = memory ?? EpisodicMemory(),
+       _network = network ?? NetworkPermission(),
+       _localData = localData ?? LocalData();
 
   /// Stop the current generation and cancel the pipeline.
   /// Safe to call even if nothing is running.
@@ -111,7 +116,11 @@ class Orchestrator {
 
   /// Run the full pipeline for a user query.
   /// Returns an [OrchestratorResult] with the response + any linked assets.
-  Future<OrchestratorResult> run(String query, {bool hasImage = false, String? imagePath}) async {
+  Future<OrchestratorResult> run(
+    String query, {
+    bool hasImage = false,
+    String? imagePath,
+  }) async {
     // If a previous run is still active, stop it first.
     if (_isRunning) {
       await stop();
@@ -123,15 +132,27 @@ class Orchestrator {
     _isRunning = true;
 
     try {
-      return await _runPipeline(query, hasImage: hasImage, imagePath: imagePath);
+      return await _runPipeline(
+        query,
+        hasImage: hasImage,
+        imagePath: imagePath,
+      );
     } finally {
       _isRunning = false;
     }
   }
 
   /// Internal pipeline — separated so run() can manage _isRunning flag.
-  Future<OrchestratorResult> _runPipeline(String query, {bool hasImage = false, String? imagePath}) async {
-    var state = AgentState(query: query, hasImage: hasImage, imagePath: imagePath);
+  Future<OrchestratorResult> _runPipeline(
+    String query, {
+    bool hasImage = false,
+    String? imagePath,
+  }) async {
+    var state = AgentState(
+      query: query,
+      hasImage: hasImage,
+      imagePath: imagePath,
+    );
     state.status = StepStatus.running;
 
     // STEP 0: If a better model finished downloading in the background,
@@ -149,7 +170,8 @@ class Orchestrator {
 
     // SHORT-CIRCUIT: Greetings bypass RAG/LLM entirely.
     if (state.intent == QueryIntent.chat && _isGreeting(state.query)) {
-      state.response = 'Hi! I\'m Ocula, your private AI assistant. '
+      state.response =
+          'Hi! I\'m Ocula, your private AI assistant. '
           'How can I help you today?';
       state.status = StepStatus.completed;
       state.stepsCompleted.add('greeting_shortcut');
@@ -159,10 +181,14 @@ class Orchestrator {
     // STEPS 2+3: RAG retrieval and episodic memory in parallel
     // These are independent DB queries — running them concurrently saves 200-500ms.
     final results = await Future.wait([
-      _retrieve(AgentState(query: query, hasImage: hasImage, imagePath: imagePath)
-        ..intent = state.intent),
-      _recallMemory(AgentState(query: query, hasImage: hasImage, imagePath: imagePath)
-        ..intent = state.intent),
+      _retrieve(
+        AgentState(query: query, hasImage: hasImage, imagePath: imagePath)
+          ..intent = state.intent,
+      ),
+      _recallMemory(
+        AgentState(query: query, hasImage: hasImage, imagePath: imagePath)
+          ..intent = state.intent,
+      ),
     ]);
     if (_cancelled) return OrchestratorResult.empty;
 
@@ -206,12 +232,27 @@ class Orchestrator {
 
   /// Check if a query is a simple greeting (hello, hi, hey, etc.).
   bool _isGreeting(String query) {
-    final trimmed = query.trim().toLowerCase().replaceAll(RegExp(r'[^a-z\s]'), '');
+    final trimmed = query.trim().toLowerCase().replaceAll(
+      RegExp(r'[^a-z\s]'),
+      '',
+    );
     const greetings = {
-      'hello', 'hi', 'hey', 'hiya', 'howdy', 'yo', 'sup',
-      'good morning', 'good afternoon', 'good evening',
-      'hi there', 'hello there', 'hey there',
-      'whats up', 'hows it going', 'how are you',
+      'hello',
+      'hi',
+      'hey',
+      'hiya',
+      'howdy',
+      'yo',
+      'sup',
+      'good morning',
+      'good afternoon',
+      'good evening',
+      'hi there',
+      'hello there',
+      'hey there',
+      'whats up',
+      'hows it going',
+      'how are you',
     };
     return greetings.contains(trimmed);
   }
@@ -220,21 +261,39 @@ class Orchestrator {
   Future<AgentState> _detectIntent(AgentState state) async {
     final lower = state.query.toLowerCase();
 
-    if (lower.contains('search') || lower.contains('google') || lower.contains('look up')) {
+    if (lower.contains('search') ||
+        lower.contains('google') ||
+        lower.contains('look up')) {
       state.intent = QueryIntent.web;
-    } else if (lower.contains('email') || lower.contains('inbox') || lower.contains('mail')) {
+    } else if (lower.contains('email') ||
+        lower.contains('inbox') ||
+        lower.contains('mail')) {
       state.intent = QueryIntent.email;
-    } else if (lower.contains('photo') || lower.contains('picture') || lower.contains('screenshot')
-        || lower.contains('vacation') || lower.contains('selfie') || lower.contains('image')) {
+    } else if (lower.contains('photo') ||
+        lower.contains('picture') ||
+        lower.contains('screenshot') ||
+        lower.contains('vacation') ||
+        lower.contains('selfie') ||
+        lower.contains('image')) {
       state.intent = QueryIntent.photo;
-    } else if (lower.contains('file') || lower.contains('document') || lower.contains('pdf')
-        || lower.contains('license') || lower.contains('receipt') || lower.contains('invoice')
-        || lower.contains('contract') || lower.contains('certificate')) {
+    } else if (lower.contains('file') ||
+        lower.contains('document') ||
+        lower.contains('pdf') ||
+        lower.contains('license') ||
+        lower.contains('receipt') ||
+        lower.contains('invoice') ||
+        lower.contains('contract') ||
+        lower.contains('certificate')) {
       state.intent = QueryIntent.file;
-    } else if (lower.contains('contact') || lower.contains('phone number') || lower.contains('call')) {
+    } else if (lower.contains('contact') ||
+        lower.contains('phone number') ||
+        lower.contains('call')) {
       state.intent = QueryIntent.contact;
-    } else if (lower.contains('schedule') || lower.contains('calendar') || lower.contains('meeting')
-        || lower.contains('appointment') || lower.contains('event')) {
+    } else if (lower.contains('schedule') ||
+        lower.contains('calendar') ||
+        lower.contains('meeting') ||
+        lower.contains('appointment') ||
+        lower.contains('event')) {
       state.intent = QueryIntent.calendar;
     } else {
       state.intent = QueryIntent.chat;
@@ -274,28 +333,55 @@ class Orchestrator {
     // Expand query for better recall on photo/document content queries.
     // Users ask things like "my driver's license" or "vacation in Greece" —
     // the raw query may not match indexed metadata, so we add synonyms.
-    final searchQuery = _expandQuery(state.query, state.intent);
+    final rewrite = _rewriteQueryForRetrieval(state.query, state.intent);
+    final searchQuery = rewrite.searchQuery;
+    final retrievePlan = _buildRetrievePlan(state.intent);
 
     // Single search — reuse results for both context and asset linking
-    var results = await _rag.search(searchQuery, sourceHint: sourceHint);
-    debugPrint('[Orchestrator] Hybrid search: ${results.length} results (sourceHint=$sourceHint, expanded=$searchQuery)');
+    var results = await _rag.search(
+      searchQuery,
+      sourceHint: sourceHint,
+      topK: retrievePlan.topK,
+      minScore: retrievePlan.minScore,
+    );
+    debugPrint(
+      '[Orchestrator] Hybrid search: ${results.length} results '
+      '(sourceHint=$sourceHint, topK=${retrievePlan.topK}, '
+      'minScore=${retrievePlan.minScore}, query="$searchQuery")',
+    );
 
     // Fallback: If hybrid search found nothing but we have a specific
     // source intent, list all entries of that type. This handles "list all"
     // queries like "who are my contacts" or "what's on my calendar" where
     // the query doesn't semantically match individual records.
-    if (results.isEmpty && sourceHint != null) {
-      debugPrint('[Orchestrator] Hybrid search empty — listing all $sourceHint entries');
-      results = await _rag.listBySource(sourceHint);
-      debugPrint('[Orchestrator] listBySource fallback: ${results.length} results');
+    if (sourceHint != null && results.length < retrievePlan.minDesiredResults) {
+      final needed = retrievePlan.minDesiredResults - results.length;
+      debugPrint(
+        '[Orchestrator] Hybrid search thin (${results.length}) — '
+        'backfilling $sourceHint (need $needed)',
+      );
+      final fallback = await _rag.listBySource(
+        sourceHint,
+        limit: retrievePlan.backfillLimit,
+      );
+      results = _mergeUniqueResults(results, fallback);
+      debugPrint('[Orchestrator] Backfilled results: ${results.length}');
     }
 
+    results = _rerankByMetadata(
+      results,
+      rewrite: rewrite,
+      sourceHint: sourceHint,
+    );
+
     if (results.isNotEmpty) {
-      // Build context string from results
-      state.ragContext = results.map((r) {
-        final label = _sourceLabel(r.source);
-        return '$label: ${r.text}';
-      }).join('\n\n');
+      // Build structured context string so the model can explain:
+      // what source it used, when it was created, and what it says.
+      state.ragContext = results
+          .asMap()
+          .entries
+          .map((e) => _formatRagContext(e.key + 1, e.value))
+          .join('\n\n');
 
       // Collect linked assets from RAG source IDs
       try {
@@ -310,10 +396,15 @@ class Orchestrator {
     // This adds relationship data ("user has_contact john", "john works_at acme")
     // that helps the LLM connect dots across indexed items.
     try {
-      final graphCtx = await OculaDB().graphContext(state.query, limit: 5);
+      final graphCtx = await OculaDB().graphContext(
+        state.query,
+        limit: retrievePlan.graphLimit,
+      );
       if (graphCtx.isNotEmpty) {
         state.ragContext += '\n\n[Linked entities] $graphCtx';
-        debugPrint('[Orchestrator] Graph context added: ${graphCtx.length} chars');
+        debugPrint(
+          '[Orchestrator] Graph context added: ${graphCtx.length} chars',
+        );
       }
     } catch (e) {
       if (kDebugMode) print('[Orchestrator] Knowledge graph query skipped: $e');
@@ -321,6 +412,238 @@ class Orchestrator {
 
     state.stepsCompleted.add('retrieve');
     return state;
+  }
+
+  _QueryRewrite _rewriteQueryForRetrieval(String query, QueryIntent intent) {
+    final expanded = _expandQuery(query, intent);
+    final lower = query.toLowerCase();
+
+    final entityTokens = <String>{};
+    final monthTokens = <String>{};
+    final locationTokens = <String>{};
+
+    const months = {
+      'january',
+      'february',
+      'march',
+      'april',
+      'may',
+      'june',
+      'july',
+      'august',
+      'september',
+      'october',
+      'november',
+      'december',
+      'jan',
+      'feb',
+      'mar',
+      'apr',
+      'jun',
+      'jul',
+      'aug',
+      'sep',
+      'oct',
+      'nov',
+      'dec',
+    };
+    const locationHints = {
+      'at',
+      'in',
+      'near',
+      'from',
+      'to',
+      'on',
+      'inside',
+      'outside',
+    };
+
+    final words = lower
+        .replaceAll(RegExp(r'[^a-z0-9\s:@._/-]'), ' ')
+        .split(RegExp(r'\s+'))
+        .where((w) => w.isNotEmpty)
+        .toList();
+
+    for (int i = 0; i < words.length; i++) {
+      final w = words[i];
+      if (months.contains(w)) monthTokens.add(w);
+      if (RegExp(r'^\d{4}$').hasMatch(w) ||
+          RegExp(r'^\d{1,2}/\d{1,2}(/\d{2,4})?$').hasMatch(w)) {
+        monthTokens.add(w);
+      }
+      if (w.length >= 4 &&
+          !locationHints.contains(w) &&
+          !months.contains(w) &&
+          !RegExp(r'^\d+$').hasMatch(w)) {
+        entityTokens.add(w);
+      }
+      if (locationHints.contains(w) && i + 1 < words.length) {
+        final next = words[i + 1];
+        if (next.length >= 3) locationTokens.add(next);
+      }
+    }
+
+    final queryAugments = <String>[];
+    if (intent == QueryIntent.file) {
+      queryAugments.add('document file pdf contract receipt invoice');
+    }
+    if (intent == QueryIntent.photo) {
+      queryAugments.add('photo image screenshot gallery camera');
+    }
+    if (intent == QueryIntent.email) {
+      queryAugments.add('email sender subject attachment');
+    }
+    if (locationTokens.isNotEmpty) {
+      queryAugments.add(locationTokens.join(' '));
+    }
+    if (monthTokens.isNotEmpty) {
+      queryAugments.add(monthTokens.join(' '));
+    }
+
+    final searchQuery = queryAugments.isEmpty
+        ? expanded
+        : '$expanded ${queryAugments.join(' ')}';
+
+    return _QueryRewrite(
+      searchQuery: searchQuery.trim(),
+      entityTokens: entityTokens,
+      locationTokens: locationTokens,
+      dateTokens: monthTokens,
+    );
+  }
+
+  List<RAGResult> _rerankByMetadata(
+    List<RAGResult> results, {
+    required _QueryRewrite rewrite,
+    required String? sourceHint,
+  }) {
+    if (results.isEmpty) return results;
+
+    double boostFor(RAGResult r) {
+      var boost = 0.0;
+      final text = r.text.toLowerCase();
+      final sid = r.sourceId.toLowerCase();
+
+      if (sourceHint != null && r.source == sourceHint) {
+        boost += 0.08;
+      }
+
+      for (final t in rewrite.entityTokens) {
+        if (text.contains(t) || sid.contains(t)) boost += 0.015;
+      }
+      for (final t in rewrite.dateTokens) {
+        if (text.contains(t) || sid.contains(t)) boost += 0.025;
+      }
+      for (final t in rewrite.locationTokens) {
+        if (text.contains(t) || sid.contains(t)) boost += 0.025;
+      }
+
+      if (r.source == 'email' &&
+          (text.contains('from:') || sid.startsWith('email:'))) {
+        boost += 0.02;
+      }
+      if (r.source == 'photo' &&
+          (text.contains('gps:') ||
+              text.contains('taken ') ||
+              text.contains('in album'))) {
+        boost += 0.02;
+      }
+      if (r.source == 'file' &&
+          (text.contains('file:') || sid.startsWith('file:'))) {
+        boost += 0.02;
+      }
+
+      return boost;
+    }
+
+    final rescored = results
+        .map((r) => _ScoredResult(r, r.score + boostFor(r)))
+        .toList();
+    rescored.sort((a, b) => b.score.compareTo(a.score));
+    return rescored.map((e) => e.result).toList();
+  }
+
+  String _formatRagContext(int idx, RAGResult r) {
+    final label = _sourceLabel(r.source);
+    final ts = r.timestamp.toLocal().toString().substring(0, 16);
+    final ref = _sourceRefLabel(r.source, r.sourceId);
+    return '[SOURCE $idx]\n'
+        'Type: $label\n'
+        'Reference: $ref\n'
+        'Date: $ts\n'
+        'Content: ${r.text}';
+  }
+
+  String _sourceRefLabel(String source, String sourceId) {
+    switch (source) {
+      case 'file':
+      case 'photo':
+        final path = sourceId.contains(':')
+            ? sourceId.substring(sourceId.indexOf(':') + 1)
+            : sourceId;
+        return path.split('/').last;
+      case 'email':
+      case 'contact':
+      case 'calendar':
+        return sourceId;
+      default:
+        return sourceId;
+    }
+  }
+
+  _RetrievePlan _buildRetrievePlan(QueryIntent intent) {
+    final cfg = RagConfig();
+    switch (intent) {
+      case QueryIntent.file:
+      case QueryIntent.photo:
+        return _RetrievePlan(
+          topK: cfg.topK < 10 ? 10 : cfg.topK,
+          minScore: cfg.minScore > 0.08 ? 0.08 : cfg.minScore,
+          minDesiredResults: 8,
+          backfillLimit: 24,
+          graphLimit: 8,
+        );
+      case QueryIntent.contact:
+      case QueryIntent.calendar:
+      case QueryIntent.email:
+        return _RetrievePlan(
+          topK: cfg.topK < 8 ? 8 : cfg.topK,
+          minScore: cfg.minScore > 0.12 ? 0.12 : cfg.minScore,
+          minDesiredResults: 5,
+          backfillLimit: 16,
+          graphLimit: 6,
+        );
+      case QueryIntent.web:
+      case QueryIntent.chat:
+        return _RetrievePlan(
+          topK: cfg.topK,
+          minScore: cfg.minScore,
+          minDesiredResults: 3,
+          backfillLimit: 10,
+          graphLimit: 5,
+        );
+    }
+  }
+
+  List<RAGResult> _mergeUniqueResults(
+    List<RAGResult> primary,
+    List<RAGResult> fallback,
+  ) {
+    final merged = <RAGResult>[];
+    final seen = <String>{};
+
+    void addAllUnique(List<RAGResult> items) {
+      for (final r in items) {
+        final key = '${r.sourceId}|${r.text}';
+        if (seen.add(key)) {
+          merged.add(r);
+        }
+      }
+    }
+
+    addAllUnique(primary);
+    addAllUnique(fallback);
+    return merged;
   }
 
   /// Expand a user query with related terms to improve RAG recall.
@@ -358,7 +681,9 @@ class Orchestrator {
       'graduation': 'ceremony diploma degree',
     };
 
-    final synonymMap = (intent == QueryIntent.photo) ? placeSynonyms : docSynonyms;
+    final synonymMap = (intent == QueryIntent.photo)
+        ? placeSynonyms
+        : docSynonyms;
     for (final entry in synonymMap.entries) {
       if (lower.contains(entry.key)) {
         expansions.add(entry.value);
@@ -380,13 +705,20 @@ class Orchestrator {
 
   String _sourceLabel(String source) {
     switch (source) {
-      case 'contact': return 'CONTACT';
-      case 'calendar': return 'CALENDAR EVENT';
-      case 'photo': return 'PHOTO';
-      case 'file': return 'FILE';
-      case 'email': return 'EMAIL';
-      case 'chat': return 'PREVIOUS CONVERSATION';
-      default: return source.toUpperCase();
+      case 'contact':
+        return 'CONTACT';
+      case 'calendar':
+        return 'CALENDAR EVENT';
+      case 'photo':
+        return 'PHOTO';
+      case 'file':
+        return 'FILE';
+      case 'email':
+        return 'EMAIL';
+      case 'chat':
+        return 'PREVIOUS CONVERSATION';
+      default:
+        return source.toUpperCase();
     }
   }
 
@@ -413,14 +745,31 @@ class Orchestrator {
     }
 
     if (allowed) {
+      final online = await _localData.hasInternetConnection();
+      if (!online) {
+        bool userWillEnable = false;
+        if (onAskEnableConnectivity != null) {
+          userWillEnable = await onAskEnableConnectivity!();
+        }
+        state.ragContext +=
+            '\n\n[Note: Internet is currently unavailable. '
+            '${userWillEnable ? 'Please enable Wi-Fi/mobile data in Settings, then try again.' : 'Turn on Wi-Fi/mobile data and try again.'}]';
+        state.stepsCompleted.add('web_search');
+        return state;
+      }
+
       final webResult = await _localData.webSearch(state.query);
       if (webResult.isNotEmpty) {
         state.ragContext += '\n\n[Web search results]\n$webResult';
+      } else {
+        state.ragContext +=
+            '\n\n[Note: Web search is enabled, but no online results were returned.]';
       }
       state.stepsCompleted.add('web_search');
     } else {
       // Denied — tell the LLM it can't access the web
-      state.ragContext += '\n\n[Note: User denied internet access for this query. '
+      state.ragContext +=
+          '\n\n[Note: User denied internet access for this query. '
           'Answer using only on-device knowledge.]';
       state.stepsCompleted.add('web_search_denied');
     }
@@ -441,15 +790,21 @@ class Orchestrator {
   Future<AgentState> _routeModel(AgentState state) async {
     // ── Manual override: if user set a specific model, try it first ──
     final overrideTier = RagConfig().modelOverrideTier;
-    debugPrint('[Orchestrator] Route: override=${overrideTier?.name ?? "auto"}, '
-        'activeTier=${_ai.activeTier?.name ?? "none"}, hasImage=${state.hasImage}');
+    debugPrint(
+      '[Orchestrator] Route: override=${overrideTier?.name ?? "auto"}, '
+      'activeTier=${_ai.activeTier?.name ?? "none"}, hasImage=${state.hasImage}',
+    );
     if (overrideTier != null) {
       final downloaded = await _ai.isTierDownloaded(overrideTier);
-      debugPrint('[Orchestrator] Override ${overrideTier.name} downloaded=$downloaded');
+      debugPrint(
+        '[Orchestrator] Override ${overrideTier.name} downloaded=$downloaded',
+      );
       if (downloaded) {
         if (_ai.activeTier == overrideTier) {
           state.modelUsed = overrideTier;
-          debugPrint('[Orchestrator] Route: override → ${overrideTier.name} (already loaded)');
+          debugPrint(
+            '[Orchestrator] Route: override → ${overrideTier.name} (already loaded)',
+          );
           state.stepsCompleted.add('route_model');
           return state;
         }
@@ -466,10 +821,14 @@ class Orchestrator {
             '${_ai.activeTier?.name ?? "none"} — falling back to auto',
           );
         } catch (e) {
-          debugPrint('[Orchestrator] Override ${overrideTier.name} failed: $e — falling back to auto');
+          debugPrint(
+            '[Orchestrator] Override ${overrideTier.name} failed: $e — falling back to auto',
+          );
         }
       } else {
-        debugPrint('[Orchestrator] Override ${overrideTier.name} not downloaded — falling back to auto');
+        debugPrint(
+          '[Orchestrator] Override ${overrideTier.name} not downloaded — falling back to auto',
+        );
       }
     }
 
@@ -485,7 +844,8 @@ class Orchestrator {
     final lower = state.query.toLowerCase();
 
     // Thinker: reasoning, analysis, documents
-    final isReasoning = lower.contains('why') ||
+    final isReasoning =
+        lower.contains('why') ||
         lower.contains('how') ||
         lower.contains('explain') ||
         lower.contains('analyze') ||
@@ -494,7 +854,8 @@ class Orchestrator {
         state.intent == QueryIntent.file;
 
     // Specialist: spatial, counting, pointing
-    final isSpatial = state.hasImage ||
+    final isSpatial =
+        state.hasImage ||
         lower.contains('where') ||
         lower.contains('count') ||
         lower.contains('find') ||
@@ -535,11 +896,15 @@ class Orchestrator {
       try {
         await _ai.switchEngine(tier);
         state.modelUsed = tier;
-        debugPrint('[Orchestrator] Route: ${tier.name} (intent=${state.intent.name})');
+        debugPrint(
+          '[Orchestrator] Route: ${tier.name} (intent=${state.intent.name})',
+        );
         state.stepsCompleted.add('route_model');
         return state;
       } catch (e) {
-        debugPrint('[Orchestrator] ${tier.name} switch failed: $e — keeping current');
+        debugPrint(
+          '[Orchestrator] ${tier.name} switch failed: $e — keeping current',
+        );
         continue;
       }
     }
@@ -555,9 +920,11 @@ class Orchestrator {
   Future<AgentState> _generate(AgentState state) async {
     // Build context string — ai_manager.ask() handles the system prompt + ChatML template
     final context = state.ragContext;
-    debugPrint('[Orchestrator] Generate: intent=${state.intent.name}, '
-        'hasImage=${state.hasImage}, tier=${_ai.activeTier?.name}, '
-        'contextLen=${context.length}');
+    debugPrint(
+      '[Orchestrator] Generate: intent=${state.intent.name}, '
+      'hasImage=${state.hasImage}, tier=${_ai.activeTier?.name}, '
+      'contextLen=${context.length}',
+    );
 
     state.response = await _ai.ask(
       state.query,
@@ -570,6 +937,43 @@ class Orchestrator {
     state.stepsCompleted.add('generate');
     return state;
   }
+}
+
+class _RetrievePlan {
+  final int topK;
+  final double minScore;
+  final int minDesiredResults;
+  final int backfillLimit;
+  final int graphLimit;
+
+  const _RetrievePlan({
+    required this.topK,
+    required this.minScore,
+    required this.minDesiredResults,
+    required this.backfillLimit,
+    required this.graphLimit,
+  });
+}
+
+class _QueryRewrite {
+  final String searchQuery;
+  final Set<String> entityTokens;
+  final Set<String> locationTokens;
+  final Set<String> dateTokens;
+
+  const _QueryRewrite({
+    required this.searchQuery,
+    required this.entityTokens,
+    required this.locationTokens,
+    required this.dateTokens,
+  });
+}
+
+class _ScoredResult {
+  final RAGResult result;
+  final double score;
+
+  const _ScoredResult(this.result, this.score);
 }
 
 // ──────────────────────────────────────────

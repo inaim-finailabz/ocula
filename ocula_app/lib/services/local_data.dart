@@ -29,10 +29,13 @@ class LocalData {
 
     // Photos
     final photoState = await PhotoManager.requestPermissionExtend();
-    results['photos'] = photoState.isAuth || photoState == PermissionState.limited;
+    results['photos'] =
+        photoState.isAuth || photoState == PermissionState.limited;
 
     // Contacts
-    results['contacts'] = await FlutterContacts.requestPermission(readonly: true);
+    results['contacts'] = await FlutterContacts.requestPermission(
+      readonly: true,
+    );
 
     // Calendar
     final calPlugin = cal.DeviceCalendarPlugin();
@@ -68,10 +71,7 @@ class LocalData {
 
       // "Recent" or "All Photos" album is usually first
       final recentAlbum = albums.first;
-      final assets = await recentAlbum.getAssetListRange(
-        start: 0,
-        end: limit,
-      );
+      final assets = await recentAlbum.getAssetListRange(start: 0, end: limit);
 
       final photos = <LocalPhoto>[];
       for (final asset in assets) {
@@ -81,14 +81,16 @@ class LocalData {
         // Build a descriptive label from available metadata
         final label = _buildPhotoLabel(asset);
 
-        photos.add(LocalPhoto(
-          path: file.path,
-          date: asset.createDateTime,
-          label: label,
-          width: asset.width,
-          height: asset.height,
-          assetId: asset.id,
-        ));
+        photos.add(
+          LocalPhoto(
+            path: file.path,
+            date: asset.createDateTime,
+            label: label,
+            width: asset.width,
+            height: asset.height,
+            assetId: asset.id,
+          ),
+        );
       }
 
       if (kDebugMode) {
@@ -137,10 +139,24 @@ class LocalData {
     // Date — include day-of-week for better temporal queries
     final d = asset.createDateTime;
     const weekdays = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
-    const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
-                    'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-    parts.add('taken ${weekdays[d.weekday - 1]} '
-        '${d.day} ${months[d.month - 1]} ${d.year}');
+    const months = [
+      'Jan',
+      'Feb',
+      'Mar',
+      'Apr',
+      'May',
+      'Jun',
+      'Jul',
+      'Aug',
+      'Sep',
+      'Oct',
+      'Nov',
+      'Dec',
+    ];
+    parts.add(
+      'taken ${weekdays[d.weekday - 1]} '
+      '${d.day} ${months[d.month - 1]} ${d.year}',
+    );
 
     // Title / filename — often contains useful keywords
     if (asset.title != null && asset.title!.isNotEmpty) {
@@ -177,7 +193,9 @@ class LocalData {
     }
     parts.add('${asset.width}x${asset.height}');
     final d = asset.createDateTime;
-    parts.add('taken ${d.year}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')}');
+    parts.add(
+      'taken ${d.year}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')}',
+    );
     if (asset.title != null && asset.title!.isNotEmpty) {
       parts.add('titled "${asset.title}"');
     }
@@ -191,7 +209,9 @@ class LocalData {
   /// Get all contacts for indexing. Returns name, phone, email.
   Future<List<LocalContact>> getAllContacts() async {
     try {
-      final hasPermission = await FlutterContacts.requestPermission(readonly: true);
+      final hasPermission = await FlutterContacts.requestPermission(
+        readonly: true,
+      );
       if (!hasPermission) {
         if (kDebugMode) print('[LocalData] Contacts permission denied');
         return [];
@@ -210,12 +230,14 @@ class LocalData {
             ? c.organizations.first.company
             : null;
 
-        results.add(LocalContact(
-          name: c.displayName,
-          phone: phone,
-          email: email,
-          organization: org,
-        ));
+        results.add(
+          LocalContact(
+            name: c.displayName,
+            phone: phone,
+            email: email,
+            organization: org,
+          ),
+        );
       }
 
       if (kDebugMode) {
@@ -273,29 +295,30 @@ class LocalData {
 
         final eventsResult = await plugin.retrieveEvents(
           calendar.id!,
-          cal.RetrieveEventsParams(
-            startDate: from,
-            endDate: to,
-          ),
+          cal.RetrieveEventsParams(startDate: from, endDate: to),
         );
 
         for (final event in eventsResult.data ?? <cal.Event>[]) {
           if (event.title == null || event.title!.isEmpty) continue;
 
-          events.add(LocalEvent(
-            title: event.title!,
-            start: event.start ?? from,
-            end: event.end ?? to,
-            location: event.location,
-            description: event.description,
-            calendarName: calendar.name,
-          ));
+          events.add(
+            LocalEvent(
+              title: event.title!,
+              start: event.start ?? from,
+              end: event.end ?? to,
+              location: event.location,
+              description: event.description,
+              calendarName: calendar.name,
+            ),
+          );
         }
       }
 
       if (kDebugMode) {
-        print('[LocalData] Loaded ${events.length} calendar events '
-            '(${from.toIso8601String()} → ${to.toIso8601String()})');
+        print(
+          '[LocalData] Loaded ${events.length} calendar events '
+          '(${from.toIso8601String()} → ${to.toIso8601String()})',
+        );
       }
       return events;
     } catch (e) {
@@ -358,27 +381,25 @@ class LocalData {
       // Fetch last N messages
       final fetchResult = await client.fetchRecentMessages(
         messageCount: limit,
-        criteria: 'BODY.PEEK[HEADER.FIELDS (FROM SUBJECT DATE)] BODY.PEEK[TEXT]',
+        criteria:
+            'BODY.PEEK[HEADER.FIELDS (FROM SUBJECT DATE)] BODY.PEEK[TEXT]',
       );
 
       final emails = <LocalEmail>[];
       for (final msg in fetchResult.messages) {
-        final from = msg.from?.first.email ?? msg.from?.first.personalName ?? '';
+        final from =
+            msg.from?.first.email ?? msg.from?.first.personalName ?? '';
         final subject = msg.decodeSubject() ?? '(no subject)';
         final date = msg.decodeDate() ?? DateTime.now();
-        final body = msg.decodeTextPlainPart() ?? msg.decodeTextHtmlPart() ?? '';
+        final body =
+            msg.decodeTextPlainPart() ?? msg.decodeTextHtmlPart() ?? '';
 
         // Truncate long bodies for indexing (keep first 2000 chars)
-        final truncBody = body.length > 2000
-            ? body.substring(0, 2000)
-            : body;
+        final truncBody = body.length > 2000 ? body.substring(0, 2000) : body;
 
-        emails.add(LocalEmail(
-          from: from,
-          subject: subject,
-          body: truncBody,
-          date: date,
-        ));
+        emails.add(
+          LocalEmail(from: from, subject: subject, body: truncBody, date: date),
+        );
       }
 
       await client.logout();
@@ -431,10 +452,24 @@ class LocalData {
 
   /// Directories to skip during file scanning.
   static const _skipDirs = {
-    'node_modules', 'build', '.git', '.svn', '.hg', '__pycache__',
-    '.gradle', '.idea', '.vscode', '.dart_tool', 'Pods',
-    '.cache', 'dist', 'target', 'vendor', '.pub-cache',
-    'DerivedData', 'xcuserdata',
+    'node_modules',
+    'build',
+    '.git',
+    '.svn',
+    '.hg',
+    '__pycache__',
+    '.gradle',
+    '.idea',
+    '.vscode',
+    '.dart_tool',
+    'Pods',
+    '.cache',
+    'dist',
+    'target',
+    'vendor',
+    '.pub-cache',
+    'DerivedData',
+    'xcuserdata',
   };
 
   /// Get all scannable directories for the current platform.
@@ -449,8 +484,8 @@ class LocalData {
 
     if (Platform.isMacOS || Platform.isLinux || Platform.isWindows) {
       // Desktop: scan user home subdirectories
-      final home = Platform.environment['HOME'] ??
-          Platform.environment['USERPROFILE'];
+      final home =
+          Platform.environment['HOME'] ?? Platform.environment['USERPROFILE'];
       if (home != null) {
         final scanPaths = [
           '$home/Documents',
@@ -508,15 +543,19 @@ class LocalData {
 
       for (final scanDir in scanDirs) {
         await _scanDirectory(
-          scanDir.dir, files, query,
+          scanDir.dir,
+          files,
+          query,
           maxDepth: scanDir.maxDepth,
           seenPaths: seenPaths,
         );
       }
 
       if (kDebugMode) {
-        print('[LocalData] Scanned ${scanDirs.length} dirs, '
-            'found ${files.length} indexable files');
+        print(
+          '[LocalData] Scanned ${scanDirs.length} dirs, '
+          'found ${files.length} indexable files',
+        );
       }
     } catch (e) {
       if (kDebugMode) {
@@ -598,28 +637,35 @@ class LocalData {
             final stat = await entity.stat();
             if (stat.size == 0 || stat.size > 2 * 1024 * 1024) continue;
 
-            results.add(LocalFile(
-              path: entity.path,
-              name: name,
-              sizeBytes: stat.size,
-              modified: stat.modified,
-              fingerprint: '${stat.modified.millisecondsSinceEpoch}:${stat.size}',
-            ));
+            results.add(
+              LocalFile(
+                path: entity.path,
+                name: name,
+                sizeBytes: stat.size,
+                modified: stat.modified,
+                fingerprint:
+                    '${stat.modified.millisecondsSinceEpoch}:${stat.size}',
+              ),
+            );
           } catch (_) {}
         } else if (entity is Directory) {
           final dirName = entity.path.split('/').last;
           if (dirName.startsWith('.')) continue;
           if (_skipDirs.contains(dirName)) continue;
-          await _scanDirectory(entity, results, query,
-              maxDepth: maxDepth,
-              currentDepth: currentDepth + 1,
-              seenPaths: seenPaths);
+          await _scanDirectory(
+            entity,
+            results,
+            query,
+            maxDepth: maxDepth,
+            currentDepth: currentDepth + 1,
+            seenPaths: seenPaths,
+          );
         }
       }
     } catch (e) {
       // Permission denied or other error — skip silently
       if (kDebugMode && currentDepth == 0) {
-        print('[LocalData] Cannot scan ${dir.path}: $e');
+        debugPrint('[LocalData] Cannot scan ${dir.path}: $e');
       }
     }
   }
@@ -627,6 +673,18 @@ class LocalData {
   // ──────────────────────────────────────────
   // WEB (Only when user explicitly asks)
   // ──────────────────────────────────────────
+
+  /// Lightweight online check. True when DNS/network is reachable.
+  Future<bool> hasInternetConnection() async {
+    try {
+      final result = await InternetAddress.lookup(
+        'example.com',
+      ).timeout(const Duration(seconds: 2));
+      return result.isNotEmpty && result.first.rawAddress.isNotEmpty;
+    } catch (_) {
+      return false;
+    }
+  }
 
   /// Search the web to augment local knowledge.
   /// ONLY called when the user says "search", "look up", "google", etc.
@@ -703,12 +761,7 @@ class LocalContact {
   final String? email;
   final String? organization;
 
-  LocalContact({
-    required this.name,
-    this.phone,
-    this.email,
-    this.organization,
-  });
+  LocalContact({required this.name, this.phone, this.email, this.organization});
 }
 
 class LocalEvent {

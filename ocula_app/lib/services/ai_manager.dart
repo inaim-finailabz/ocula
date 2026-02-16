@@ -729,28 +729,35 @@ class AIManager {
 
     final String systemMsg;
     final String userMsg;
+    final rolePrefix =
+        '${langPrefix}You are Ocula, an AI assistant with access to the user\'s phone assets via local RAG context. '
+        'Use available phone data to help the user, and never invent missing phone data. '
+        'When context is available, start with where you found the answer (document, image, contact, email, calendar). '
+        'Include key metadata when available: date/time, location, sender, author, file name. ';
 
     // Intent-specific data label for context sections
     final String dataLabel = _intentDataLabel(intent);
 
     if (hasImage && imagePath != null) {
-      systemMsg = '${langPrefix}Describe this image. Be specific and brief.';
+      systemMsg = '${rolePrefix}Describe this image. Be specific and brief.';
       userMsg = prompt;
     } else if (compactContext.isNotEmpty) {
       if (isSmallModel) {
         // Free tier: absolute minimum prompt. The model can't follow complex rules.
         // "Do not make up" is the most effective anti-hallucination phrase for tiny models.
         systemMsg =
-            '${langPrefix}Answer using ONLY the data below. Do not make up information. Be brief.';
+            '${rolePrefix}Answer using ONLY the data below. Do not make up information. Be brief.';
         userMsg = '$compactContext\n\nQ: $prompt';
       } else if (isProModel) {
         // Ocula Pro: can handle richer instructions and structured output
         systemMsg =
-            '${langPrefix}You are Ocula, a private on-device phone assistant. '
+            '$rolePrefix'
             'Answer using ONLY the user\'s phone data provided below. '
             'NEVER invent or guess information not in the data.\n'
             'Rules:\n'
+            '- Start with "Where I found it:" then cite the source type and reference.\n'
             '- Include specific details: names, phone numbers, dates, times, file names.\n'
+            '- Include sender/author/location when present in the data.\n'
             '- Use bullet points for lists of items (contacts, events, files).\n'
             '- For calendar events, always include date and time.\n'
             '- For contacts, include phone number or email when available.\n'
@@ -760,10 +767,11 @@ class AIManager {
       } else {
         // Plus tier: moderate instructions with light structure
         systemMsg =
-            '${langPrefix}You are Ocula, a phone assistant. '
+            '$rolePrefix'
             'Answer using ONLY the data provided. Do not make up information. '
             'If the data does not answer the question, say so. '
-            'Be specific and brief. Use bullet points for lists.';
+            'Be specific and brief. Use bullet points for lists. '
+            'Start with where you found the answer.';
         userMsg = '$dataLabel:\n$compactContext\n\nQ: $prompt';
       }
     } else {
@@ -772,16 +780,19 @@ class AIManager {
       // Tell the model explicitly it has no phone data available.
       if (isProModel) {
         systemMsg =
-            '${langPrefix}You are Ocula, a private on-device phone assistant. '
+            '$rolePrefix'
             'You currently have no phone data for this query. '
             'Do NOT invent contacts, events, or files. '
             'If the user asks about their phone data, tell them you don\'t '
             'have that information yet and suggest checking Settings > Your Data. '
-            'For general questions, answer helpfully and concisely.';
+            'For general questions, answer helpfully and concisely. '
+            'If the user is searching phone info, ask one clarifying question: '
+            'whether to search docs, images, contacts, calendar, or email.';
       } else {
         systemMsg =
-            '${langPrefix}You are Ocula, a helpful phone assistant. '
-            'No phone data available. Do not make up information. Be brief.';
+            '$rolePrefix'
+            'No phone data available. Do not make up information. Be brief. '
+            'If the user is searching phone info, ask whether to search docs, images, contacts, calendar, or email.';
       }
       userMsg = prompt;
     }
@@ -852,20 +863,23 @@ class AIManager {
           );
         } else {
           final emulator = await isEmulator;
+          final isQwenVision = mainPath.toLowerCase().contains('qwen');
+          final extraParams = <String, dynamic>{
+            if (emulator) ...{
+              'nThreads': 2,
+              'nGpuLayers': 0,
+              'contextSize': 1024,
+              'batchSize': 256,
+            },
+            if (isQwenVision) 'imageMinTokens': 1024,
+          };
           final cfg = MultimodalConfig(
             textModelPath: mainPath,
             mmprojPath: projPath,
             enableVision: true,
             enableAudio: false,
             useGpuForMultimodal: !emulator,
-            extraParams: emulator
-                ? {
-                    'nThreads': 2,
-                    'nGpuLayers': 0,
-                    'contextSize': 1024,
-                    'batchSize': 256,
-                  }
-                : null,
+            extraParams: extraParams.isEmpty ? null : extraParams,
           );
 
           // On some devices the first load can race with native cleanup.
@@ -1082,18 +1096,25 @@ class AIManager {
     // Build system/user messages (same logic as ask())
     String systemMsg;
     String userMsg;
+    final rolePrefix =
+        '${langPrefix}You are Ocula, an AI assistant with access to the user\'s phone assets via local RAG context. '
+        'Use available phone data to help the user, and never invent missing phone data. '
+        'When context is available, start with where you found the answer (document, image, contact, email, calendar). '
+        'Include key metadata when available: date/time, location, sender, author, file name. ';
     if (compactContext.isNotEmpty) {
       final dataLabel = _intentDataLabel(intent);
       if (isSmallModel) {
-        systemMsg = '${langPrefix}Answer from data only. Be brief.';
+        systemMsg = '${rolePrefix}Answer from data only. Be brief.';
         userMsg = '$compactContext\n\nQ: $prompt';
       } else if (isProModel) {
         systemMsg =
-            '${langPrefix}You are Ocula, a private on-device phone assistant. '
+            '$rolePrefix'
             'Answer using ONLY the user\'s phone data provided below. '
             'NEVER invent or guess information not in the data.\n'
             'Rules:\n'
+            '- Start with "Where I found it:" then cite the source type and reference.\n'
             '- Include specific details: names, phone numbers, dates, times, file names.\n'
+            '- Include sender/author/location when present in the data.\n'
             '- Use bullet points for lists of items (contacts, events, files).\n'
             '- For calendar events, always include date and time.\n'
             '- For contacts, include phone number or email when available.\n'
@@ -1102,25 +1123,29 @@ class AIManager {
         userMsg = '$dataLabel:\n$compactContext\n\nQuestion: $prompt';
       } else {
         systemMsg =
-            '${langPrefix}You are Ocula, a phone assistant. '
+            '$rolePrefix'
             'Answer using ONLY the data provided. Do not make up information. '
             'If the data does not answer the question, say so. '
-            'Be specific and brief. Use bullet points for lists.';
+            'Be specific and brief. Use bullet points for lists. '
+            'Start with where you found the answer.';
         userMsg = '$dataLabel:\n$compactContext\n\nQ: $prompt';
       }
     } else {
       if (isProModel) {
         systemMsg =
-            '${langPrefix}You are Ocula, a private on-device phone assistant. '
+            '$rolePrefix'
             'You currently have no phone data for this query. '
             'Do NOT invent contacts, events, or files. '
             'If the user asks about their phone data, tell them you don\'t '
             'have that information yet and suggest checking Settings > Your Data. '
-            'For general questions, answer helpfully and concisely.';
+            'For general questions, answer helpfully and concisely. '
+            'If the user is searching phone info, ask one clarifying question: '
+            'whether to search docs, images, contacts, calendar, or email.';
       } else {
         systemMsg =
-            '${langPrefix}You are Ocula, a helpful phone assistant. '
-            'No phone data available. Do not make up information. Be brief.';
+            '$rolePrefix'
+            'No phone data available. Do not make up information. Be brief. '
+            'If the user is searching phone info, ask whether to search docs, images, contacts, calendar, or email.';
       }
       userMsg = prompt;
     }

@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:permission_handler/permission_handler.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'services/ai_manager.dart';
 import 'services/speech_service.dart';
@@ -116,6 +117,7 @@ class _AssistantScreenState extends State<AssistantScreen>
     // Free-tier model already loaded during splash — no need to call switchEngine here.
 
     _orchestrator.onAskInternet = _showInternetDialog;
+    _orchestrator.onAskEnableConnectivity = _showConnectivityDialog;
     Indexer().startBackgroundIndexing();
 
     // Initialize notifications — calendar reminders + daily briefing
@@ -259,6 +261,36 @@ class _AssistantScreenState extends State<AssistantScreen>
     return result ?? false;
   }
 
+  Future<bool> _showConnectivityDialog() async {
+    final openSettings = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => AlertDialog(
+        icon: const Icon(Icons.wifi_off, size: 32),
+        title: const Text('Internet is off'),
+        content: const Text(
+          'This request needs internet, but Wi-Fi/mobile data appears to be off. '
+          'Allow Ocula to open Settings so you can enable connectivity?',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Not now'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Open Settings'),
+          ),
+        ],
+      ),
+    );
+    if (openSettings == true) {
+      await openAppSettings();
+      return true;
+    }
+    return false;
+  }
+
   void _pickImage() {
     showModalBottomSheet(
       context: context,
@@ -279,6 +311,9 @@ class _AssistantScreenState extends State<AssistantScreen>
                   Navigator.pop(ctx);
                   final picked = await ImagePicker().pickImage(
                     source: ImageSource.camera,
+                    maxWidth: 1024,
+                    maxHeight: 1024,
+                    imageQuality: 85,
                   );
                   if (picked != null) {
                     setState(() => _attachedImage = File(picked.path));
@@ -292,6 +327,9 @@ class _AssistantScreenState extends State<AssistantScreen>
                   Navigator.pop(ctx);
                   final picked = await ImagePicker().pickImage(
                     source: ImageSource.gallery,
+                    maxWidth: 1024,
+                    maxHeight: 1024,
+                    imageQuality: 85,
                   );
                   if (picked != null) {
                     setState(() => _attachedImage = File(picked.path));
@@ -1101,13 +1139,44 @@ class _MessageBubble extends StatelessWidget {
                 Wrap(
                   spacing: 6,
                   runSpacing: 4,
-                  children: message.linkedAssets.take(5).map((asset) {
-                    return _AssetChip(asset: asset);
-                  }).toList(),
+                  children: [
+                    ...message.linkedAssets.take(12).map((asset) {
+                      return _AssetChip(asset: asset);
+                    }),
+                    if (message.linkedAssets.length > 12)
+                      _OverflowChip(extra: message.linkedAssets.length - 12),
+                  ],
                 ),
               ],
             ],
           ),
+        ),
+      ),
+    );
+  }
+}
+
+class _OverflowChip extends StatelessWidget {
+  final int extra;
+
+  const _OverflowChip({required this.extra});
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+      decoration: BoxDecoration(
+        color: colors.surfaceContainerHighest,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: colors.outline.withAlpha(40)),
+      ),
+      child: Text(
+        '+$extra more',
+        style: TextStyle(
+          color: colors.onSurface,
+          fontSize: 12,
+          fontWeight: FontWeight.w500,
         ),
       ),
     );

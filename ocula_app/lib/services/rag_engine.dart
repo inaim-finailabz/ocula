@@ -128,7 +128,11 @@ class RAGEngine {
       }
     }
 
-    final chunks = _chunkSentences(content);
+    final chunks = switch (source) {
+      'file' => _chunkDocumentStructured(content),
+      'photo' => _chunkPhotoStructured(content),
+      _ => _chunkSentences(content),
+    };
     _isIndexing = true;
 
     for (int i = 0; i < chunks.length; i++) {
@@ -178,8 +182,12 @@ class RAGEngine {
     String? fingerprint,
   }) async {
     final sid = sourceId ?? 'file:$fileName';
+    final content =
+        'File: $fileName\n'
+        'Modified: ${modified.toIso8601String()}\n\n'
+        '$textContent';
     return await index(
-      content: 'File: $fileName\n\n$textContent',
+      content: content,
       source: 'file',
       sourceId: sid,
       timestamp: modified,
@@ -197,11 +205,28 @@ class RAGEngine {
     // Build a rich text chunk for semantic search.
     // Include the AI description (if available) for content-based queries
     // like "find my driver's license" or "vacation photos".
-    final parts = <String>['Photo: $label'];
+    final parts = <String>[
+      'Photo label: $label',
+      'Photo file: ${path.split('/').last}',
+      'Photo date: ${date.toIso8601String()}',
+    ];
     if (aiDescription != null && aiDescription.isNotEmpty) {
       parts.add('Content: $aiDescription');
     }
-    parts.add('File: ${path.split('/').last}');
+    final gps = RegExp(
+      r'GPS:\s*([0-9\.-]+,\s*[0-9\.-]+)',
+      caseSensitive: false,
+    ).firstMatch(label)?.group(1);
+    if (gps != null) {
+      parts.add('Location (GPS): $gps');
+    }
+    final album = RegExp(
+      r'in album "([^"]+)"',
+      caseSensitive: false,
+    ).firstMatch(label)?.group(1);
+    if (album != null) {
+      parts.add('Album: $album');
+    }
 
     await index(
       content: parts.join('. '),
@@ -405,6 +430,94 @@ class RAGEngine {
       chunks.add(buffer.toString().trim());
     }
 
+    return chunks.isEmpty ? [text] : chunks;
+  }
+
+  /// Structured chunking for documents:
+  /// keeps headers/metadata close to their paragraph for better precision.
+  List<String> _chunkDocumentStructured(String text, {int? maxChars}) {
+    maxChars ??= _config.chunkSize;
+    if (text.length <= maxChars) return [text];
+
+    final sections = text
+        .split(RegExp(r'\n{2,}'))
+        .map((s) => s.trim())
+        .where((s) => s.isNotEmpty)
+        .toList();
+    if (sections.length <= 1) {
+      return _chunkSentences(text, maxChars: maxChars);
+    }
+
+    final chunks = <String>[];
+    String? carryHeader;
+    final current = StringBuffer();
+
+    bool isHeader(String s) {
+      final t = s.trim();
+      if (t.length > 120) return false;
+      if (t.endsWith(':')) return true;
+      if (RegExp(r'^[A-Z0-9 _\-/]{3,}$').hasMatch(t)) return true;
+      if (RegExp(
+        r'^(file|title|subject|from|date|section)\s*:',
+        caseSensitive: false,
+      ).hasMatch(t)) {
+        return true;
+      }
+      return false;
+    }
+
+    void flush() {
+      if (current.isNotEmpty) {
+        chunks.add(current.toString().trim());
+        current.clear();
+      }
+    }
+
+    for (final section in sections) {
+      if (isHeader(section)) {
+        carryHeader = section;
+      }
+
+      final header = carryHeader;
+      final block = header != null && !section.startsWith(header)
+          ? '$header\n$section'
+          : section;
+
+      if (current.length + block.length + 2 > maxChars &&
+          current.length > 100) {
+        flush();
+      }
+      if (current.isNotEmpty) current.writeln();
+      current.write(block);
+    }
+    flush();
+
+    return chunks.isEmpty ? _chunkSentences(text, maxChars: maxChars) : chunks;
+  }
+
+  /// Photo chunks are usually compact metadata records. Keep grouped fields.
+  List<String> _chunkPhotoStructured(String text, {int? maxChars}) {
+    maxChars ??= _config.chunkSize;
+    if (text.length <= maxChars) return [text];
+
+    final fields = text
+        .split('. ')
+        .map((s) => s.trim())
+        .where((s) => s.isNotEmpty)
+        .toList();
+    if (fields.isEmpty) return [text];
+
+    final chunks = <String>[];
+    final current = StringBuffer();
+    for (final f in fields) {
+      if (current.length + f.length + 2 > maxChars && current.length > 80) {
+        chunks.add(current.toString().trim());
+        current.clear();
+      }
+      if (current.isNotEmpty) current.write('. ');
+      current.write(f);
+    }
+    if (current.isNotEmpty) chunks.add(current.toString().trim());
     return chunks.isEmpty ? [text] : chunks;
   }
 
