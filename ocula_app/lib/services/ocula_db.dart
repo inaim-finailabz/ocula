@@ -1,7 +1,6 @@
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
-import 'dart:typed_data';
 import 'package:flutter/foundation.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:sqflite/sqflite.dart';
@@ -68,7 +67,9 @@ class OculaDB {
         created_at TEXT NOT NULL DEFAULT (datetime('now'))
       )
     ''');
-    batch.execute('CREATE INDEX idx_chat_created ON chat_turns(created_at DESC)');
+    batch.execute(
+      'CREATE INDEX idx_chat_created ON chat_turns(created_at DESC)',
+    );
 
     // ── RAG chunks (replaces rag_index_v2.json entries) ──
     batch.execute('''
@@ -190,9 +191,11 @@ class OculaDB {
         )
       ''');
       await db.execute(
-          'CREATE INDEX IF NOT EXISTS idx_alink_source ON asset_links(source_id)');
+        'CREATE INDEX IF NOT EXISTS idx_alink_source ON asset_links(source_id)',
+      );
       await db.execute(
-          'CREATE INDEX IF NOT EXISTS idx_alink_type ON asset_links(asset_type)');
+        'CREATE INDEX IF NOT EXISTS idx_alink_type ON asset_links(asset_type)',
+      );
     }
   }
 
@@ -237,9 +240,7 @@ class OculaDB {
     final where = keywords
         .map((_) => "(query LIKE ? OR response LIKE ?)")
         .join(' OR ');
-    final args = keywords
-        .expand((k) => ['%$k%', '%$k%'])
-        .toList();
+    final args = keywords.expand((k) => ['%$k%', '%$k%']).toList();
 
     final rows = await d.query(
       'chat_turns',
@@ -251,10 +252,12 @@ class OculaDB {
 
     if (rows.isEmpty) return '';
 
-    return rows.map((r) {
-      return 'On ${r['created_at']}: User asked "${r['query']}" → '
-          '${r['response']}';
-    }).join('\n');
+    return rows
+        .map((r) {
+          return 'On ${r['created_at']}: User asked "${r['query']}" → '
+              '${r['response']}';
+        })
+        .join('\n');
   }
 
   /// Get total chat turn count.
@@ -267,11 +270,14 @@ class OculaDB {
   /// Trim chat_turns to the newest [maxEntries].
   Future<void> trimChat({int maxEntries = 2000}) async {
     final d = await db;
-    await d.rawDelete('''
+    await d.rawDelete(
+      '''
       DELETE FROM chat_turns WHERE id NOT IN (
         SELECT id FROM chat_turns ORDER BY created_at DESC LIMIT ?
       )
-    ''', [maxEntries]);
+    ''',
+      [maxEntries],
+    );
   }
 
   /// Clear all chat history.
@@ -307,7 +313,54 @@ class OculaDB {
   /// Remove all chunks for a source_id (for re-indexing).
   Future<int> deleteChunksBySource(String sourceId) async {
     final d = await db;
-    return d.delete('rag_chunks', where: 'source_id = ?', whereArgs: [sourceId]);
+    return d.delete(
+      'rag_chunks',
+      where: 'source_id = ?',
+      whereArgs: [sourceId],
+    );
+  }
+
+  /// Remove stale records for a source type that are no longer present
+  /// in the latest indexing pass.
+  Future<void> pruneSourceData({
+    required String source,
+    required String sourceIdPrefix,
+    required Set<String> keepSourceIds,
+  }) async {
+    final d = await db;
+    if (keepSourceIds.isEmpty) {
+      await d.delete('rag_chunks', where: 'source = ?', whereArgs: [source]);
+      await d.delete(
+        'asset_links',
+        where: 'source_id LIKE ?',
+        whereArgs: ['$sourceIdPrefix%'],
+      );
+      await d.delete(
+        'rag_meta',
+        where: 'key LIKE ?',
+        whereArgs: ['fp:$sourceIdPrefix%'],
+      );
+      return;
+    }
+
+    final ids = keepSourceIds.toList();
+    final placeholders = List.filled(ids.length, '?').join(',');
+
+    await d.rawDelete(
+      'DELETE FROM rag_chunks WHERE source = ? AND source_id NOT IN ($placeholders)',
+      [source, ...ids],
+    );
+    await d.rawDelete(
+      'DELETE FROM asset_links WHERE source_id LIKE ? AND source_id NOT IN ($placeholders)',
+      ['$sourceIdPrefix%', ...ids],
+    );
+
+    final keepFpKeys = ids.map((id) => 'fp:$id').toList();
+    final fpPlaceholders = List.filled(keepFpKeys.length, '?').join(',');
+    await d.rawDelete(
+      'DELETE FROM rag_meta WHERE key LIKE ? AND key NOT IN ($fpPlaceholders)',
+      ['fp:$sourceIdPrefix%', ...keepFpKeys],
+    );
   }
 
   /// Check if a source_id already exists.
@@ -323,7 +376,10 @@ class OculaDB {
   /// List all chunks for a given source type (e.g. 'contact', 'calendar').
   /// Used for "list all" queries where hybrid search may miss because
   /// the query doesn't semantically match individual records.
-  Future<List<RagSearchResult>> listBySource(String source, {int limit = 20}) async {
+  Future<List<RagSearchResult>> listBySource(
+    String source, {
+    int limit = 20,
+  }) async {
     final d = await db;
     final rows = await d.query(
       'rag_chunks',
@@ -340,14 +396,16 @@ class OculaDB {
     for (final row in rows) {
       final sid = row['source_id'] as String;
       if (!seen.add(sid)) continue;
-      results.add(RagSearchResult(
-        id: row['id'] as int,
-        text: row['text'] as String,
-        source: row['source'] as String,
-        sourceId: sid,
-        score: 1.0,
-        timestamp: DateTime.parse(row['created_at'] as String),
-      ));
+      results.add(
+        RagSearchResult(
+          id: row['id'] as int,
+          text: row['text'] as String,
+          source: row['source'] as String,
+          sourceId: sid,
+          score: 1.0,
+          timestamp: DateTime.parse(row['created_at'] as String),
+        ),
+      );
     }
     return results;
   }
@@ -379,13 +437,16 @@ class OculaDB {
           .join(' OR ');
 
       if (queryTerms.isNotEmpty) {
-        final rows = await d.rawQuery('''
+        final rows = await d.rawQuery(
+          '''
           SELECT rowid, bm25(rag_fts) as score
           FROM rag_fts
           WHERE rag_fts MATCH ?
           ORDER BY score
           LIMIT 200
-        ''', [queryTerms]);
+        ''',
+          [queryTerms],
+        );
 
         for (final row in rows) {
           final id = row['rowid'] as int;
@@ -471,14 +532,16 @@ class OculaDB {
 
       if (score < minScore) continue;
 
-      results.add(RagSearchResult(
-        id: id,
-        text: chunk['text'] as String,
-        source: chunk['source'] as String,
-        sourceId: chunk['source_id'] as String,
-        score: score,
-        timestamp: created,
-      ));
+      results.add(
+        RagSearchResult(
+          id: id,
+          text: chunk['text'] as String,
+          source: chunk['source'] as String,
+          sourceId: chunk['source_id'] as String,
+          score: score,
+          timestamp: created,
+        ),
+      );
     }
 
     results.sort((a, b) => b.score.compareTo(a.score));
@@ -506,11 +569,14 @@ class OculaDB {
   /// Trim rag_chunks to newest [maxEntries].
   Future<void> trimChunks({int maxEntries = 10000}) async {
     final d = await db;
-    await d.rawDelete('''
+    await d.rawDelete(
+      '''
       DELETE FROM rag_chunks WHERE id NOT IN (
         SELECT id FROM rag_chunks ORDER BY created_at DESC LIMIT ?
       )
-    ''', [maxEntries]);
+    ''',
+      [maxEntries],
+    );
   }
 
   // ════════════════════════════════════════════════════════════════════
@@ -519,8 +585,10 @@ class OculaDB {
 
   Future<void> setMeta(String key, String value) async {
     final d = await db;
-    await d.insert('rag_meta', {'key': key, 'value': value},
-        conflictAlgorithm: ConflictAlgorithm.replace);
+    await d.insert('rag_meta', {
+      'key': key,
+      'value': value,
+    }, conflictAlgorithm: ConflictAlgorithm.replace);
   }
 
   Future<String?> getMeta(String key) async {
@@ -534,8 +602,7 @@ class OculaDB {
       setMeta('fp:$sourceId', fingerprint);
 
   /// Get stored fingerprint. Returns null if not indexed.
-  Future<String?> getFingerprint(String sourceId) =>
-      getMeta('fp:$sourceId');
+  Future<String?> getFingerprint(String sourceId) => getMeta('fp:$sourceId');
 
   // ════════════════════════════════════════════════════════════════════
   // KNOWLEDGE GRAPH — lightweight triple store
@@ -553,10 +620,16 @@ class OculaDB {
     final d = await db;
 
     // Deduplicate
-    final existing = await d.query('knowledge',
-        where: 'subject = ? AND predicate = ? AND object = ?',
-        whereArgs: [subject.toLowerCase(), predicate.toLowerCase(), object.toLowerCase()],
-        limit: 1);
+    final existing = await d.query(
+      'knowledge',
+      where: 'subject = ? AND predicate = ? AND object = ?',
+      whereArgs: [
+        subject.toLowerCase(),
+        predicate.toLowerCase(),
+        object.toLowerCase(),
+      ],
+      limit: 1,
+    );
     if (existing.isNotEmpty) return null;
 
     return d.insert('knowledge', {
@@ -581,13 +654,17 @@ class OculaDB {
       limit: limit,
     );
 
-    return rows.map((r) => KGTriple(
-      subject: r['subject'] as String,
-      predicate: r['predicate'] as String,
-      object: r['object'] as String,
-      source: r['source'] as String?,
-      confidence: (r['confidence'] as num).toDouble(),
-    )).toList();
+    return rows
+        .map(
+          (r) => KGTriple(
+            subject: r['subject'] as String,
+            predicate: r['predicate'] as String,
+            object: r['object'] as String,
+            source: r['source'] as String?,
+            confidence: (r['confidence'] as num).toDouble(),
+          ),
+        )
+        .toList();
   }
 
   /// Find entities related to a query via graph traversal (1-hop).
@@ -614,13 +691,15 @@ class OculaDB {
       );
 
       for (final r in rows) {
-        results.add(KGTriple(
-          subject: r['subject'] as String,
-          predicate: r['predicate'] as String,
-          object: r['object'] as String,
-          source: r['source'] as String?,
-          confidence: (r['confidence'] as num).toDouble(),
-        ));
+        results.add(
+          KGTriple(
+            subject: r['subject'] as String,
+            predicate: r['predicate'] as String,
+            object: r['object'] as String,
+            source: r['source'] as String?,
+            confidence: (r['confidence'] as num).toDouble(),
+          ),
+        );
       }
     }
 
@@ -628,10 +707,13 @@ class OculaDB {
 
     // Deduplicate
     final seen = <String>{};
-    final unique = results.where((t) {
-      final key = '${t.subject}|${t.predicate}|${t.object}';
-      return seen.add(key);
-    }).take(limit).toList();
+    final unique = results
+        .where((t) {
+          final key = '${t.subject}|${t.predicate}|${t.object}';
+          return seen.add(key);
+        })
+        .take(limit)
+        .toList();
 
     return unique
         .map((t) => '${t.subject} ${t.predicate} ${t.object}')
@@ -659,8 +741,10 @@ class OculaDB {
     final lower = query.toLowerCase().trim();
 
     // "I am X" / "I'm X"
-    final iAmMatch = RegExp(r"i(?:'m| am)\s+(?:a |an )?(.+?)(?:\.|,|$)", caseSensitive: false)
-        .firstMatch(lower);
+    final iAmMatch = RegExp(
+      r"i(?:'m| am)\s+(?:a |an )?(.+?)(?:\.|,|$)",
+      caseSensitive: false,
+    ).firstMatch(lower);
     if (iAmMatch != null) {
       final obj = iAmMatch.group(1)?.trim();
       if (obj != null && obj.length > 1 && obj.length < 50) {
@@ -669,18 +753,24 @@ class OculaDB {
     }
 
     // "My name is X"
-    final nameMatch = RegExp(r"my name is\s+(.+?)(?:\.|,|$)", caseSensitive: false)
-        .firstMatch(lower);
+    final nameMatch = RegExp(
+      r"my name is\s+(.+?)(?:\.|,|$)",
+      caseSensitive: false,
+    ).firstMatch(lower);
     if (nameMatch != null) {
       final name = nameMatch.group(1)?.trim();
       if (name != null && name.length > 1 && name.length < 30) {
-        triples.add(KGTriple(subject: 'user', predicate: 'name_is', object: name));
+        triples.add(
+          KGTriple(subject: 'user', predicate: 'name_is', object: name),
+        );
       }
     }
 
     // "I like/love/enjoy/prefer X"
-    final likeMatch = RegExp(r"i\s+(?:like|love|enjoy|prefer)\s+(.+?)(?:\.|,|$)", caseSensitive: false)
-        .firstMatch(lower);
+    final likeMatch = RegExp(
+      r"i\s+(?:like|love|enjoy|prefer)\s+(.+?)(?:\.|,|$)",
+      caseSensitive: false,
+    ).firstMatch(lower);
     if (likeMatch != null) {
       final obj = likeMatch.group(1)?.trim();
       if (obj != null && obj.length > 1 && obj.length < 50) {
@@ -689,39 +779,54 @@ class OculaDB {
     }
 
     // "I work at/for X" / "I'm working at X"
-    final workMatch = RegExp(r"i(?:'m|\s+am)?\s+work(?:ing)?\s+(?:at|for)\s+(.+?)(?:\.|,|$)", caseSensitive: false)
-        .firstMatch(lower);
+    final workMatch = RegExp(
+      r"i(?:'m|\s+am)?\s+work(?:ing)?\s+(?:at|for)\s+(.+?)(?:\.|,|$)",
+      caseSensitive: false,
+    ).firstMatch(lower);
     if (workMatch != null) {
       final place = workMatch.group(1)?.trim();
       if (place != null && place.length > 1 && place.length < 50) {
-        triples.add(KGTriple(subject: 'user', predicate: 'works_at', object: place));
+        triples.add(
+          KGTriple(subject: 'user', predicate: 'works_at', object: place),
+        );
       }
     }
 
     // "I live in X"
-    final liveMatch = RegExp(r"i\s+live\s+in\s+(.+?)(?:\.|,|$)", caseSensitive: false)
-        .firstMatch(lower);
+    final liveMatch = RegExp(
+      r"i\s+live\s+in\s+(.+?)(?:\.|,|$)",
+      caseSensitive: false,
+    ).firstMatch(lower);
     if (liveMatch != null) {
       final place = liveMatch.group(1)?.trim();
       if (place != null && place.length > 1 && place.length < 50) {
-        triples.add(KGTriple(subject: 'user', predicate: 'lives_in', object: place));
+        triples.add(
+          KGTriple(subject: 'user', predicate: 'lives_in', object: place),
+        );
       }
     }
 
     // "I have X"
-    final haveMatch = RegExp(r"i\s+have\s+(?:a |an )?(.+?)(?:\.|,|$)", caseSensitive: false)
-        .firstMatch(lower);
+    final haveMatch = RegExp(
+      r"i\s+have\s+(?:a |an )?(.+?)(?:\.|,|$)",
+      caseSensitive: false,
+    ).firstMatch(lower);
     if (haveMatch != null) {
       final obj = haveMatch.group(1)?.trim();
-      if (obj != null && obj.length > 1 && obj.length < 50 &&
-          !obj.contains('question') && !obj.contains('problem')) {
+      if (obj != null &&
+          obj.length > 1 &&
+          obj.length < 50 &&
+          !obj.contains('question') &&
+          !obj.contains('problem')) {
         triples.add(KGTriple(subject: 'user', predicate: 'has', object: obj));
       }
     }
 
     // "I need/want X"
-    final needMatch = RegExp(r"i\s+(?:need|want)\s+(?:to )?\s*(.+?)(?:\.|,|$)", caseSensitive: false)
-        .firstMatch(lower);
+    final needMatch = RegExp(
+      r"i\s+(?:need|want)\s+(?:to )?\s*(.+?)(?:\.|,|$)",
+      caseSensitive: false,
+    ).firstMatch(lower);
     if (needMatch != null) {
       final obj = needMatch.group(1)?.trim();
       if (obj != null && obj.length > 2 && obj.length < 50) {
@@ -744,17 +849,26 @@ class OculaDB {
     Map<String, dynamic>? metadata,
   }) async {
     final d = await db;
-    final existing = await d.query('assets',
-        where: 'path = ?', whereArgs: [path], limit: 1);
+    final existing = await d.query(
+      'assets',
+      where: 'path = ?',
+      whereArgs: [path],
+      limit: 1,
+    );
 
     if (existing.isNotEmpty) {
       final old = existing.first;
       if (old['fingerprint'] == fingerprint) return false; // Unchanged
-      await d.update('assets', {
-        'fingerprint': fingerprint,
-        'last_indexed': DateTime.now().toIso8601String(),
-        'metadata': metadata != null ? jsonEncode(metadata) : old['metadata'],
-      }, where: 'path = ?', whereArgs: [path]);
+      await d.update(
+        'assets',
+        {
+          'fingerprint': fingerprint,
+          'last_indexed': DateTime.now().toIso8601String(),
+          'metadata': metadata != null ? jsonEncode(metadata) : old['metadata'],
+        },
+        where: 'path = ?',
+        whereArgs: [path],
+      );
       return true;
     }
 
@@ -771,8 +885,12 @@ class OculaDB {
   /// Check if an asset fingerprint has changed.
   Future<bool?> assetChanged(String path, String fingerprint) async {
     final d = await db;
-    final rows = await d.query('assets',
-        where: 'path = ?', whereArgs: [path], limit: 1);
+    final rows = await d.query(
+      'assets',
+      where: 'path = ?',
+      whereArgs: [path],
+      limit: 1,
+    );
     if (rows.isEmpty) return null; // Not tracked
     return rows.first['fingerprint'] != fingerprint;
   }
@@ -790,7 +908,8 @@ class OculaDB {
     if (await memFile.exists()) {
       try {
         final count = Sqflite.firstIntValue(
-            await d.rawQuery('SELECT COUNT(*) FROM chat_turns'));
+          await d.rawQuery('SELECT COUNT(*) FROM chat_turns'),
+        );
         if (count == 0) {
           final raw = await memFile.readAsString();
           final list = jsonDecode(raw) as List;
@@ -803,7 +922,8 @@ class OculaDB {
               'intent': map['intent'] ?? 'chat',
               'model_used': map['model'] ?? 'free',
               'steps': map['steps'] != null ? jsonEncode(map['steps']) : null,
-              'created_at': map['timestamp'] ?? DateTime.now().toIso8601String(),
+              'created_at':
+                  map['timestamp'] ?? DateTime.now().toIso8601String(),
             });
           }
           await batch.commit(noResult: true);
@@ -821,7 +941,8 @@ class OculaDB {
     if (await ragFile.exists()) {
       try {
         final count = Sqflite.firstIntValue(
-            await d.rawQuery('SELECT COUNT(*) FROM rag_chunks'));
+          await d.rawQuery('SELECT COUNT(*) FROM rag_chunks'),
+        );
         if (count == 0) {
           final raw = await ragFile.readAsString();
           final data = jsonDecode(raw);
@@ -830,7 +951,8 @@ class OculaDB {
           Map<String, dynamic>? fingerprints;
           if (data is Map) {
             entries = data['entries'] as List? ?? [];
-            fingerprints = (data['fingerprints'] as Map<String, dynamic>?)?.cast<String, String>();
+            fingerprints = (data['fingerprints'] as Map<String, dynamic>?)
+                ?.cast<String, String>();
           } else {
             entries = data as List;
           }
@@ -838,10 +960,12 @@ class OculaDB {
           final batch = d.batch();
           for (final item in entries) {
             final map = item as Map<String, dynamic>;
-            final vector = (map['vector'] as List?)
-                ?.cast<num>()
-                .map((n) => n.toDouble())
-                .toList() ?? [];
+            final vector =
+                (map['vector'] as List?)
+                    ?.cast<num>()
+                    .map((n) => n.toDouble())
+                    .toList() ??
+                [];
 
             batch.insert('rag_chunks', {
               'text': map['text'] ?? '',
@@ -849,7 +973,8 @@ class OculaDB {
               'source': map['source'] ?? '',
               'source_id': map['sourceId'] ?? '',
               'chunk_idx': map['chunkIdx'] ?? 0,
-              'created_at': map['timestamp'] ?? DateTime.now().toIso8601String(),
+              'created_at':
+                  map['timestamp'] ?? DateTime.now().toIso8601String(),
             });
           }
 
@@ -864,8 +989,10 @@ class OculaDB {
           }
 
           await batch.commit(noResult: true);
-          debugPrint('[OculaDB] Migrated ${entries.length} RAG chunks + '
-              '${fingerprints?.length ?? 0} fingerprints from JSON');
+          debugPrint(
+            '[OculaDB] Migrated ${entries.length} RAG chunks + '
+            '${fingerprints?.length ?? 0} fingerprints from JSON',
+          );
         }
         // Rename old files
         await ragFile.rename('${dir.path}/rag_index_v2.json.bak');
@@ -885,7 +1012,9 @@ class OculaDB {
 
   Uint8List _encodeVector(List<double> vector) {
     if (vector.isEmpty) return Uint8List(0);
-    final floats = Float32List.fromList(vector.map((v) => v.toDouble()).toList());
+    final floats = Float32List.fromList(
+      vector.map((v) => v.toDouble()).toList(),
+    );
     return floats.buffer.asUint8List();
   }
 
@@ -910,14 +1039,26 @@ class OculaDB {
   /// Get DB stats for diagnostics.
   Future<Map<String, int>> stats() async {
     final d = await db;
-    final chat = Sqflite.firstIntValue(
-        await d.rawQuery('SELECT COUNT(*) FROM chat_turns')) ?? 0;
-    final chunks = Sqflite.firstIntValue(
-        await d.rawQuery('SELECT COUNT(*) FROM rag_chunks')) ?? 0;
-    final kg = Sqflite.firstIntValue(
-        await d.rawQuery('SELECT COUNT(*) FROM knowledge')) ?? 0;
-    final assets = Sqflite.firstIntValue(
-        await d.rawQuery('SELECT COUNT(*) FROM assets')) ?? 0;
+    final chat =
+        Sqflite.firstIntValue(
+          await d.rawQuery('SELECT COUNT(*) FROM chat_turns'),
+        ) ??
+        0;
+    final chunks =
+        Sqflite.firstIntValue(
+          await d.rawQuery('SELECT COUNT(*) FROM rag_chunks'),
+        ) ??
+        0;
+    final kg =
+        Sqflite.firstIntValue(
+          await d.rawQuery('SELECT COUNT(*) FROM knowledge'),
+        ) ??
+        0;
+    final assets =
+        Sqflite.firstIntValue(
+          await d.rawQuery('SELECT COUNT(*) FROM assets'),
+        ) ??
+        0;
     return {
       'chat_turns': chat,
       'rag_chunks': chunks,
@@ -955,10 +1096,12 @@ class OculaDB {
   }) async {
     final d = await db;
     // Deduplicate
-    final existing = await d.query('asset_links',
-        where: 'source_id = ? AND asset_ref = ?',
-        whereArgs: [sourceId, assetRef],
-        limit: 1);
+    final existing = await d.query(
+      'asset_links',
+      where: 'source_id = ? AND asset_ref = ?',
+      whereArgs: [sourceId, assetRef],
+      limit: 1,
+    );
     if (existing.isNotEmpty) return;
 
     await d.insert('asset_links', {
@@ -981,22 +1124,31 @@ class OculaDB {
       'ORDER BY created_at DESC',
       sourceIds,
     );
-    return rows.map((r) => LinkedAsset(
-      sourceId: r['source_id'] as String,
-      assetType: r['asset_type'] as String,
-      assetRef: r['asset_ref'] as String,
-      label: r['label'] as String?,
-    )).toList();
+    return rows
+        .map(
+          (r) => LinkedAsset(
+            sourceId: r['source_id'] as String,
+            assetType: r['asset_type'] as String,
+            assetRef: r['asset_ref'] as String,
+            label: r['label'] as String?,
+          ),
+        )
+        .toList();
   }
 
   /// Extract asset links from indexed content text.
   /// Detects phone numbers, emails, file paths, URLs, etc.
-  List<_DetectedAsset> detectAssetsInText(String text, String source, String sourceId) {
+  List<_DetectedAsset> _detectAssetsInText(
+    String text,
+    String source,
+    String sourceId,
+  ) {
     final assets = <_DetectedAsset>[];
 
     // Phone numbers (international + US formats)
-    for (final m in RegExp(r'(?:\+\d{1,3}[\s-]?)?(?:\(?\d{2,4}\)?[\s.-]?){1,3}\d{3,4}'
-        ).allMatches(text)) {
+    for (final m in RegExp(
+      r'(?:\+\d{1,3}[\s-]?)?(?:\(?\d{2,4}\)?[\s.-]?){1,3}\d{3,4}',
+    ).allMatches(text)) {
       final num = m.group(0)!.replaceAll(RegExp(r'[^\d+]'), '');
       if (num.length >= 7 && num.length <= 15) {
         assets.add(_DetectedAsset('contact', 'tel:$num', num));
@@ -1023,7 +1175,10 @@ class OculaDB {
 
     // Photo references (from photo indexing pattern)
     if (source == 'photo') {
-      final pathMatch = RegExp(r'Location:\s*(.+?)$', multiLine: true).firstMatch(text);
+      final pathMatch = RegExp(
+        r'Location:\s*(.+?)$',
+        multiLine: true,
+      ).firstMatch(text);
       if (pathMatch != null) {
         final path = pathMatch.group(1)!.trim();
         assets.add(_DetectedAsset('photo', path, path.split('/').last));
@@ -1034,8 +1189,12 @@ class OculaDB {
   }
 
   /// Store detected assets as links for a source.
-  Future<void> linkDetectedAssets(String text, String source, String sourceId) async {
-    final detected = detectAssetsInText(text, source, sourceId);
+  Future<void> linkDetectedAssets(
+    String text,
+    String source,
+    String sourceId,
+  ) async {
+    final detected = _detectAssetsInText(text, source, sourceId);
     for (final a in detected) {
       await linkAsset(
         sourceId: sourceId,
@@ -1092,9 +1251,10 @@ class KGTriple {
 /// A linked phone asset attached to a RAG source.
 class LinkedAsset {
   final String sourceId;
-  final String assetType; // 'file', 'photo', 'email', 'contact', 'calendar', 'video', 'link'
-  final String assetRef;  // path, URI, or identifier
-  final String? label;    // display name
+  final String
+  assetType; // 'file', 'photo', 'email', 'contact', 'calendar', 'video', 'link'
+  final String assetRef; // path, URI, or identifier
+  final String? label; // display name
 
   LinkedAsset({
     required this.sourceId,
@@ -1106,14 +1266,22 @@ class LinkedAsset {
   /// Icon name for this asset type.
   String get iconName {
     switch (assetType) {
-      case 'photo': return 'image';
-      case 'video': return 'videocam';
-      case 'file': return 'description';
-      case 'email': return 'email';
-      case 'contact': return 'person';
-      case 'calendar': return 'event';
-      case 'link': return 'link';
-      default: return 'attachment';
+      case 'photo':
+        return 'image';
+      case 'video':
+        return 'videocam';
+      case 'file':
+        return 'description';
+      case 'email':
+        return 'email';
+      case 'contact':
+        return 'person';
+      case 'calendar':
+        return 'event';
+      case 'link':
+        return 'link';
+      default:
+        return 'attachment';
     }
   }
 }

@@ -41,9 +41,9 @@ class Indexer with WidgetsBindingObserver {
   void Function(double progress, String status)? onProgress;
 
   Indexer._internal({RAGEngine? rag, LocalData? local, OculaDB? db})
-      : _rag = rag ?? RAGEngine(),
-        _local = local ?? LocalData(),
-        _db = db ?? OculaDB();
+    : _rag = rag ?? RAGEngine(),
+      _local = local ?? LocalData(),
+      _db = db ?? OculaDB();
 
   /// Start lifecycle-aware background indexing.
   /// Call once from initState. Safe to call multiple times.
@@ -111,7 +111,8 @@ class Indexer with WidgetsBindingObserver {
 
     // Throttle: don't re-index too frequently
     if (_lastFullIndex != null &&
-        DateTime.now().difference(_lastFullIndex!) < const Duration(minutes: 5)) {
+        DateTime.now().difference(_lastFullIndex!) <
+            const Duration(minutes: 5)) {
       return IndexResult.skipped();
     }
 
@@ -171,12 +172,18 @@ class Indexer with WidgetsBindingObserver {
 
   /// Index a single chat conversation turn (call after each AI response).
   /// Also detects and links phone numbers, emails, URLs mentioned in chat.
-  Future<void> indexChatTurn(String userMessage, String assistantResponse) async {
+  Future<void> indexChatTurn(
+    String userMessage,
+    String assistantResponse,
+  ) async {
     await _rag.init();
-    final sourceId = 'chat:${DateTime.now().millisecondsSinceEpoch}';
+    final now = DateTime.now();
+    final sourceId = 'chat:${now.toIso8601String()}';
     await _rag.indexChat(
       userMessage: userMessage,
       assistantResponse: assistantResponse,
+      sourceId: sourceId,
+      timestamp: now,
     );
     // Detect phone numbers, emails, URLs in both user and assistant text
     await _db.linkDetectedAssets(
@@ -196,15 +203,16 @@ class Indexer with WidgetsBindingObserver {
     final name = path.split('/').last;
     final fingerprint = await _local.fileFingerprint(path);
 
+    final sourceId = 'file:$path';
     await _rag.indexFile(
       fileName: name,
       textContent: content,
       modified: DateTime.now(),
+      sourceId: sourceId,
       fingerprint: fingerprint,
     );
 
     // Link the file as an openable asset
-    final sourceId = 'file:$name';
     await _db.linkAsset(
       sourceId: sourceId,
       assetType: 'file',
@@ -234,12 +242,14 @@ class Indexer with WidgetsBindingObserver {
   Future<void> _indexContacts() async {
     try {
       final contacts = await _local.getAllContacts();
+      final seenSourceIds = <String>{};
       if (kDebugMode) {
         print('[Indexer] Found ${contacts.length} contacts to index');
       }
 
       for (final contact in contacts) {
-        final sourceId = 'contact:${contact.name}';
+        final sourceId = _contactSourceId(contact);
+        seenSourceIds.add(sourceId);
 
         // Build structured text for RAG — newlines help the model parse fields
         final parts = <String>['Name: ${contact.name}'];
@@ -265,7 +275,7 @@ class Indexer with WidgetsBindingObserver {
         await _db.linkAsset(
           sourceId: sourceId,
           assetType: 'contact',
-          assetRef: contact.phone ?? contact.email ?? contact.name,
+          assetRef: sourceId.replaceFirst('contact:', ''),
           label: contact.name,
         );
 
@@ -299,6 +309,13 @@ class Indexer with WidgetsBindingObserver {
           _filesSkipped++;
         }
       }
+      if (contacts.isNotEmpty) {
+        await _db.pruneSourceData(
+          source: 'contact',
+          sourceIdPrefix: 'contact:',
+          keepSourceIds: seenSourceIds,
+        );
+      }
     } catch (e) {
       if (kDebugMode) print('[Indexer] Contact indexing error: $e');
     }
@@ -311,6 +328,7 @@ class Indexer with WidgetsBindingObserver {
   Future<void> _indexFiles() async {
     try {
       final files = await _local.searchFiles('');
+      final seenSourceIds = <String>{};
       if (kDebugMode) {
         print('[Indexer] Found ${files.length} text files to scan');
       }
@@ -322,8 +340,12 @@ class Indexer with WidgetsBindingObserver {
         _progress = 0.15 + 0.35 * (i / files.length);
 
         // Check fingerprint — skip unchanged files
-        final sourceId = 'file:${file.name}';
-        final check = await _rag.checkFingerprintAsync(sourceId, file.fingerprint);
+        final sourceId = 'file:${file.path}';
+        seenSourceIds.add(sourceId);
+        final check = await _rag.checkFingerprintAsync(
+          sourceId,
+          file.fingerprint,
+        );
         if (check == true) {
           _filesSkipped++;
           continue; // Unchanged — skip
@@ -337,6 +359,7 @@ class Indexer with WidgetsBindingObserver {
               fileName: file.name,
               textContent: content,
               modified: file.modified,
+              sourceId: sourceId,
               fingerprint: file.fingerprint,
             );
 
@@ -369,6 +392,13 @@ class Indexer with WidgetsBindingObserver {
           }
         }
       }
+      if (files.isNotEmpty) {
+        await _db.pruneSourceData(
+          source: 'file',
+          sourceIdPrefix: 'file:',
+          keepSourceIds: seenSourceIds,
+        );
+      }
     } catch (e) {
       if (kDebugMode) print('[Indexer] File indexing error: $e');
     }
@@ -382,7 +412,8 @@ class Indexer with WidgetsBindingObserver {
     try {
       final emails = await _local.recentEmails(limit: 50);
       for (final email in emails) {
-        final sourceId = 'email:${email.subject}:${email.date.toIso8601String()}';
+        final sourceId =
+            'email:${email.subject}:${email.date.toIso8601String()}';
         await _rag.indexEmail(
           from: email.from,
           subject: email.subject,
@@ -420,6 +451,7 @@ class Indexer with WidgetsBindingObserver {
   Future<void> _indexPhotos() async {
     try {
       final photos = await _local.recentPhotos(limit: 200);
+      final seenSourceIds = <String>{};
       if (kDebugMode) {
         print('[Indexer] Found ${photos.length} photos to index');
       }
@@ -431,6 +463,7 @@ class Indexer with WidgetsBindingObserver {
 
         if (photo.label != null) {
           final sourceId = 'photo:${photo.assetId ?? photo.path}';
+          seenSourceIds.add(sourceId);
 
           // Skip if already indexed
           if (await _db.hasChunksForSource(sourceId)) {
@@ -461,7 +494,9 @@ class Indexer with WidgetsBindingObserver {
             source: 'photo',
           );
           // Extract album name if present in label
-          final albumMatch = RegExp(r'in album "([^"]+)"').firstMatch(labelLower);
+          final albumMatch = RegExp(
+            r'in album "([^"]+)"',
+          ).firstMatch(labelLower);
           if (albumMatch != null) {
             await _db.addTriple(
               subject: labelLower,
@@ -473,6 +508,13 @@ class Indexer with WidgetsBindingObserver {
 
           _filesIndexed++;
         }
+      }
+      if (photos.isNotEmpty) {
+        await _db.pruneSourceData(
+          source: 'photo',
+          sourceIdPrefix: 'photo:',
+          keepSourceIds: seenSourceIds,
+        );
       }
     } catch (e) {
       if (kDebugMode) print('[Indexer] Photo indexing error: $e');
@@ -486,6 +528,7 @@ class Indexer with WidgetsBindingObserver {
   Future<void> _indexCalendar() async {
     try {
       final now = DateTime.now();
+      final seenSourceIds = <String>{};
       // Index past 30 days + next 30 days for broader coverage
       final events = await _local.getEvents(
         now.subtract(const Duration(days: 30)),
@@ -497,6 +540,7 @@ class Indexer with WidgetsBindingObserver {
 
       for (final event in events) {
         final sourceId = 'cal:${event.title}:${event.start.toIso8601String()}';
+        seenSourceIds.add(sourceId);
 
         // Skip if already indexed
         if (await _db.hasChunksForSource(sourceId)) {
@@ -528,7 +572,8 @@ class Indexer with WidgetsBindingObserver {
           sourceId: sourceId,
           assetType: 'calendar',
           assetRef: 'cal:${event.title}',
-          label: '${event.title} — ${event.start.toLocal().toString().substring(0, 16)}',
+          label:
+              '${event.title} — ${event.start.toLocal().toString().substring(0, 16)}',
         );
         // Populate knowledge graph with calendar relationships
         await _db.addTriple(
@@ -549,12 +594,31 @@ class Indexer with WidgetsBindingObserver {
         await _db.linkDetectedAssets(content, 'calendar', sourceId);
         _filesIndexed++;
       }
+      if (events.isNotEmpty) {
+        await _db.pruneSourceData(
+          source: 'calendar',
+          sourceIdPrefix: 'cal:',
+          keepSourceIds: seenSourceIds,
+        );
+      }
     } catch (e) {
       if (kDebugMode) print('[Indexer] Calendar indexing error: $e');
     }
 
     // Re-schedule notifications for upcoming events after indexing
     NotificationService().scheduleCalendarReminders().catchError((_) {});
+  }
+
+  String _contactSourceId(LocalContact contact) {
+    final phone = contact.phone?.replaceAll(RegExp(r'[^0-9+]'), '');
+    if (phone != null && phone.isNotEmpty) {
+      return 'contact:tel:$phone';
+    }
+    final email = contact.email?.trim().toLowerCase();
+    if (email != null && email.isNotEmpty) {
+      return 'contact:email:$email';
+    }
+    return 'contact:name:${contact.name.trim().toLowerCase()}';
   }
 }
 
@@ -577,13 +641,13 @@ class IndexResult {
   });
 
   factory IndexResult.skipped() => IndexResult(
-        filesIndexed: 0,
-        filesSkipped: 0,
-        filesErrored: 0,
-        totalEntries: 0,
-        durationMs: 0,
-        wasSkipped: true,
-      );
+    filesIndexed: 0,
+    filesSkipped: 0,
+    filesErrored: 0,
+    totalEntries: 0,
+    durationMs: 0,
+    wasSkipped: true,
+  );
 
   @override
   String toString() =>

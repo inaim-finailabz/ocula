@@ -555,7 +555,9 @@ class AIManager {
           lastLoadError = ModelNotReadyException(tier);
         } catch (e) {
           lastLoadError = e;
-          debugPrint('[AIManager] loadModel(${tier.name}) attempt ${i + 1} failed: $e');
+          debugPrint(
+            '[AIManager] loadModel(${tier.name}) attempt ${i + 1} failed: $e',
+          );
         }
       }
 
@@ -578,6 +580,13 @@ class AIManager {
               }
             } catch (_) {}
           }
+        }
+        if (tier == AITier.pro) {
+          throw Exception(
+            'Thinker model is incompatible with this iOS llama runtime '
+            '(qwen3vl architecture not supported by text engine). '
+            'Update flutter_llama/llama.xcframework or use a non-qwen3vl Pro model.',
+          );
         }
         throw lastLoadError ?? ModelNotReadyException(tier);
       }
@@ -826,7 +835,8 @@ class AIManager {
               unavailableReason = 'The vision model files are not ready yet.';
             }
           } else {
-            unavailableReason = 'This model tier has no vision projector configured.';
+            unavailableReason =
+                'This model tier has no vision projector configured.';
           }
         } else {
           unavailableReason = 'The vision model files are not ready yet.';
@@ -871,19 +881,57 @@ class AIManager {
               final loaded = await _visionEngine.loadMultimodalModel(cfg);
               debugPrint('[AIManager] Vision model loaded: $loaded');
               if (loaded) {
-                final response = await _visionEngine.describeImage(
+                final primaryParams = GenerationParams(
+                  prompt: fullPrompt,
+                  maxTokens: 160,
+                  temperature: 0.2,
+                  repeatPenalty: 1.15,
+                  stopSequences: const ['<|im_end|>'],
+                );
+                var response = await _visionEngine.describeImage(
                   imagePath,
                   fullPrompt,
+                  params: primaryParams,
                 );
+                var visionText = _cleanVisionText(response.text);
+
+                // Some multimodal models return 0 tokens with ChatML wrappers.
+                // Retry once with a plain prompt format before failing.
+                if (_isLowSignalVisionOutput(visionText, prompt) ||
+                    response.tokensGenerated == 0) {
+                  debugPrint(
+                    '[AIManager] Vision empty output; retrying with plain prompt',
+                  );
+                  final plainPrompt =
+                      'Describe this image. Be specific and brief.\n'
+                      'User request: $prompt';
+                  final fallbackParams = GenerationParams(
+                    prompt: plainPrompt,
+                    maxTokens: 160,
+                    temperature: 0.2,
+                    repeatPenalty: 1.15,
+                  );
+                  response = await _visionEngine.describeImage(
+                    imagePath,
+                    plainPrompt,
+                    params: fallbackParams,
+                  );
+                  visionText = _cleanVisionText(response.text);
+                }
                 debugPrint(
                   '[AIManager] Vision generated ${response.text.length} chars',
                 );
                 try {
                   await _visionEngine.unloadMultimodalModel();
                 } catch (_) {}
-                return response.text;
+                if (!_isLowSignalVisionOutput(visionText, prompt)) {
+                  return visionText;
+                }
+                unavailableReason =
+                    'The vision model returned an empty output.';
+              } else {
+                unavailableReason = 'The vision model failed to initialize.';
               }
-              unavailableReason = 'The vision model failed to initialize.';
             } catch (e) {
               debugPrint('[AIManager] Vision failed (attempt $attempt): $e');
               unavailableReason = 'The vision engine failed to initialize.';
@@ -1013,7 +1061,6 @@ class AIManager {
     }
 
     // Build the prompt identically to ask()
-    final tier = _activeTier ?? AITier.free;
     final bool isSmallModel =
         (_activeTier == null || _activeTier == AITier.free);
     final bool isProModel = (_activeTier == AITier.pro);
@@ -1025,7 +1072,9 @@ class AIManager {
     String compactContext = context;
     if (context.isNotEmpty && isSmallModel) {
       compactContext = _summarizeContext(
-        context, maxChars: (budgetChars * 0.5).round());
+        context,
+        maxChars: (budgetChars * 0.5).round(),
+      );
     } else if (context.isNotEmpty && !isProModel) {
       compactContext = _summarizeContext(context, maxChars: budgetChars);
     }
@@ -1102,7 +1151,8 @@ class AIManager {
     )) {
       buffer.write(token);
       // Yield partial text (cleaned of ChatML artifacts)
-      final partial = buffer.toString()
+      final partial = buffer
+          .toString()
           .replaceAll('<|im_end|>', '')
           .replaceAll('<|im_start|>', '')
           .trimLeft();
@@ -1110,7 +1160,8 @@ class AIManager {
     }
 
     // Final post-processing on complete text
-    var text = buffer.toString()
+    var text = buffer
+        .toString()
         .replaceAll('<|im_end|>', '')
         .replaceAll('<|im_start|>', '')
         .trim();
@@ -1160,6 +1211,23 @@ class AIManager {
     }
 
     return text;
+  }
+
+  String _cleanVisionText(String text) {
+    return text
+        .replaceAll('<|im_end|>', '')
+        .replaceAll('<|im_start|>', '')
+        .trim();
+  }
+
+  bool _isLowSignalVisionOutput(String text, String userPrompt) {
+    final lower = text.toLowerCase().trim();
+    final promptLower = userPrompt.toLowerCase().trim();
+    if (lower.isEmpty) return true;
+    if (lower == promptLower) return true;
+    if (lower == 'describe' || lower == 'describe image') return true;
+    if (lower.startsWith('describe') && lower.length < 40) return true;
+    return false;
   }
 
   /// Detect and replace hallucinated or off-topic responses.

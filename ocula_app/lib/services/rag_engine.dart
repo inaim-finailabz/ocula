@@ -73,7 +73,9 @@ class RAGEngine {
   Future<bool> needsReindex() async {
     final meta = await _db.getMeta('embedding_model');
     final llama = FlutterLlama.instance;
-    final currentModel = llama.isEmbeddingModelLoaded ? 'minilm-v2' : 'generative';
+    final currentModel = llama.isEmbeddingModelLoaded
+        ? 'minilm-v2'
+        : 'generative';
     if (meta != currentModel && _cachedCount > 0) {
       return true; // Embedding model changed — vectors are incompatible
     }
@@ -111,7 +113,9 @@ class RAGEngine {
         if (await _db.hasChunksForSource(sourceId)) {
           return false; // Unchanged AND chunks exist
         }
-        debugPrint('[RAG] Fingerprint match but chunks missing for $sourceId — re-indexing');
+        debugPrint(
+          '[RAG] Fingerprint match but chunks missing for $sourceId — re-indexing',
+        );
       }
       await _db.setFingerprint(sourceId, fingerprint);
 
@@ -170,12 +174,14 @@ class RAGEngine {
     required String fileName,
     required String textContent,
     required DateTime modified,
+    String? sourceId,
     String? fingerprint,
   }) async {
+    final sid = sourceId ?? 'file:$fileName';
     return await index(
       content: 'File: $fileName\n\n$textContent',
       source: 'file',
-      sourceId: 'file:$fileName',
+      sourceId: sid,
       timestamp: modified,
       fingerprint: fingerprint,
     );
@@ -209,13 +215,17 @@ class RAGEngine {
   Future<void> indexChat({
     required String userMessage,
     required String assistantResponse,
+    String? sourceId,
     DateTime? timestamp,
   }) async {
     final content = 'User: $userMessage\nAssistant: $assistantResponse';
+    final sid =
+        sourceId ??
+        'chat:${timestamp?.toIso8601String() ?? DateTime.now().toIso8601String()}';
     await index(
       content: content,
       source: 'chat',
-      sourceId: 'chat:${timestamp?.toIso8601String() ?? DateTime.now().toIso8601String()}',
+      sourceId: sid,
       timestamp: timestamp,
     );
   }
@@ -244,26 +254,34 @@ class RAGEngine {
       vectorWeight: _config.vectorWeight,
     );
 
-    return results.map((r) => RAGResult(
-      text: r.text,
-      source: r.source,
-      sourceId: r.sourceId,
-      score: r.score,
-      timestamp: r.timestamp,
-    )).toList();
+    return results
+        .map(
+          (r) => RAGResult(
+            text: r.text,
+            source: r.source,
+            sourceId: r.sourceId,
+            score: r.score,
+            timestamp: r.timestamp,
+          ),
+        )
+        .toList();
   }
 
   /// List all entries of a given source type (e.g. 'contact', 'calendar').
   /// Bypasses hybrid search — useful for "list all" queries.
   Future<List<RAGResult>> listBySource(String source, {int limit = 20}) async {
     final results = await _db.listBySource(source, limit: limit);
-    return results.map((r) => RAGResult(
-      text: r.text,
-      source: r.source,
-      sourceId: r.sourceId,
-      score: r.score,
-      timestamp: r.timestamp,
-    )).toList();
+    return results
+        .map(
+          (r) => RAGResult(
+            text: r.text,
+            source: r.source,
+            sourceId: r.sourceId,
+            score: r.score,
+            timestamp: r.timestamp,
+          ),
+        )
+        .toList();
   }
 
   /// Build a context string from RAG results for the LLM prompt.
@@ -272,21 +290,30 @@ class RAGEngine {
     final results = await search(query, sourceHint: sourceHint);
     if (results.isEmpty) return '';
 
-    return results.map((r) {
-      final label = _sourceLabel(r.source);
-      return '$label: ${r.text}';
-    }).join('\n\n');
+    return results
+        .map((r) {
+          final label = _sourceLabel(r.source);
+          return '$label: ${r.text}';
+        })
+        .join('\n\n');
   }
 
   String _sourceLabel(String source) {
     switch (source) {
-      case 'contact': return 'CONTACT';
-      case 'calendar': return 'CALENDAR EVENT';
-      case 'photo': return 'PHOTO';
-      case 'file': return 'FILE';
-      case 'email': return 'EMAIL';
-      case 'chat': return 'PREVIOUS CONVERSATION';
-      default: return source.toUpperCase();
+      case 'contact':
+        return 'CONTACT';
+      case 'calendar':
+        return 'CALENDAR EVENT';
+      case 'photo':
+        return 'PHOTO';
+      case 'file':
+        return 'FILE';
+      case 'email':
+        return 'EMAIL';
+      case 'chat':
+        return 'PREVIOUS CONVERSATION';
+      default:
+        return source.toUpperCase();
     }
   }
 
@@ -300,7 +327,10 @@ class RAGEngine {
 
   /// Check if a sourceId has been indexed and whether its fingerprint matches.
   /// Returns: null = not indexed, true = indexed & unchanged, false = indexed & changed.
-  Future<bool?> checkFingerprintAsync(String sourceId, String fingerprint) async {
+  Future<bool?> checkFingerprintAsync(
+    String sourceId,
+    String fingerprint,
+  ) async {
     final stored = await _db.getFingerprint(sourceId);
     if (stored == null) return null;
     return stored == fingerprint;
@@ -330,7 +360,11 @@ class RAGEngine {
   // ══════════════════════════════════════════
 
   /// Sentence-aware chunking with overlap.
-  List<String> _chunkSentences(String text, {int? maxChars, int overlapSentences = 2}) {
+  List<String> _chunkSentences(
+    String text, {
+    int? maxChars,
+    int overlapSentences = 2,
+  }) {
     maxChars ??= _config.chunkSize;
     if (text.length <= maxChars) return [text];
 
@@ -374,7 +408,11 @@ class RAGEngine {
     return chunks.isEmpty ? [text] : chunks;
   }
 
-  List<String> _chunkWords(String text, {int chunkSize = 200, int overlap = 50}) {
+  List<String> _chunkWords(
+    String text, {
+    int chunkSize = 200,
+    int overlap = 50,
+  }) {
     final words = text.split(RegExp(r'\s+'));
     if (words.length <= chunkSize) return [text];
 

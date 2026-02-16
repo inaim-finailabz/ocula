@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:url_launcher/url_launcher.dart';
 import 'services/ai_manager.dart';
 import 'services/speech_service.dart';
 import 'services/export_service.dart';
@@ -140,8 +141,9 @@ class _AssistantScreenState extends State<AssistantScreen>
     _shareReceiver.init();
 
     // Listen for feature-ready notifications (user-friendly, no model names).
-    _featureReadySubscription =
-        _modelManager.featureReadyStream.listen((featureName) {
+    _featureReadySubscription = _modelManager.featureReadyStream.listen((
+      featureName,
+    ) {
       _showFeatureReady(featureName);
     });
 
@@ -160,9 +162,7 @@ class _AssistantScreenState extends State<AssistantScreen>
           children: [
             const Icon(Icons.check_circle, color: Colors.greenAccent, size: 20),
             const SizedBox(width: 10),
-            Expanded(
-              child: Text('$featureName is ready to use'),
-            ),
+            Expanded(child: Text('$featureName is ready to use')),
           ],
         ),
         behavior: SnackBarBehavior.floating,
@@ -194,19 +194,27 @@ class _AssistantScreenState extends State<AssistantScreen>
 
   String _tierLabel(AITier tier) {
     switch (tier) {
-      case AITier.free: return 'Ocula Lite';
-      case AITier.plus: return 'Ocula Plus';
-      case AITier.pro: return 'Ocula Pro';
-      case AITier.enterprise: return 'Enterprise';
+      case AITier.free:
+        return 'Ocula Lite';
+      case AITier.plus:
+        return 'Ocula Plus';
+      case AITier.pro:
+        return 'Ocula Pro';
+      case AITier.enterprise:
+        return 'Enterprise';
     }
   }
 
   Color _tierColor(AITier tier) {
     switch (tier) {
-      case AITier.free: return const Color(0xFF00CEC9);
-      case AITier.plus: return const Color(0xFF6C5CE7);
-      case AITier.pro: return const Color(0xFFFD79A8);
-      case AITier.enterprise: return const Color(0xFFFDCB6E);
+      case AITier.free:
+        return const Color(0xFF00CEC9);
+      case AITier.plus:
+        return const Color(0xFF6C5CE7);
+      case AITier.pro:
+        return const Color(0xFFFD79A8);
+      case AITier.enterprise:
+        return const Color(0xFFFDCB6E);
     }
   }
 
@@ -269,8 +277,9 @@ class _AssistantScreenState extends State<AssistantScreen>
                 title: const Text('Take Photo'),
                 onTap: () async {
                   Navigator.pop(ctx);
-                  final picked = await ImagePicker()
-                      .pickImage(source: ImageSource.camera);
+                  final picked = await ImagePicker().pickImage(
+                    source: ImageSource.camera,
+                  );
                   if (picked != null) {
                     setState(() => _attachedImage = File(picked.path));
                   }
@@ -281,8 +290,9 @@ class _AssistantScreenState extends State<AssistantScreen>
                 title: const Text('Choose from Gallery'),
                 onTap: () async {
                   Navigator.pop(ctx);
-                  final picked = await ImagePicker()
-                      .pickImage(source: ImageSource.gallery);
+                  final picked = await ImagePicker().pickImage(
+                    source: ImageSource.gallery,
+                  );
                   if (picked != null) {
                     setState(() => _attachedImage = File(picked.path));
                   }
@@ -300,8 +310,20 @@ class _AssistantScreenState extends State<AssistantScreen>
       final result = await FilePicker.platform.pickFiles(
         type: FileType.custom,
         allowedExtensions: [
-          'txt', 'md', 'csv', 'json', 'xml', 'html', 'pdf',
-          'py', 'js', 'ts', 'dart', 'java', 'swift', 'yaml',
+          'txt',
+          'md',
+          'csv',
+          'json',
+          'xml',
+          'html',
+          'pdf',
+          'py',
+          'js',
+          'ts',
+          'dart',
+          'java',
+          'swift',
+          'yaml',
         ],
       );
       if (result != null && result.files.single.path != null) {
@@ -385,18 +407,22 @@ class _AssistantScreenState extends State<AssistantScreen>
           final truncated = content.length > 4000
               ? content.substring(0, 4000)
               : content;
-          queryText = '[Attached document: $docName]\n'
+          queryText =
+              '[Attached document: $docName]\n'
               '--- DOCUMENT CONTENT ---\n$truncated\n--- END DOCUMENT ---\n\n'
               'User request: $text';
         }
       } catch (_) {
         // Binary file — just reference the name
-        queryText = '[Attached file: $docName — binary file, cannot read text content] $text';
+        queryText =
+            '[Attached file: $docName — binary file, cannot read text content] $text';
       }
     }
 
     // Display text — show the actual user text, not the augmented query
-    final displayText = image != null && text == 'Describe this image in detail. What do you see?'
+    final displayText =
+        image != null &&
+            text == 'Describe this image in detail. What do you see?'
         ? 'Analyze this image'
         : text;
 
@@ -416,14 +442,14 @@ class _AssistantScreenState extends State<AssistantScreen>
     _scrollToBottom();
 
     try {
-      final result = await _orchestrator.run(
-        queryText,
-        hasImage: image != null,
-        imagePath: image?.path,
-      ).timeout(
-        const Duration(minutes: 2),
-        onTimeout: () => OrchestratorResult('Sorry, I took too long to respond. Please try again.'),
-      );
+      final result = await _orchestrator
+          .run(queryText, hasImage: image != null, imagePath: image?.path)
+          .timeout(
+            const Duration(minutes: 2),
+            onTimeout: () => OrchestratorResult(
+              'Sorry, I took too long to respond. Please try again.',
+            ),
+          );
 
       if (!mounted) return;
 
@@ -442,11 +468,13 @@ class _AssistantScreenState extends State<AssistantScreen>
         return;
       }
       setState(() {
-        _messages.add(_Message(
-          text: result.response,
-          isUser: false,
-          linkedAssets: result.linkedAssets,
-        ));
+        _messages.add(
+          _Message(
+            text: result.response,
+            isUser: false,
+            linkedAssets: result.linkedAssets,
+          ),
+        );
         _isThinking = false;
         _orbState = OrbState.speaking;
         _isSpeaking = true;
@@ -504,8 +532,7 @@ class _AssistantScreenState extends State<AssistantScreen>
           },
           onAIResponse: (response) {
             setState(() {
-              _messages
-                  .add(_Message(text: _textController.text, isUser: true));
+              _messages.add(_Message(text: _textController.text, isUser: true));
               _messages.add(_Message(text: response, isUser: false));
               _isListening = false;
               _orbState = OrbState.idle;
@@ -516,7 +543,9 @@ class _AssistantScreenState extends State<AssistantScreen>
             _scrollToBottom();
           },
           onError: () {
-            _showSnackbar('Could not start listening. Please check microphone permissions.');
+            _showSnackbar(
+              'Could not start listening. Please check microphone permissions.',
+            );
             setState(() {
               _isListening = false;
               _orbState = OrbState.idle;
@@ -546,7 +575,9 @@ class _AssistantScreenState extends State<AssistantScreen>
         SnackBar(
           content: const Text('Copied to clipboard'),
           behavior: SnackBarBehavior.floating,
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(10),
+          ),
           duration: const Duration(seconds: 2),
         ),
       );
@@ -594,10 +625,7 @@ class _AssistantScreenState extends State<AssistantScreen>
           gradient: LinearGradient(
             begin: Alignment.topCenter,
             end: Alignment.bottomCenter,
-            colors: [
-              colors.surface,
-              const Color(0xFF16162A),
-            ],
+            colors: [colors.surface, const Color(0xFF16162A)],
           ),
         ),
         child: SafeArea(
@@ -608,7 +636,10 @@ class _AssistantScreenState extends State<AssistantScreen>
                 children: [
                   // Top bar
                   Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 16,
+                      vertical: 12,
+                    ),
                     child: Row(
                       children: [
                         ShaderMask(
@@ -628,12 +659,17 @@ class _AssistantScreenState extends State<AssistantScreen>
                         // Active model badge
                         if (_ai.activeTier != null)
                           Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 8,
+                              vertical: 3,
+                            ),
                             decoration: BoxDecoration(
                               color: _tierColor(_ai.activeTier!).withAlpha(40),
                               borderRadius: BorderRadius.circular(8),
                               border: Border.all(
-                                color: _tierColor(_ai.activeTier!).withAlpha(80),
+                                color: _tierColor(
+                                  _ai.activeTier!,
+                                ).withAlpha(80),
                                 width: 0.5,
                               ),
                             ),
@@ -656,11 +692,15 @@ class _AssistantScreenState extends State<AssistantScreen>
                                 final lastResponse = _messages
                                     .lastWhere((m) => !m.isUser)
                                     .text;
-                                final box = ctx.findRenderObject() as RenderBox?;
+                                final box =
+                                    ctx.findRenderObject() as RenderBox?;
                                 final origin = box != null
                                     ? box.localToGlobal(Offset.zero) & box.size
                                     : null;
-                                _export.exportAndShare(lastResponse, origin: origin);
+                                _export.exportAndShare(
+                                  lastResponse,
+                                  origin: origin,
+                                );
                               },
                             ),
                           ),
@@ -687,7 +727,9 @@ class _AssistantScreenState extends State<AssistantScreen>
                             padding: EdgeInsets.only(
                               left: 16,
                               right: 16,
-                              top: _orbExpanded ? expandedSize + 40 : miniSize + 20,
+                              top: _orbExpanded
+                                  ? expandedSize + 40
+                                  : miniSize + 20,
                               bottom: 8,
                             ),
                             itemCount: _messages.length + (_isThinking ? 1 : 0),
@@ -697,7 +739,8 @@ class _AssistantScreenState extends State<AssistantScreen>
                               }
                               return _MessageBubble(
                                 message: _messages[index],
-                                onCopy: () => _copyToClipboard(_messages[index].text),
+                                onCopy: () =>
+                                    _copyToClipboard(_messages[index].text),
                               );
                             },
                           )
@@ -751,8 +794,11 @@ class _AssistantScreenState extends State<AssistantScreen>
                               color: colors.primary.withAlpha(30),
                               borderRadius: BorderRadius.circular(8),
                             ),
-                            child: Icon(Icons.description,
-                                size: 22, color: colors.primary),
+                            child: Icon(
+                              Icons.description,
+                              size: 22,
+                              color: colors.primary,
+                            ),
                           ),
                           const SizedBox(width: 8),
                           Expanded(
@@ -812,7 +858,9 @@ class _AssistantScreenState extends State<AssistantScreen>
                           Expanded(
                             child: Container(
                               margin: const EdgeInsets.symmetric(horizontal: 8),
-                              padding: const EdgeInsets.symmetric(horizontal: 14),
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 14,
+                              ),
                               decoration: BoxDecoration(
                                 color: colors.surface,
                                 borderRadius: BorderRadius.circular(24),
@@ -829,8 +877,9 @@ class _AssistantScreenState extends State<AssistantScreen>
                                     color: colors.onSurface.withAlpha(80),
                                   ),
                                   border: InputBorder.none,
-                                  contentPadding:
-                                      const EdgeInsets.symmetric(vertical: 12),
+                                  contentPadding: const EdgeInsets.symmetric(
+                                    vertical: 12,
+                                  ),
                                 ),
                                 onSubmitted: _send,
                               ),
@@ -852,16 +901,16 @@ class _AssistantScreenState extends State<AssistantScreen>
                                   onTap: _toggleVoice,
                                 )
                               : _textController.text.isNotEmpty
-                                  ? _SendButton(
-                                      onTap: () => _send(_textController.text),
-                                      color: colors.primary,
-                                    )
-                                  : _InputAction(
-                                      icon: Icons.mic,
-                                      label: 'Voice',
-                                      color: colors.primary,
-                                      onTap: _toggleVoice,
-                                    ),
+                              ? _SendButton(
+                                  onTap: () => _send(_textController.text),
+                                  color: colors.primary,
+                                )
+                              : _InputAction(
+                                  icon: Icons.mic,
+                                  label: 'Voice',
+                                  color: colors.primary,
+                                  onTap: _toggleVoice,
+                                ),
                         ],
                       ),
                     ),
@@ -889,9 +938,7 @@ class _AssistantScreenState extends State<AssistantScreen>
                         ? Alignment.center
                         : Alignment.centerLeft,
                     child: Padding(
-                      padding: EdgeInsets.only(
-                        left: _orbExpanded ? 0 : 16,
-                      ),
+                      padding: EdgeInsets.only(left: _orbExpanded ? 0 : 16),
                       child: AnimatedContainer(
                         duration: const Duration(milliseconds: 400),
                         curve: Curves.easeOutCubic,
@@ -1075,26 +1122,89 @@ class _AssetChip extends StatelessWidget {
 
   IconData get _icon {
     switch (asset.assetType) {
-      case 'file':    return Icons.insert_drive_file_outlined;
-      case 'photo':   return Icons.photo_outlined;
-      case 'email':   return Icons.email_outlined;
-      case 'contact': return Icons.person_outline;
-      case 'calendar':return Icons.calendar_today_outlined;
-      case 'phone':   return Icons.phone_outlined;
-      case 'link':    return Icons.link;
-      default:        return Icons.attach_file;
+      case 'file':
+        return Icons.insert_drive_file_outlined;
+      case 'photo':
+        return Icons.photo_outlined;
+      case 'email':
+        return Icons.email_outlined;
+      case 'contact':
+        return Icons.person_outline;
+      case 'calendar':
+        return Icons.calendar_today_outlined;
+      case 'phone':
+        return Icons.phone_outlined;
+      case 'link':
+        return Icons.link;
+      default:
+        return Icons.attach_file;
     }
   }
 
-  void _onTap() {
-    debugPrint('[AssetChip] Tapped: ${asset.assetType} → ${asset.assetRef}');
+  Uri? _uriForAsset() {
+    switch (asset.assetType) {
+      case 'file':
+      case 'photo':
+        if (asset.assetRef.startsWith('file://')) {
+          return Uri.tryParse(asset.assetRef);
+        }
+        return Uri.file(asset.assetRef);
+      case 'email':
+        if (asset.assetRef.startsWith('mailto:')) {
+          return Uri.tryParse(asset.assetRef);
+        }
+        return Uri(scheme: 'mailto', path: asset.assetRef.trim());
+      case 'phone':
+        if (asset.assetRef.startsWith('tel:')) {
+          return Uri.tryParse(asset.assetRef);
+        }
+        final digits = asset.assetRef.replaceAll(RegExp(r'[^0-9+]'), '');
+        return digits.isEmpty ? null : Uri(scheme: 'tel', path: digits);
+      case 'contact':
+        if (asset.assetRef.startsWith('tel:') ||
+            asset.assetRef.startsWith('mailto:')) {
+          return Uri.tryParse(asset.assetRef);
+        }
+        if (asset.assetRef.contains('@')) {
+          return Uri(scheme: 'mailto', path: asset.assetRef.trim());
+        }
+        final digits = asset.assetRef.replaceAll(RegExp(r'[^0-9+]'), '');
+        return digits.isEmpty ? null : Uri(scheme: 'tel', path: digits);
+      case 'link':
+        final raw = asset.assetRef.trim();
+        final parsed = Uri.tryParse(raw);
+        if (parsed != null && parsed.hasScheme) return parsed;
+        return Uri.tryParse('https://$raw');
+      default:
+        return null;
+    }
+  }
+
+  Future<void> _onTap(BuildContext context) async {
+    final uri = _uriForAsset();
+    if (uri == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('This source cannot be opened yet.')),
+      );
+      return;
+    }
+    final launched = await launchUrl(uri, mode: LaunchMode.externalApplication);
+    if (!launched && context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            'Could not open source: ${asset.label ?? asset.assetRef}',
+          ),
+        ),
+      );
+    }
   }
 
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
     return GestureDetector(
-      onTap: _onTap,
+      onTap: () => _onTap(context),
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
         decoration: BoxDecoration(
@@ -1164,9 +1274,9 @@ class _ThinkingBubbleState extends State<_ThinkingBubble>
         padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
         decoration: BoxDecoration(
           color: colors.surfaceContainerHighest,
-          borderRadius: BorderRadius.circular(20).copyWith(
-            bottomLeft: const Radius.circular(4),
-          ),
+          borderRadius: BorderRadius.circular(
+            20,
+          ).copyWith(bottomLeft: const Radius.circular(4)),
           border: Border.all(color: colors.outline.withAlpha(25)),
         ),
         child: AnimatedBuilder(
@@ -1187,7 +1297,9 @@ class _ThinkingBubbleState extends State<_ThinkingBubble>
                       height: 8,
                       decoration: BoxDecoration(
                         shape: BoxShape.circle,
-                        color: colors.primary.withAlpha((150 + (t * 105)).toInt()),
+                        color: colors.primary.withAlpha(
+                          (150 + (t * 105)).toInt(),
+                        ),
                       ),
                     ),
                   ),
