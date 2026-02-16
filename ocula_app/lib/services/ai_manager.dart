@@ -717,64 +717,101 @@ class AIManager {
     // model without touching the text model. After describing the image we
     // unload only the vision model to free RAM.
     if (imagePath != null) {
-      final projPath = await _models.visionProjectorPath(
-        _activeTier ?? AITier.free,
-      );
-      debugPrint(
-        '[AIManager] Vision path: tier=${_activeTier?.name}, projPath=${projPath != null ? "found" : "MISSING"}',
-      );
-      if (projPath != null) {
-        final mainPath =
-            await _models.mainModelPath(_activeTier ?? AITier.free) ?? '';
+      final tier = _activeTier ?? AITier.free;
+      String unavailableReason = 'The vision model may still be loading.';
+
+      // Free-tier vision is expected to be available at startup.
+      // Force a one-time readiness check before reporting a failure.
+      if (tier == AITier.free) {
         try {
+          await _models.ensureFreeModelReady();
+        } catch (_) {}
+      }
+
+      final mainPath = await _models.mainModelPath(tier);
+      final projPath = await _models.visionProjectorPath(tier);
+
+      debugPrint(
+        '[AIManager] Vision path: tier=${tier.name}, main=${mainPath != null ? "found" : "MISSING"}, proj=${projPath != null ? "found" : "MISSING"}',
+      );
+
+      if (mainPath == null || projPath == null) {
+        unavailableReason = 'The vision model files are not ready yet.';
+      } else {
+        final mainValid = await _models.isValidLocalModel(mainPath);
+        final projValid = await _models.isValidLocalModel(projPath);
+
+        if (!mainValid || !projValid) {
+          unavailableReason = 'The vision model is still preparing.';
           debugPrint(
-            '[AIManager] Loading vision model: ${mainPath.split('/').last}',
+            '[AIManager] Vision invalid GGUF: mainValid=$mainValid projValid=$projValid',
           );
+        } else {
           final emulator = await isEmulator;
-          final loaded = await _visionEngine.loadMultimodalModel(
-            MultimodalConfig(
-              textModelPath: mainPath,
-              mmprojPath: projPath,
-              enableVision: true,
-              enableAudio: false,
-              useGpuForMultimodal: !emulator,
-              extraParams: emulator
-                  ? {
-                      'nThreads': 2,
-                      'nGpuLayers': 0,
-                      'contextSize': 1024,
-                      'batchSize': 256,
-                    }
-                  : null,
-            ),
+          final cfg = MultimodalConfig(
+            textModelPath: mainPath,
+            mmprojPath: projPath,
+            enableVision: true,
+            enableAudio: false,
+            useGpuForMultimodal: !emulator,
+            extraParams: emulator
+                ? {
+                    'nThreads': 2,
+                    'nGpuLayers': 0,
+                    'contextSize': 1024,
+                    'batchSize': 256,
+                  }
+                : null,
           );
-          debugPrint('[AIManager] Vision model loaded: $loaded');
-          if (loaded) {
-            final response = await _visionEngine.describeImage(
-              imagePath,
-              fullPrompt,
-            );
-            debugPrint(
-              '[AIManager] Vision generated ${response.text.length} chars',
-            );
-            // Free vision model RAM — text engine is untouched
+
+          // On some devices the first load can race with native cleanup.
+          // Retry once after a short delay before surfacing an error.
+          for (var attempt = 1; attempt <= 2; attempt++) {
             try {
-              await _visionEngine.unloadMultimodalModel();
-            } catch (_) {}
-            return response.text;
+              if (_visionEngine.isModelLoaded) {
+                await _visionEngine.unloadMultimodalModel();
+              }
+              debugPrint(
+                '[AIManager] Loading vision model attempt $attempt: ${mainPath.split('/').last}',
+              );
+              final loaded = await _visionEngine.loadMultimodalModel(cfg);
+              debugPrint('[AIManager] Vision model loaded: $loaded');
+              if (loaded) {
+                final response = await _visionEngine.describeImage(
+                  imagePath,
+                  fullPrompt,
+                );
+                debugPrint(
+                  '[AIManager] Vision generated ${response.text.length} chars',
+                );
+                try {
+                  await _visionEngine.unloadMultimodalModel();
+                } catch (_) {}
+                return response.text;
+              }
+              unavailableReason = 'The vision model failed to initialize.';
+            } catch (e) {
+              debugPrint('[AIManager] Vision failed (attempt $attempt): $e');
+              unavailableReason = 'The vision engine failed to initialize.';
+              try {
+                await _visionEngine.unloadMultimodalModel();
+              } catch (_) {}
+            }
+
+            if (attempt == 1) {
+              await Future.delayed(const Duration(milliseconds: 700));
+            }
           }
-        } catch (e) {
-          debugPrint('[AIManager] Vision failed: $e');
-          try {
-            await _visionEngine.unloadMultimodalModel();
-          } catch (_) {}
         }
       }
+
       // Vision failed or no projector — DON'T fall through to text-only
       // (text model can't see the image, it would produce garbage).
-      debugPrint('[AIManager] Vision unavailable — returning error message');
+      debugPrint(
+        '[AIManager] Vision unavailable — returning error message: $unavailableReason',
+      );
       return 'I couldn\'t process this image right now. '
-          'The vision model may still be loading. Please try again in a moment.';
+          '$unavailableReason Please try again in a moment.';
     }
 
     // ── Text path ──

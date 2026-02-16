@@ -61,6 +61,10 @@ build/
 # Local virtual environments
 ocula_venv/
 
+# Python caches
+__pycache__/
+*.pyc
+
 # Fine-tune data
 fine_tune_models/data/
 
