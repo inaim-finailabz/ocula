@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:path/path.dart' as p;
 import 'package:device_info_plus/device_info_plus.dart';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_llama/flutter_llama.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'app_language.dart';
@@ -46,6 +47,7 @@ class AIManager {
   final AppLanguage _appLang = AppLanguage();
   int? _deviceRamMB;
   bool? _isEmulator;
+  int _loadedTextContextSize = 2048;
 
   /// The best tier that finished downloading but hasn't been loaded yet.
   /// Set by the tierReadyStream listener, consumed by applyPendingUpgrade().
@@ -463,6 +465,8 @@ class AIManager {
           ),
         );
       } else if (Platform.isAndroid) {
+        final ram = await deviceRamMB;
+        final proCtx = _proContextSizeForRam(ram);
         final int gpuLayers;
         if (tier == AITier.pro) {
           gpuLayers = 12;
@@ -476,23 +480,48 @@ class AIManager {
             modelPath: mainPath,
             nGpuLayers: gpuLayers,
             useGpu: gpuLayers != 0,
-            contextSize: 2048,
+            contextSize: tier == AITier.pro ? proCtx : 2048,
             batchSize: 256,
             nThreads: nThreads,
           ),
         );
       } else {
+        final ram = await deviceRamMB;
+        final proCtx = _proContextSizeForRam(ram);
         // iOS/macOS: for Pro tier, try progressively safer configs to avoid
         // transient Metal/OOM fallbacks that bounce back to Lite.
         if (tier == AITier.pro) {
-          // Safe-first ordering: start with lower-memory configs before
-          // attempting full-GPU/high-batch variants.
+          // High-RAM devices: prefer larger context first for better retrieval fidelity.
+          if (ram >= 7000) {
+            attempts.add(
+              LlamaConfig(
+                modelPath: mainPath,
+                nGpuLayers: -1,
+                useGpu: true,
+                contextSize: proCtx,
+                batchSize: 256,
+                nThreads: nThreads.clamp(4, 6),
+              ),
+            );
+            attempts.add(
+              LlamaConfig(
+                modelPath: mainPath,
+                nGpuLayers: 24,
+                useGpu: true,
+                contextSize: 3072,
+                batchSize: 256,
+                nThreads: nThreads.clamp(3, 5),
+              ),
+            );
+          }
+
+          // Safe fallbacks.
           attempts.add(
             LlamaConfig(
               modelPath: mainPath,
               nGpuLayers: 12,
               useGpu: true,
-              contextSize: 1024,
+              contextSize: 1536,
               batchSize: 128,
               nThreads: nThreads.clamp(3, 4),
             ),
@@ -502,7 +531,7 @@ class AIManager {
               modelPath: mainPath,
               nGpuLayers: 24,
               useGpu: true,
-              contextSize: 1536,
+              contextSize: 2048,
               batchSize: 256,
               nThreads: nThreads.clamp(3, 4),
             ),
@@ -512,7 +541,7 @@ class AIManager {
               modelPath: mainPath,
               nGpuLayers: 0,
               useGpu: false,
-              contextSize: 1024,
+              contextSize: 1536,
               batchSize: 128,
               nThreads: nThreads.clamp(3, 4),
             ),
@@ -523,7 +552,7 @@ class AIManager {
               nGpuLayers: -1,
               useGpu: true,
               contextSize: 2048,
-              batchSize: 512,
+              batchSize: 256,
               nThreads: nThreads,
             ),
           );
@@ -543,6 +572,7 @@ class AIManager {
 
       Object? lastLoadError;
       var loaded = false;
+      LlamaConfig? loadedConfig;
       for (var i = 0; i < attempts.length; i++) {
         final cfg = attempts[i];
         try {
@@ -551,7 +581,10 @@ class AIManager {
             'gpu=${cfg.nGpuLayers} ctx=${cfg.contextSize} batch=${cfg.batchSize}',
           );
           loaded = await _textEngine.loadModel(cfg);
-          if (loaded) break;
+          if (loaded) {
+            loadedConfig = cfg;
+            break;
+          }
           lastLoadError = ModelNotReadyException(tier);
         } catch (e) {
           lastLoadError = e;
@@ -592,6 +625,7 @@ class AIManager {
       }
 
       _activeTier = tier;
+      _loadedTextContextSize = loadedConfig?.contextSize ?? 2048;
       _activeTierController.add(tier);
       debugPrint('[AIManager] switchEngine: ${tier.name} loaded ✓');
 
@@ -716,24 +750,22 @@ class AIManager {
     // to avoid overwhelming the tiny context window.
     final ragConfig = RagConfig();
     final budgetChars = ragConfig.contextBudgetChars;
-    String compactContext = context;
-    if (context.isNotEmpty && isSmallModel) {
-      compactContext = _summarizeContext(
-        context,
-        maxChars: (budgetChars * 0.5).round(),
-      );
-    } else if (context.isNotEmpty && !isProModel) {
-      compactContext = _summarizeContext(context, maxChars: budgetChars);
-    }
-    // Pro model gets full context (up to configured budget)
+    String compactContext = _compactContextForTier(
+      context,
+      query: prompt,
+      isSmallModel: isSmallModel,
+      isProModel: isProModel,
+      budgetChars: budgetChars,
+    );
 
     final String systemMsg;
-    final String userMsg;
+    String userMsg;
     final rolePrefix =
         '${langPrefix}You are Ocula, an AI assistant with access to the user\'s phone assets via local RAG context. '
         'Use available phone data to help the user, and never invent missing phone data. '
         'When context is available, start with where you found the answer (document, image, contact, email, calendar). '
-        'Include key metadata when available: date/time, location, sender, author, file name. ';
+        'Include key metadata when available: date/time, location, sender, author, file name. '
+        'If context contains [Ambiguity], ask one clarifying question instead of guessing. ';
 
     // Intent-specific data label for context sections
     final String dataLabel = _intentDataLabel(intent);
@@ -797,10 +829,35 @@ class AIManager {
       userMsg = prompt;
     }
 
-    final fullPrompt =
+    String fullPrompt =
         '<|im_start|>system\n$systemMsg<|im_end|>\n'
         '<|im_start|>user\n$userMsg<|im_end|>\n'
         '<|im_start|>assistant\n';
+
+    // Hard guard: keep prompt within a safe range for native decode slots.
+    // This protects against "failed to find a memory slot for batch".
+    final maxPromptChars = _safePromptCharBudget(
+      isSmallModel: isSmallModel,
+      isProModel: isProModel,
+    );
+    if (fullPrompt.length > maxPromptChars && compactContext.isNotEmpty) {
+      final staticOverhead = fullPrompt.length - compactContext.length;
+      final targetCtx = (maxPromptChars - staticOverhead - 120).clamp(
+        350,
+        1800,
+      );
+      compactContext = _summarizeContext(compactContext, maxChars: targetCtx);
+      userMsg = isProModel
+          ? '$dataLabel:\n$compactContext\n\nQuestion: $prompt'
+          : '$dataLabel:\n$compactContext\n\nQ: $prompt';
+      fullPrompt =
+          '<|im_start|>system\n$systemMsg<|im_end|>\n'
+          '<|im_start|>user\n$userMsg<|im_end|>\n'
+          '<|im_start|>assistant\n';
+      debugPrint(
+        '[AIManager] Prompt clamped: ${fullPrompt.length} chars (ctx=${compactContext.length})',
+      );
+    }
 
     // ── Vision path ──
     // The multimodal bridge (mm_model) is separate from the text bridge
@@ -987,17 +1044,53 @@ class AIManager {
     final double temp = isSmallModel ? 0.1 : (isProModel ? 0.5 : 0.3);
     final double repPen = isSmallModel ? 1.8 : 1.3;
 
-    final response = await _textEngine.generate(
-      GenerationParams(
-        prompt: fullPrompt,
-        maxTokens: maxTok,
-        temperature: temp,
-        repeatPenalty: repPen,
-        // Some models emit <|im_start|> as their first token, which can
-        // prematurely stop generation at 0 tokens.
-        stopSequences: ['<|im_end|>'],
-      ),
-    );
+    LlamaResponse response;
+    try {
+      response = await _textEngine.generate(
+        GenerationParams(
+          prompt: fullPrompt,
+          maxTokens: maxTok,
+          temperature: temp,
+          repeatPenalty: repPen,
+          // Some models emit <|im_start|> as their first token, which can
+          // prematurely stop generation at 0 tokens.
+          stopSequences: ['<|im_end|>'],
+        ),
+      );
+    } on PlatformException catch (e) {
+      final msg = e.toString().toLowerCase();
+      final likelyContextOverflow =
+          msg.contains('memory slot') ||
+          msg.contains('batch') ||
+          msg.contains('context');
+      if (!likelyContextOverflow || compactContext.isEmpty) rethrow;
+
+      debugPrint(
+        '[AIManager] Generation memory-slot failure; retrying with tighter context',
+      );
+      final tighterContext = _summarizeContext(
+        compactContext,
+        maxChars: isProModel ? 1200 : 800,
+      );
+      final retryUserMsg = tighterContext.isNotEmpty
+          ? '${_intentDataLabel(intent)}:\n$tighterContext\n\nQ: $prompt'
+          : prompt;
+      final retryPrompt =
+          '<|im_start|>system\n$systemMsg<|im_end|>\n'
+          '<|im_start|>user\n$retryUserMsg<|im_end|>\n'
+          '<|im_start|>assistant\n';
+
+      response = await _textEngine.generate(
+        GenerationParams(
+          prompt: retryPrompt,
+          maxTokens: maxTok,
+          temperature: temp,
+          repeatPenalty: repPen,
+          stopSequences: ['<|im_end|>'],
+        ),
+      );
+      compactContext = tighterContext;
+    }
 
     var text = response.text;
     text = text
@@ -1047,6 +1140,7 @@ class AIManager {
 
     // Anti-hallucination: detect and reject off-topic or nonsensical output.
     text = _guardHallucination(text, prompt, compactContext, isSmallModel);
+    text = _enforceFactGrounding(text, prompt, compactContext);
 
     return text;
   }
@@ -1083,15 +1177,13 @@ class AIManager {
     final budgetChars = ragConfig.contextBudgetChars;
 
     // Compact context (same logic as ask())
-    String compactContext = context;
-    if (context.isNotEmpty && isSmallModel) {
-      compactContext = _summarizeContext(
-        context,
-        maxChars: (budgetChars * 0.5).round(),
-      );
-    } else if (context.isNotEmpty && !isProModel) {
-      compactContext = _summarizeContext(context, maxChars: budgetChars);
-    }
+    String compactContext = _compactContextForTier(
+      context,
+      query: prompt,
+      isSmallModel: isSmallModel,
+      isProModel: isProModel,
+      budgetChars: budgetChars,
+    );
 
     // Build system/user messages (same logic as ask())
     String systemMsg;
@@ -1100,7 +1192,8 @@ class AIManager {
         '${langPrefix}You are Ocula, an AI assistant with access to the user\'s phone assets via local RAG context. '
         'Use available phone data to help the user, and never invent missing phone data. '
         'When context is available, start with where you found the answer (document, image, contact, email, calendar). '
-        'Include key metadata when available: date/time, location, sender, author, file name. ';
+        'Include key metadata when available: date/time, location, sender, author, file name. '
+        'If context contains [Ambiguity], ask one clarifying question instead of guessing. ';
     if (compactContext.isNotEmpty) {
       final dataLabel = _intentDataLabel(intent);
       if (isSmallModel) {
@@ -1150,10 +1243,34 @@ class AIManager {
       userMsg = prompt;
     }
 
-    final fullPrompt =
+    String fullPrompt =
         '<|im_start|>system\n$systemMsg<|im_end|>\n'
         '<|im_start|>user\n$userMsg<|im_end|>\n'
         '<|im_start|>assistant\n';
+
+    final maxPromptChars = _safePromptCharBudget(
+      isSmallModel: isSmallModel,
+      isProModel: isProModel,
+    );
+    if (fullPrompt.length > maxPromptChars && compactContext.isNotEmpty) {
+      final dataLabel = _intentDataLabel(intent);
+      final staticOverhead = fullPrompt.length - compactContext.length;
+      final targetCtx = (maxPromptChars - staticOverhead - 120).clamp(
+        350,
+        1800,
+      );
+      compactContext = _summarizeContext(compactContext, maxChars: targetCtx);
+      userMsg = isProModel
+          ? '$dataLabel:\n$compactContext\n\nQuestion: $prompt'
+          : '$dataLabel:\n$compactContext\n\nQ: $prompt';
+      fullPrompt =
+          '<|im_start|>system\n$systemMsg<|im_end|>\n'
+          '<|im_start|>user\n$userMsg<|im_end|>\n'
+          '<|im_start|>assistant\n';
+      debugPrint(
+        '[AIManager] Stream prompt clamped: ${fullPrompt.length} chars (ctx=${compactContext.length})',
+      );
+    }
 
     final configMaxTok = ragConfig.maxResponseTokens;
     final int maxTok = isSmallModel
@@ -1197,7 +1314,111 @@ class AIManager {
       text = _truncateToFirstParagraph(text, maxChars: maxChars);
     }
     text = _guardHallucination(text, prompt, compactContext, isSmallModel);
+    text = _enforceFactGrounding(text, prompt, compactContext);
     yield text;
+  }
+
+  /// Fact-to-source guard:
+  /// keeps response fluent but removes factual lines not supported by RAG context.
+  String _enforceFactGrounding(String text, String query, String context) {
+    if (text.trim().isEmpty || context.trim().isEmpty) return text;
+
+    final lowerContext = context.toLowerCase();
+    final sourceLines = context
+        .split('\n')
+        .map((l) => l.trim())
+        .where((l) => l.isNotEmpty)
+        .toList();
+    final contentLines = sourceLines
+        .where((l) => l.toLowerCase().startsWith('content:'))
+        .map((l) => l.substring(8).trim().toLowerCase())
+        .toList();
+    final supportText = (contentLines.isNotEmpty
+        ? contentLines.join(' ')
+        : lowerContext);
+
+    final parts = text
+        .split(RegExp(r'(?<=[.!?])\s+|\n+'))
+        .map((p) => p.trim())
+        .where((p) => p.isNotEmpty)
+        .toList();
+    if (parts.length <= 1) return text;
+
+    const stop = {
+      'the',
+      'and',
+      'for',
+      'with',
+      'that',
+      'this',
+      'from',
+      'have',
+      'your',
+      'about',
+      'there',
+      'which',
+      'when',
+      'where',
+      'what',
+      'into',
+      'also',
+      'using',
+      'only',
+      'data',
+      'found',
+      'source',
+      'answer',
+      'brief',
+    };
+
+    bool isFactual(String s) {
+      final lower = s.toLowerCase();
+      if (RegExp(r'\d').hasMatch(lower)) return true;
+      if (lower.contains('@')) return true;
+      if (RegExp(
+        r'\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\b',
+      ).hasMatch(lower)) {
+        return true;
+      }
+      if (lower.contains('where i found') || lower.startsWith('source')) {
+        return true;
+      }
+      return RegExp(
+        r'\b(contact|calendar|email|file|photo|document|sender|location|date|time)\b',
+      ).hasMatch(lower);
+    }
+
+    bool supported(String s) {
+      final words = s
+          .toLowerCase()
+          .replaceAll(RegExp(r'[^a-z0-9\s@._:/-]'), ' ')
+          .split(RegExp(r'\s+'))
+          .where((w) => w.length >= 4 && !stop.contains(w))
+          .toSet();
+      if (words.isEmpty) return true;
+      final overlap = words.where((w) => supportText.contains(w)).length;
+      return overlap >= 1 || words.length <= 2;
+    }
+
+    final kept = <String>[];
+    var droppedFactual = 0;
+    for (final p in parts) {
+      if (!isFactual(p) || supported(p)) {
+        kept.add(p);
+      } else {
+        droppedFactual++;
+      }
+    }
+
+    if (kept.isEmpty) {
+      return _fallbackResponse(query, context);
+    }
+    var cleaned = kept.join(' ').replaceAll(RegExp(r'\s+'), ' ').trim();
+    if (droppedFactual > 0 && !cleaned.endsWith('?')) {
+      cleaned +=
+          ' (I omitted details not grounded in your indexed phone data.)';
+    }
+    return cleaned;
   }
 
   /// Truncate rambling output to the first meaningful paragraph or [maxChars].
@@ -1539,6 +1760,132 @@ class AIManager {
     }
 
     return buffer.toString().trim();
+  }
+
+  /// Keep prompts within safe limits per tier to avoid native decode failures.
+  String _compactContextForTier(
+    String context, {
+    required String query,
+    required bool isSmallModel,
+    required bool isProModel,
+    required int budgetChars,
+  }) {
+    if (context.isEmpty) return context;
+
+    if (isSmallModel) {
+      return _summarizeContext(context, maxChars: (budgetChars * 0.5).round());
+    }
+
+    if (isProModel) {
+      // Hierarchical context packing for larger Pro windows:
+      // keep top sources verbatim, summarize overflow with source refs.
+      final proBudget =
+          (_safePromptCharBudget(isSmallModel: false, isProModel: true) * 0.7)
+              .round()
+              .clamp(1800, 4600);
+      return _packHierarchicalContext(
+        context,
+        query: query,
+        maxChars: proBudget,
+      );
+    }
+
+    return _summarizeContext(context, maxChars: budgetChars);
+  }
+
+  int _safePromptCharBudget({
+    required bool isSmallModel,
+    required bool isProModel,
+  }) {
+    if (isSmallModel) return 2000;
+    if (!isProModel) return 2600;
+    if (_loadedTextContextSize >= 4096) return 5600;
+    if (_loadedTextContextSize >= 3072) return 4400;
+    return 3400;
+  }
+
+  int _proContextSizeForRam(int ramMB) {
+    if (ramMB >= 9000) return 4096;
+    if (ramMB >= 7000) return 3072;
+    return 2048;
+  }
+
+  String _packHierarchicalContext(
+    String context, {
+    required String query,
+    required int maxChars,
+  }) {
+    if (context.length <= maxChars) return context;
+
+    final blocks = context
+        .split(RegExp(r'\n{2,}(?=\[SOURCE |\[Linked entities\]|\[Ambiguity\])'))
+        .map((b) => b.trim())
+        .where((b) => b.isNotEmpty)
+        .toList();
+    if (blocks.isEmpty) return _summarizeContext(context, maxChars: maxChars);
+
+    final qWords = query
+        .toLowerCase()
+        .replaceAll(RegExp(r'[^a-z0-9\s]'), ' ')
+        .split(RegExp(r'\s+'))
+        .where((w) => w.length >= 3)
+        .toSet();
+
+    int scoreBlock(String b) {
+      final lower = b.toLowerCase();
+      var s = 0;
+      for (final w in qWords) {
+        if (lower.contains(w)) s++;
+      }
+      if (lower.startsWith('[source ')) s += 2;
+      if (lower.contains('content:')) s += 2;
+      if (lower.contains('date:')) s += 1;
+      return s;
+    }
+
+    final ranked = [...blocks]
+      ..sort((a, b) => scoreBlock(b).compareTo(scoreBlock(a)));
+
+    final kept = <String>[];
+    final overflow = <String>[];
+    var used = 0;
+
+    for (final b in ranked) {
+      if (used + b.length + 2 <= maxChars * 0.75) {
+        kept.add(b);
+        used += b.length + 2;
+      } else {
+        overflow.add(b);
+      }
+    }
+
+    if (overflow.isNotEmpty) {
+      final summaryLines = <String>[];
+      for (final b in overflow.take(8)) {
+        final ref =
+            RegExp(
+              r'Reference:\s*(.+)$',
+              multiLine: true,
+            ).firstMatch(b)?.group(1) ??
+            'source';
+        final content =
+            RegExp(
+              r'Content:\s*(.+)$',
+              multiLine: true,
+            ).firstMatch(b)?.group(1) ??
+            b;
+        final short = content.length > 140
+            ? '${content.substring(0, 140)}...'
+            : content;
+        summaryLines.add('- $ref: $short');
+      }
+      kept.add('[Source summaries]\n${summaryLines.join('\n')}');
+    }
+
+    final packed = kept.join('\n\n');
+    return packed.length <= maxChars
+        ? packed
+        : _summarizeContext(packed, maxChars: maxChars);
   }
 
   /// Human-readable label for the data section based on query intent.

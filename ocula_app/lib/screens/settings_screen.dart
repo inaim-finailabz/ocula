@@ -14,6 +14,8 @@ import '../services/local_data.dart';
 import '../services/indexer.dart';
 import '../services/notification_service.dart';
 import '../services/ocula_db.dart';
+import '../services/feedback_service.dart';
+import '../services/env_config.dart';
 
 /// Settings screen — voice customisation + privacy controls.
 class SettingsScreen extends StatefulWidget {
@@ -37,6 +39,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   bool _loading = true;
 
   final _network = NetworkPermission();
+  final _feedback = FeedbackService();
   late InternetAccess _internetAccess;
 
   final _appLang = AppLanguage();
@@ -347,14 +350,20 @@ class _SettingsScreenState extends State<SettingsScreen> {
                           ),
                           const SizedBox(width: 8),
                           Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 8,
+                              vertical: 2,
+                            ),
                             decoration: BoxDecoration(
                               color: colors.primary.withAlpha(30),
                               borderRadius: BorderRadius.circular(6),
                             ),
                             child: Text(
                               'v1.0.0',
-                              style: TextStyle(fontSize: 11, color: colors.primary),
+                              style: TextStyle(
+                                fontSize: 11,
+                                color: colors.primary,
+                              ),
                             ),
                           ),
                         ],
@@ -403,25 +412,29 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 _featureTile(
                   icon: Icons.visibility,
                   title: 'Vision AI',
-                  subtitle: 'Point your camera and Ocula identifies, reads, and analyses what it sees.',
+                  subtitle:
+                      'Point your camera and Ocula identifies, reads, and analyses what it sees.',
                   colors: colors,
                 ),
                 _featureTile(
                   icon: Icons.mic,
                   title: 'Voice Assistant',
-                  subtitle: 'Talk naturally — Ocula listens, thinks, and speaks back.',
+                  subtitle:
+                      'Talk naturally — Ocula listens, thinks, and speaks back.',
                   colors: colors,
                 ),
                 _featureTile(
                   icon: Icons.lock,
                   title: '100% Private',
-                  subtitle: 'All AI models run on-device. Zero data sent to any server.',
+                  subtitle:
+                      'All AI models run on-device. Zero data sent to any server.',
                   colors: colors,
                 ),
                 _featureTile(
                   icon: Icons.wifi_off,
                   title: 'Works Offline',
-                  subtitle: 'No internet required. Full functionality in airplane mode.',
+                  subtitle:
+                      'No internet required. Full functionality in airplane mode.',
                   colors: colors,
                 ),
                 _featureTile(
@@ -456,6 +469,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         ),
                       ),
                       const SizedBox(height: 14),
+                      SizedBox(
+                        width: double.infinity,
+                        child: OutlinedButton.icon(
+                          onPressed: _showFeedbackDialog,
+                          icon: const Icon(Icons.feedback_outlined, size: 18),
+                          label: const Text('Send Feedback'),
+                        ),
+                      ),
+                      const SizedBox(height: 10),
                       _linkRow(
                         icon: Icons.email_outlined,
                         label: 'support@finailabz.com',
@@ -503,11 +525,23 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 const SizedBox(height: 8),
                 Row(
                   children: [
-                    _socialChip('X / Twitter', 'https://x.com/finailabz', colors),
+                    _socialChip(
+                      'X / Twitter',
+                      'https://x.com/finailabz',
+                      colors,
+                    ),
                     const SizedBox(width: 8),
-                    _socialChip('LinkedIn', 'https://linkedin.com/company/finailabz', colors),
+                    _socialChip(
+                      'LinkedIn',
+                      'https://linkedin.com/company/finailabz',
+                      colors,
+                    ),
                     const SizedBox(width: 8),
-                    _socialChip('GitHub', 'https://github.com/finailabz', colors),
+                    _socialChip(
+                      'GitHub',
+                      'https://github.com/finailabz',
+                      colors,
+                    ),
                   ],
                 ),
 
@@ -616,9 +650,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
             const SizedBox(height: 15),
             Text(
               'Tools for advanced users and troubleshooting',
-              style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                color: Colors.grey[600],
-              ),
+              style: Theme.of(
+                context,
+              ).textTheme.bodySmall?.copyWith(color: Colors.grey[600]),
             ),
             const SizedBox(height: 15),
             _buildAdvancedTile(
@@ -726,9 +760,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
       );
 
       await AIManager().clearMemory();
-      
+
       Navigator.pop(context); // Close loading dialog
-      
+
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
           content: Text('Memory cleared successfully'),
@@ -764,9 +798,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
       );
 
       final success = await OculaModelManager().clearModelFiles();
-      
+
       Navigator.pop(context); // Close loading dialog
-      
+
       if (success) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
@@ -785,18 +819,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
     } catch (e) {
       Navigator.pop(context); // Close loading dialog
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Error: $e'),
-          backgroundColor: Colors.red,
-        ),
+        SnackBar(content: Text('Error: $e'), backgroundColor: Colors.red),
       );
     }
   }
 
   // Voice defaults — Natural preset applied automatically on init.
   // Custom voice upload section below lets users personalize further.
-
-
 
   // ── Language Dropdown ──
 
@@ -868,7 +897,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
             ),
             subtitle: Text(
               locale,
-              style: TextStyle(fontSize: 12, color: colors.onSurface.withAlpha(100)),
+              style: TextStyle(
+                fontSize: 12,
+                color: colors.onSurface.withAlpha(100),
+              ),
             ),
             trailing: isSelected
                 ? Icon(Icons.check_circle, color: colors.primary, size: 20)
@@ -892,7 +924,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
       decoration: BoxDecoration(
         color: colors.surfaceContainerHighest,
         borderRadius: BorderRadius.circular(12),
-        border: hasVoice ? Border.all(color: Colors.greenAccent.withAlpha(80)) : null,
+        border: hasVoice
+            ? Border.all(color: Colors.greenAccent.withAlpha(80))
+            : null,
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -917,7 +951,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
               ),
               if (hasVoice)
                 IconButton(
-                  icon: Icon(Icons.delete_outline, size: 20, color: colors.error),
+                  icon: Icon(
+                    Icons.delete_outline,
+                    size: 20,
+                    color: colors.error,
+                  ),
                   tooltip: 'Remove custom voice',
                   onPressed: () async {
                     await widget.speech.removeCustomVoice();
@@ -931,7 +969,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             hasVoice
                 ? 'Your voice sample is stored locally for future voice cloning.'
                 : 'Upload a voice recording (.wav, .m4a, .mp3) to personalize how Ocula speaks. '
-                  'Your voice sample stays on-device.',
+                      'Your voice sample stays on-device.',
             style: TextStyle(
               fontSize: 12,
               color: colors.onSurface.withAlpha(120),
@@ -972,9 +1010,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
       }
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Could not upload voice: $e')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('Could not upload voice: $e')));
       }
     }
   }
@@ -1006,7 +1044,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
             padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
             child: Row(
               children: [
-                Icon(icon, size: 22, color: isSelected ? colors.primary : colors.onSurface),
+                Icon(
+                  icon,
+                  size: 22,
+                  color: isSelected ? colors.primary : colors.onSurface,
+                ),
                 const SizedBox(width: 14),
                 Expanded(
                   child: Column(
@@ -1015,7 +1057,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       Text(
                         label,
                         style: TextStyle(
-                          fontWeight: isSelected ? FontWeight.bold : FontWeight.w500,
+                          fontWeight: isSelected
+                              ? FontWeight.bold
+                              : FontWeight.w500,
                           color: isSelected ? colors.primary : colors.onSurface,
                         ),
                       ),
@@ -1073,7 +1117,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 children: [
                   Text(
                     title,
-                    style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 14),
+                    style: const TextStyle(
+                      fontWeight: FontWeight.w600,
+                      fontSize: 14,
+                    ),
                   ),
                   const SizedBox(height: 2),
                   Text(
@@ -1119,7 +1166,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
               ),
             ),
             const Spacer(),
-            Icon(Icons.open_in_new, size: 14, color: colors.onSurface.withAlpha(60)),
+            Icon(
+              Icons.open_in_new,
+              size: 14,
+              color: colors.onSurface.withAlpha(60),
+            ),
           ],
         ),
       ),
@@ -1141,6 +1192,117 @@ class _SettingsScreenState extends State<SettingsScreen> {
     if (await canLaunchUrl(uri)) {
       await launchUrl(uri, mode: LaunchMode.externalApplication);
     }
+  }
+
+  Future<void> _showFeedbackDialog() async {
+    final messageController = TextEditingController();
+    var category = 'general';
+    var sending = false;
+
+    await showDialog(
+      context: context,
+      builder: (ctx) {
+        return StatefulBuilder(
+          builder: (ctx, setDialogState) {
+            return AlertDialog(
+              title: const Text('Send Feedback'),
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  DropdownButtonFormField<String>(
+                    initialValue: category,
+                    decoration: const InputDecoration(
+                      labelText: 'Category',
+                      border: OutlineInputBorder(),
+                      isDense: true,
+                    ),
+                    items: const [
+                      DropdownMenuItem(
+                        value: 'general',
+                        child: Text('General'),
+                      ),
+                      DropdownMenuItem(value: 'bug', child: Text('Bug')),
+                      DropdownMenuItem(
+                        value: 'feature',
+                        child: Text('Feature'),
+                      ),
+                    ],
+                    onChanged: sending
+                        ? null
+                        : (v) {
+                            if (v == null) return;
+                            setDialogState(() => category = v);
+                          },
+                  ),
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: messageController,
+                    enabled: !sending,
+                    minLines: 4,
+                    maxLines: 6,
+                    decoration: const InputDecoration(
+                      hintText: 'What should we improve?',
+                      border: OutlineInputBorder(),
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    'Sent to: ${EnvConfig.feedbackApiUrl}',
+                    style: const TextStyle(fontSize: 11),
+                  ),
+                ],
+              ),
+              actions: [
+                TextButton(
+                  onPressed: sending ? null : () => Navigator.pop(ctx),
+                  child: const Text('Cancel'),
+                ),
+                FilledButton(
+                  onPressed: sending
+                      ? null
+                      : () async {
+                          final message = messageController.text.trim();
+                          if (message.isEmpty) return;
+
+                          setDialogState(() => sending = true);
+                          try {
+                            await _feedback.send(
+                              message: message,
+                              category: category,
+                            );
+                            if (ctx.mounted) Navigator.pop(ctx);
+                            if (!mounted) return;
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(
+                                content: Text('Feedback sent. Thank you.'),
+                              ),
+                            );
+                          } catch (e) {
+                            setDialogState(() => sending = false);
+                            if (!mounted) return;
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              SnackBar(
+                                content: Text('Could not send feedback: $e'),
+                              ),
+                            );
+                          }
+                        },
+                  child: sending
+                      ? const SizedBox(
+                          width: 16,
+                          height: 16,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Text('Send'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+    messageController.dispose();
   }
 
   // ── Helpers ──
@@ -1196,8 +1358,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
     widget.speech.setVolume(1.0);
   }
 }
-
-
 
 // ── Section Header ──
 
@@ -1282,13 +1442,19 @@ class _EmailConfigTileState extends State<_EmailConfigTile> {
         setState(() => _configured = true);
         Navigator.pop(context); // Close dialog
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Connected! Found ${emails.length} emails. Indexing...')),
+          SnackBar(
+            content: Text(
+              'Connected! Found ${emails.length} emails. Indexing...',
+            ),
+          ),
         );
       }
     } else {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Could not fetch emails. Check credentials.')),
+          const SnackBar(
+            content: Text('Could not fetch emails. Check credentials.'),
+          ),
         );
       }
     }
@@ -1314,7 +1480,10 @@ class _EmailConfigTileState extends State<_EmailConfigTile> {
                       runSpacing: 8,
                       children: _presets.keys.map((name) {
                         return ActionChip(
-                          label: Text(name, style: const TextStyle(fontSize: 12)),
+                          label: Text(
+                            name,
+                            style: const TextStyle(fontSize: 12),
+                          ),
                           onPressed: () {
                             _applyPreset(name);
                             setDialogState(() {});
@@ -1426,7 +1595,9 @@ class _EmailConfigTileState extends State<_EmailConfigTile> {
                       _configured ? 'Email connected' : 'Connect email account',
                       style: TextStyle(
                         fontWeight: FontWeight.w500,
-                        color: _configured ? Colors.greenAccent : colors.onSurface,
+                        color: _configured
+                            ? Colors.greenAccent
+                            : colors.onSurface,
                       ),
                     ),
                     const SizedBox(height: 2),
@@ -1571,7 +1742,8 @@ class _IndexStatsCardState extends State<_IndexStatsCard> {
               onPressed: _reindexing ? null : _reindex,
               icon: _reindexing
                   ? const SizedBox(
-                      width: 16, height: 16,
+                      width: 16,
+                      height: 16,
                       child: CircularProgressIndicator(strokeWidth: 2),
                     )
                   : const Icon(Icons.refresh, size: 18),
@@ -1760,10 +1932,11 @@ class _NotificationSettingsState extends State<_NotificationSettings> {
                   value: _briefingHour,
                   underline: const SizedBox.shrink(),
                   style: TextStyle(fontSize: 13, color: colors.primary),
-                  items: List.generate(24, (i) => DropdownMenuItem(
-                    value: i,
-                    child: Text(_formatHour(i)),
-                  )),
+                  items: List.generate(
+                    24,
+                    (i) =>
+                        DropdownMenuItem(value: i, child: Text(_formatHour(i))),
+                  ),
                   onChanged: (v) {
                     if (v != null) {
                       setState(() => _briefingHour = v);

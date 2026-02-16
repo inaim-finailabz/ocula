@@ -1,7 +1,11 @@
+import 'dart:convert';
+import 'dart:io';
+import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../services/ai_manager.dart';
 import '../services/model_manager.dart';
+import '../services/env_config.dart';
 
 /// Enterprise settings — gated behind a valid enterprise API key.
 ///
@@ -65,36 +69,132 @@ class _EnterpriseSettingsState extends State<EnterpriseSettings> {
     });
   }
 
-  /// Validate the enterprise key format.
-  /// Delegates to the shared validator in [AIManager].
-  bool _isValidKey(String key) => AIManager.isValidEnterpriseKey(key);
+  /// Keep client-side checks minimal; server validation is authoritative.
+  bool _isValidKey(String key) => key.trim().length >= 6;
 
   /// Validate and unlock enterprise settings.
   Future<void> _validateKey() async {
     final key = _enterpriseKeyController.text.trim();
-    setState(() { _validating = true; _keyError = null; });
-
-    // Simulate brief validation delay (in production this would hit a server)
-    await Future.delayed(const Duration(milliseconds: 400));
+    setState(() {
+      _validating = true;
+      _keyError = null;
+    });
 
     if (!_isValidKey(key)) {
       setState(() {
         _validating = false;
-        _keyError = 'Invalid enterprise key. Keys start with "ocula-ent-" '
-            'and must be at least 32 characters.';
+        _keyError = 'Please enter a valid enterprise API key.';
       });
       return;
     }
 
-    // Key is valid — persist and unlock
+    try {
+      final verify = await _verifyEnterpriseKeyWithServer(key);
+      final valid = verify['valid'] == true;
+      final activated = verify['activated'] == true;
+      final reason = verify['reason']?.toString();
+      final modelEdgeUrl = verify['model_edge_url']?.toString();
+
+      if (!valid || !activated) {
+        setState(() {
+          _validating = false;
+          _keyError = _verifyErrorMessage(
+            reason,
+            valid: valid,
+            activated: activated,
+          );
+        });
+        return;
+      }
+
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString('enterprise_api_key', key);
+      setState(() {
+        _apiKey = key;
+        _isUnlocked = true;
+        _validating = false;
+        if (modelEdgeUrl != null && modelEdgeUrl.isNotEmpty) {
+          _modelUrl = modelEdgeUrl;
+          _useLocalModel = false;
+        }
+      });
+      debugPrint(
+        '[Enterprise] Key verified by server — enterprise settings unlocked',
+      );
+    } catch (e) {
+      setState(() {
+        _validating = false;
+        _keyError = 'Could not verify key: $e';
+      });
+    }
+  }
+
+  String _verifyErrorMessage(
+    String? reason, {
+    required bool valid,
+    required bool activated,
+  }) {
+    if (!valid) {
+      switch (reason) {
+        case 'invalid_key':
+          return 'Invalid enterprise key.';
+        case 'organization_not_found':
+          return 'Organization not found for this key.';
+        case 'user_not_found':
+          return 'User not found for this key.';
+        default:
+          return 'Enterprise key is not valid.';
+      }
+    }
+    if (!activated) {
+      if (reason == 'subscription_inactive') {
+        return 'Subscription is inactive for this key.';
+      }
+      return 'Key is valid but not activated.';
+    }
+    return 'Enterprise verification failed.';
+  }
+
+  Future<Map<String, dynamic>> _verifyEnterpriseKeyWithServer(
+    String key,
+  ) async {
+    final uri = Uri.parse(EnvConfig.enterpriseVerifyApiUrl);
+    final payload = {'api_key': key, 'device_id': await _deviceId()};
+    final client = HttpClient()..connectionTimeout = const Duration(seconds: 8);
+    try {
+      final req = await client.postUrl(uri);
+      req.headers.contentType = ContentType.json;
+      req.headers.set(HttpHeaders.acceptHeader, 'application/json');
+      req.write(jsonEncode(payload));
+
+      final res = await req.close();
+      final body = await utf8.decoder.bind(res).join();
+      if (res.statusCode != 200) {
+        throw HttpException(
+          'HTTP ${res.statusCode}: ${body.isEmpty ? 'empty body' : body}',
+          uri: uri,
+        );
+      }
+      final decoded = jsonDecode(body);
+      if (decoded is! Map<String, dynamic>) {
+        throw const FormatException('Invalid verification response format');
+      }
+      return decoded;
+    } finally {
+      client.close(force: true);
+    }
+  }
+
+  Future<String> _deviceId() async {
     final prefs = await SharedPreferences.getInstance();
-    await prefs.setString('enterprise_api_key', key);
-    setState(() {
-      _apiKey = key;
-      _isUnlocked = true;
-      _validating = false;
-    });
-    debugPrint('[Enterprise] Key validated — enterprise settings unlocked');
+    final existing = prefs.getString('ocula_device_id');
+    if (existing != null && existing.isNotEmpty) return existing;
+
+    final rand = Random.secure();
+    final bytes = List<int>.generate(12, (_) => rand.nextInt(256));
+    final id = bytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
+    await prefs.setString('ocula_device_id', id);
+    return id;
   }
 
   /// Revoke access and clear enterprise settings.
@@ -108,7 +208,9 @@ class _EnterpriseSettingsState extends State<EnterpriseSettings> {
 
     // If currently on enterprise tier, switch back to free
     if (AIManager().activeTier == AITier.enterprise) {
-      try { await AIManager().switchEngine(AITier.free); } catch (_) {}
+      try {
+        await AIManager().switchEngine(AITier.free);
+      } catch (_) {}
     }
 
     setState(() {
@@ -232,7 +334,9 @@ class _EnterpriseSettingsState extends State<EnterpriseSettings> {
               children: [
                 Icon(
                   _isUnlocked ? Icons.lock_open : Icons.lock,
-                  color: _isUnlocked ? Colors.green : colors.onSurface.withAlpha(120),
+                  color: _isUnlocked
+                      ? Colors.green
+                      : colors.onSurface.withAlpha(120),
                 ),
                 const SizedBox(width: 10),
                 Text(
@@ -257,9 +361,9 @@ class _EnterpriseSettingsState extends State<EnterpriseSettings> {
               _isUnlocked
                   ? 'Enterprise access active. Configure your custom AI models below.'
                   : 'Enter your enterprise API key to unlock custom model configuration.',
-              style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                color: Colors.grey[600],
-              ),
+              style: Theme.of(
+                context,
+              ).textTheme.bodySmall?.copyWith(color: Colors.grey[600]),
             ),
             const SizedBox(height: 20),
 
@@ -268,7 +372,7 @@ class _EnterpriseSettingsState extends State<EnterpriseSettings> {
               TextField(
                 controller: _enterpriseKeyController,
                 decoration: InputDecoration(
-                  hintText: 'ocula-ent-...',
+                  hintText: 'ocula_xxx...',
                   border: const OutlineInputBorder(),
                   prefixIcon: const Icon(Icons.vpn_key),
                   labelText: 'Enterprise API Key',
@@ -277,7 +381,8 @@ class _EnterpriseSettingsState extends State<EnterpriseSettings> {
                       ? const Padding(
                           padding: EdgeInsets.all(12),
                           child: SizedBox(
-                            width: 20, height: 20,
+                            width: 20,
+                            height: 20,
                             child: CircularProgressIndicator(strokeWidth: 2),
                           ),
                         )
@@ -292,7 +397,9 @@ class _EnterpriseSettingsState extends State<EnterpriseSettings> {
                 child: ElevatedButton.icon(
                   onPressed: _validating ? null : _validateKey,
                   icon: const Icon(Icons.lock_open, size: 18),
-                  label: Text(_validating ? 'Validating...' : 'Unlock Enterprise'),
+                  label: Text(
+                    _validating ? 'Validating...' : 'Unlock Enterprise',
+                  ),
                 ),
               ),
             ],
@@ -316,7 +423,8 @@ class _EnterpriseSettingsState extends State<EnterpriseSettings> {
                     icon: const Icon(Icons.restore, size: 20),
                     tooltip: 'Reset to default',
                     onPressed: () {
-                      _serverUrlController.text = OculaModelManager.defaultModelServerUrl;
+                      _serverUrlController.text =
+                          OculaModelManager.defaultModelServerUrl;
                     },
                   ),
                 ),
@@ -325,16 +433,18 @@ class _EnterpriseSettingsState extends State<EnterpriseSettings> {
               const SizedBox(height: 4),
               Text(
                 'Where AI models are downloaded from',
-                style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                  color: Colors.grey[600],
-                ),
+                style: Theme.of(
+                  context,
+                ).textTheme.bodySmall?.copyWith(color: Colors.grey[600]),
               ),
               const SizedBox(height: 20),
 
               // Enable Enterprise Mode
               SwitchListTile(
                 title: const Text('Enable Enterprise Mode'),
-                subtitle: const Text('Use custom models instead of default Ocula models'),
+                subtitle: const Text(
+                  'Use custom models instead of default Ocula models',
+                ),
                 value: _isEnterpriseEnabled,
                 onChanged: (value) {
                   setState(() => _isEnterpriseEnabled = value);
@@ -391,9 +501,9 @@ class _EnterpriseSettingsState extends State<EnterpriseSettings> {
                   const SizedBox(height: 8),
                   Text(
                     'Path to the GGUF model file on the device',
-                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                      color: Colors.grey[600],
-                    ),
+                    style: Theme.of(
+                      context,
+                    ).textTheme.bodySmall?.copyWith(color: Colors.grey[600]),
                   ),
                 ] else ...[
                   Text(

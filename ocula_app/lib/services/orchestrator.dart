@@ -24,6 +24,8 @@ class OrchestratorResult {
   static const empty = OrchestratorResult('');
 }
 
+enum RetrievalScope { all, docs, images, contacts, email, calendar, location }
+
 // ──────────────────────────────────────────
 // State
 // ──────────────────────────────────────────
@@ -34,6 +36,7 @@ class AgentState {
   final String query;
   final bool hasImage;
   String? imagePath;
+  RetrievalScope retrievalScope;
   QueryIntent intent;
   AITier modelUsed;
   String ragContext;
@@ -47,6 +50,7 @@ class AgentState {
     required this.query,
     this.hasImage = false,
     this.imagePath,
+    this.retrievalScope = RetrievalScope.all,
     this.intent = QueryIntent.chat,
     this.modelUsed = AITier.free,
     this.ragContext = '',
@@ -120,6 +124,7 @@ class Orchestrator {
     String query, {
     bool hasImage = false,
     String? imagePath,
+    RetrievalScope retrievalScope = RetrievalScope.all,
   }) async {
     // If a previous run is still active, stop it first.
     if (_isRunning) {
@@ -136,6 +141,7 @@ class Orchestrator {
         query,
         hasImage: hasImage,
         imagePath: imagePath,
+        retrievalScope: retrievalScope,
       );
     } finally {
       _isRunning = false;
@@ -147,11 +153,13 @@ class Orchestrator {
     String query, {
     bool hasImage = false,
     String? imagePath,
+    RetrievalScope retrievalScope = RetrievalScope.all,
   }) async {
     var state = AgentState(
       query: query,
       hasImage: hasImage,
       imagePath: imagePath,
+      retrievalScope: retrievalScope,
     );
     state.status = StepStatus.running;
 
@@ -182,12 +190,20 @@ class Orchestrator {
     // These are independent DB queries — running them concurrently saves 200-500ms.
     final results = await Future.wait([
       _retrieve(
-        AgentState(query: query, hasImage: hasImage, imagePath: imagePath)
-          ..intent = state.intent,
+        AgentState(
+          query: query,
+          hasImage: hasImage,
+          imagePath: imagePath,
+          retrievalScope: retrievalScope,
+        )..intent = state.intent,
       ),
       _recallMemory(
-        AgentState(query: query, hasImage: hasImage, imagePath: imagePath)
-          ..intent = state.intent,
+        AgentState(
+          query: query,
+          hasImage: hasImage,
+          imagePath: imagePath,
+          retrievalScope: retrievalScope,
+        )..intent = state.intent,
       ),
     ]);
     if (_cancelled) return OrchestratorResult.empty;
@@ -259,6 +275,32 @@ class Orchestrator {
 
   /// Node 1: Detect what the user wants.
   Future<AgentState> _detectIntent(AgentState state) async {
+    switch (state.retrievalScope) {
+      case RetrievalScope.docs:
+        state.intent = QueryIntent.file;
+        state.stepsCompleted.add('detect_intent');
+        return state;
+      case RetrievalScope.images:
+      case RetrievalScope.location:
+        state.intent = QueryIntent.photo;
+        state.stepsCompleted.add('detect_intent');
+        return state;
+      case RetrievalScope.contacts:
+        state.intent = QueryIntent.contact;
+        state.stepsCompleted.add('detect_intent');
+        return state;
+      case RetrievalScope.email:
+        state.intent = QueryIntent.email;
+        state.stepsCompleted.add('detect_intent');
+        return state;
+      case RetrievalScope.calendar:
+        state.intent = QueryIntent.calendar;
+        state.stepsCompleted.add('detect_intent');
+        return state;
+      case RetrievalScope.all:
+        break;
+    }
+
     final lower = state.query.toLowerCase();
 
     if (lower.contains('search') ||
@@ -310,21 +352,48 @@ class Orchestrator {
   Future<AgentState> _retrieve(AgentState state) async {
     // Map intent to a source hint for the hybrid search
     String? sourceHint;
-    switch (state.intent) {
-      case QueryIntent.file:
+    switch (state.retrievalScope) {
+      case RetrievalScope.docs:
         sourceHint = 'file';
         break;
-      case QueryIntent.email:
-        sourceHint = 'email';
-        break;
-      case QueryIntent.photo:
+      case RetrievalScope.images:
         sourceHint = 'photo';
         break;
-      case QueryIntent.calendar:
+      case RetrievalScope.contacts:
+        sourceHint = 'contact';
+        break;
+      case RetrievalScope.email:
+        sourceHint = 'email';
+        break;
+      case RetrievalScope.calendar:
         sourceHint = 'calendar';
         break;
+      case RetrievalScope.location:
+        sourceHint = 'photo';
+        break;
+      case RetrievalScope.all:
+        break;
+    }
+    if (sourceHint != null) {
+      debugPrint(
+        '[Orchestrator] Retrieval scope=${state.retrievalScope.name} forcing sourceHint=$sourceHint',
+      );
+    }
+    switch (state.intent) {
+      case QueryIntent.file:
+        sourceHint ??= 'file';
+        break;
+      case QueryIntent.email:
+        sourceHint ??= 'email';
+        break;
+      case QueryIntent.photo:
+        sourceHint ??= 'photo';
+        break;
+      case QueryIntent.calendar:
+        sourceHint ??= 'calendar';
+        break;
       case QueryIntent.contact:
-        sourceHint = 'contact';
+        sourceHint ??= 'contact';
         break;
       default:
         break;
@@ -333,7 +402,11 @@ class Orchestrator {
     // Expand query for better recall on photo/document content queries.
     // Users ask things like "my driver's license" or "vacation in Greece" —
     // the raw query may not match indexed metadata, so we add synonyms.
-    final rewrite = _rewriteQueryForRetrieval(state.query, state.intent);
+    final rewrite = _rewriteQueryForRetrieval(
+      state.query,
+      state.intent,
+      state.retrievalScope,
+    );
     final searchQuery = rewrite.searchQuery;
     final retrievePlan = _buildRetrievePlan(state.intent);
 
@@ -383,6 +456,11 @@ class Orchestrator {
           .map((e) => _formatRagContext(e.key + 1, e.value))
           .join('\n\n');
 
+      final ambiguity = _retrievalAmbiguityNote(results);
+      if (ambiguity != null) {
+        state.ragContext += '\n\n[Ambiguity] $ambiguity';
+      }
+
       // Collect linked assets from RAG source IDs
       try {
         final sourceIds = results.map((r) => r.sourceId).toList();
@@ -414,7 +492,31 @@ class Orchestrator {
     return state;
   }
 
-  _QueryRewrite _rewriteQueryForRetrieval(String query, QueryIntent intent) {
+  String? _retrievalAmbiguityNote(List<RAGResult> results) {
+    if (results.isEmpty) return 'No strong source matched this query.';
+
+    final top = results.first.score;
+    if (top < 0.18) {
+      return 'Low-confidence retrieval. Ask a clarifying question before giving specific facts.';
+    }
+
+    if (results.length >= 2) {
+      final second = results[1].score;
+      final close = (top - second).abs() <= 0.03;
+      final differentSource = results[0].sourceId != results[1].sourceId;
+      if (close && differentSource) {
+        return 'Multiple near-equal matches found. Ask which source/date/contact the user means before finalizing.';
+      }
+    }
+
+    return null;
+  }
+
+  _QueryRewrite _rewriteQueryForRetrieval(
+    String query,
+    QueryIntent intent,
+    RetrievalScope scope,
+  ) {
     final expanded = _expandQuery(query, intent);
     final lower = query.toLowerCase();
 
@@ -492,6 +594,11 @@ class Orchestrator {
     }
     if (intent == QueryIntent.email) {
       queryAugments.add('email sender subject attachment');
+    }
+    if (scope == RetrievalScope.location) {
+      queryAugments.add(
+        'location gps address coordinates place city country map',
+      );
     }
     if (locationTokens.isNotEmpty) {
       queryAugments.add(locationTokens.join(' '));

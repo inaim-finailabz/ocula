@@ -101,6 +101,7 @@ class _AssistantScreenState extends State<AssistantScreen>
   bool _isSpeaking = false;
   bool _stopRequested = false;
   OrbState _orbState = OrbState.idle;
+  RetrievalScope _retrievalScope = RetrievalScope.all;
   File? _attachedImage;
   File? _attachedDocument;
   String? _attachedDocName;
@@ -376,6 +377,10 @@ class _AssistantScreenState extends State<AssistantScreen>
         final indexed = await Indexer().indexFilePath(path);
         if (indexed) {
           _showSnackbar('Indexed "$name" — you can ask about it now');
+        } else {
+          _showSnackbar(
+            'Attached "$name". Text extraction is limited for this file type.',
+          );
         }
       }
     } catch (e) {
@@ -437,7 +442,9 @@ class _AssistantScreenState extends State<AssistantScreen>
 
     // If a document is attached, prepend its content to the query
     String queryText = text;
+    var runScope = _retrievalScope;
     if (doc != null && docName != null) {
+      runScope = RetrievalScope.docs;
       try {
         final content = await doc.readAsString();
         if (content.isNotEmpty) {
@@ -451,9 +458,11 @@ class _AssistantScreenState extends State<AssistantScreen>
               'User request: $text';
         }
       } catch (_) {
-        // Binary file — just reference the name
+        // Non-text file (for example PDF). Keep the prompt clean and rely on RAG.
         queryText =
-            '[Attached file: $docName — binary file, cannot read text content] $text';
+            '[Attached file: $docName]\n'
+            'Use indexed document context to answer.\n'
+            'User request: $text';
       }
     }
 
@@ -481,7 +490,12 @@ class _AssistantScreenState extends State<AssistantScreen>
 
     try {
       final result = await _orchestrator
-          .run(queryText, hasImage: image != null, imagePath: image?.path)
+          .run(
+            queryText,
+            hasImage: image != null,
+            imagePath: image?.path,
+            retrievalScope: runScope,
+          )
           .timeout(
             const Duration(minutes: 2),
             onTimeout: () => OrchestratorResult(
@@ -859,6 +873,49 @@ class _AssistantScreenState extends State<AssistantScreen>
                         ],
                       ),
                     ),
+
+                  // ── Retrieval scope chips ──
+                  SizedBox(
+                    height: 40,
+                    child: ListView(
+                      scrollDirection: Axis.horizontal,
+                      padding: const EdgeInsets.symmetric(horizontal: 12),
+                      children: [
+                        _ScopeChip(
+                          label: 'All',
+                          icon: Icons.tune,
+                          selected: _retrievalScope == RetrievalScope.all,
+                          onTap: () => setState(
+                            () => _retrievalScope = RetrievalScope.all,
+                          ),
+                        ),
+                        _ScopeChip(
+                          label: 'Docs',
+                          icon: Icons.description_outlined,
+                          selected: _retrievalScope == RetrievalScope.docs,
+                          onTap: () => setState(
+                            () => _retrievalScope = RetrievalScope.docs,
+                          ),
+                        ),
+                        _ScopeChip(
+                          label: 'Images',
+                          icon: Icons.photo_outlined,
+                          selected: _retrievalScope == RetrievalScope.images,
+                          onTap: () => setState(
+                            () => _retrievalScope = RetrievalScope.images,
+                          ),
+                        ),
+                        _ScopeChip(
+                          label: 'Location',
+                          icon: Icons.place_outlined,
+                          selected: _retrievalScope == RetrievalScope.location,
+                          onTap: () => setState(
+                            () => _retrievalScope = RetrievalScope.location,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
 
                   // ── Enhanced input bar ──
                   Container(
@@ -1376,6 +1433,65 @@ class _ThinkingBubbleState extends State<_ThinkingBubble>
               }),
             );
           },
+        ),
+      ),
+    );
+  }
+}
+
+class _ScopeChip extends StatelessWidget {
+  final String label;
+  final IconData icon;
+  final bool selected;
+  final VoidCallback onTap;
+
+  const _ScopeChip({
+    required this.label,
+    required this.icon,
+    required this.selected,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    return Padding(
+      padding: const EdgeInsets.only(right: 8),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(20),
+        onTap: onTap,
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 180),
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+          decoration: BoxDecoration(
+            color: selected
+                ? colors.primary.withAlpha(40)
+                : colors.surfaceContainerHighest.withAlpha(120),
+            borderRadius: BorderRadius.circular(20),
+            border: Border.all(
+              color: selected
+                  ? colors.primary.withAlpha(110)
+                  : colors.outline.withAlpha(45),
+            ),
+          ),
+          child: Row(
+            children: [
+              Icon(
+                icon,
+                size: 14,
+                color: selected ? colors.primary : colors.onSurface,
+              ),
+              const SizedBox(width: 5),
+              Text(
+                label,
+                style: TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w600,
+                  color: selected ? colors.primary : colors.onSurface,
+                ),
+              ),
+            ],
+          ),
         ),
       ),
     );

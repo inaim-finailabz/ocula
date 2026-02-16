@@ -14,6 +14,7 @@ class SpeechService {
 
   bool _isListening = false;
   bool _sttInitialized = false;
+  bool _isSpeaking = false;
 
   bool get isListening => _isListening;
   FlutterTts get tts => _tts;
@@ -35,10 +36,10 @@ class SpeechService {
   String get language => _language;
   Map<String, String>? get voice => _voice;
   String? get customVoicePath => _customVoicePath;
-  bool get hasCustomVoice => _customVoicePath != null && _customVoicePath!.isNotEmpty;
+  bool get hasCustomVoice =>
+      _customVoicePath != null && _customVoicePath!.isNotEmpty;
 
-  SpeechService({AIManager? aiManager})
-      : _aiManager = aiManager ?? AIManager();
+  SpeechService({AIManager? aiManager}) : _aiManager = aiManager ?? AIManager();
 
   /// Initialize TTS with saved or default voice settings.
   Future<void> init() async {
@@ -49,6 +50,10 @@ class SpeechService {
     // Without this, speak() resolves immediately after the platform receives
     // the command, causing _isSpeaking to flip false while audio plays.
     await _tts.awaitSpeakCompletion(true);
+    _tts.setStartHandler(() => _isSpeaking = true);
+    _tts.setCompletionHandler(() => _isSpeaking = false);
+    _tts.setCancelHandler(() => _isSpeaking = false);
+    _tts.setErrorHandler((_) => _isSpeaking = false);
   }
 
   /// Get available TTS voices.
@@ -109,7 +114,7 @@ class SpeechService {
 
   /// Preview current TTS settings.
   Future<void> preview() async {
-    await _tts.speak('Hello, I am Ocula. How can I help you today?');
+    await speak('Hello, I am Ocula. How can I help you today?');
   }
 
   /// Start listening to the user's voice and pass recognized text to the AI.
@@ -144,15 +149,15 @@ class SpeechService {
     }
 
     _isListening = true;
-    bool _handled = false;
+    bool handled = false;
     _speech.listen(
       onResult: (val) async {
         final text = val.recognizedWords;
         onResult(text);
 
         // When speech is finalized (silence detected), send to the AI model
-        if (val.finalResult && text.isNotEmpty && !_handled) {
-          _handled = true;
+        if (val.finalResult && text.isNotEmpty && !handled) {
+          handled = true;
           _isListening = false;
           if (onAIResponse != null) {
             final response = await _aiManager.ask(text);
@@ -176,11 +181,33 @@ class SpeechService {
 
   /// Speak the given text aloud.
   Future<void> speak(String text) async {
-    await _tts.speak(text);
+    final normalized = text.trim();
+    if (normalized.isEmpty) return;
+
+    // Avoid audio-session conflicts between STT input and TTS output.
+    if (_isListening) {
+      await stopListening();
+      await Future.delayed(const Duration(milliseconds: 80));
+    }
+
+    // If there is already speech in progress, restart cleanly.
+    if (_isSpeaking) {
+      await _tts.stop();
+      await Future.delayed(const Duration(milliseconds: 60));
+    }
+
+    _isSpeaking = true;
+    try {
+      await _tts.speak(normalized);
+    } catch (_) {
+      _isSpeaking = false;
+      rethrow;
+    }
   }
 
   /// Stop any ongoing speech.
   Future<void> stopSpeaking() async {
+    _isSpeaking = false;
     await _tts.stop();
   }
 

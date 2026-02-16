@@ -44,6 +44,9 @@ dependencies:
   lottie: ^3.3.2
   shared_preferences: ^2.5.4
   device_info_plus: ^11.0.0      # RAM detection for model routing
+  syncfusion_flutter_pdf: any    # PDF text extraction for RAG indexing
+  archive: any                   # OOXML unzip for docx/pptx/xlsx extraction
+  xml: any                       # OOXML XML parsing
 
   # Notifications & Background
   flutter_local_notifications: ^18.0.1  # Local notification delivery
