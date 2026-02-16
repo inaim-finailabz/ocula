@@ -37,7 +37,7 @@ dependencies:
   image_picker: ^1.1.2           # Pick photos from gallery
   photo_manager: ^3.6.0          # Access photo library for indexing
   device_calendar: ^4.3.2        # Read calendar events
-  file_picker: ^8.0.0            # User file uploads for summarize/enhance
+  file_picker: ^10.3.10          # User file uploads for summarize/enhance
   permission_handler: ^11.3.0    # Request permissions at first launch
   receive_sharing_intent: ^1.8.1  # Receive shared content from other apps
   enough_mail: any               # IMAP email access (local)
