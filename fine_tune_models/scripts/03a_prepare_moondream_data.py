@@ -114,10 +114,14 @@ def convert_textcaps(max_samples: int, image_dir: Path):
 
     print("[*] Loading TextCaps...")
     try:
-        ds = load_dataset("HuggingFaceM4/TextCaps", split="train")
+        # HuggingFaceM4/TextCaps is script-based and often blocked by newer datasets versions.
+        ds = load_dataset("lmms-lab/TextCaps", split="train")
     except Exception as e:
-        print(f"  [WARN] TextCaps unavailable ({e}) — skipping")
-        return []
+        try:
+            ds = load_dataset("HuggingFaceM4/TextCaps", split="train")
+        except Exception as e2:
+            print(f"  [WARN] TextCaps unavailable ({e}; {e2}) — skipping")
+            return []
 
     if max_samples and len(ds) > max_samples:
         ds = ds.shuffle(seed=42).select(range(max_samples))
@@ -235,17 +239,20 @@ def convert_docvqa(max_samples: int, image_dir: Path):
     print("[*] Loading DocVQA...")
     ds = None
     split_used = None
-    for split in ("train", "validation", "test"):
-        try:
-            ds = load_dataset("lmms-lab/DocVQA", "DocVQA", split=split)
-            split_used = split
+    for cfg in ("DocVQA", "InfographicVQA"):
+        for split in ("train", "validation", "test"):
+            try:
+                ds = load_dataset("lmms-lab/DocVQA", cfg, split=split)
+                split_used = f"{cfg}/{split}"
+                break
+            except Exception:
+                continue
+        if ds is not None:
             break
-        except Exception:
-            continue
     if ds is None:
         print("  [WARN] DocVQA not available — skipping")
         return []
-    if split_used != "train":
+    if not split_used.endswith("/train"):
         print(f"  [WARN] DocVQA train split unavailable, using '{split_used}'")
     if max_samples and len(ds) > max_samples:
         ds = ds.shuffle(seed=42).select(range(max_samples))
@@ -325,6 +332,10 @@ def main():
 
     random.seed(42)
     random.shuffle(all_examples)
+    if not all_examples:
+        print("\n[!] No training examples were prepared. Check dataset availability/network.")
+        sys.exit(2)
+
     val_size = max(1, int(len(all_examples) * args.val_ratio))
 
     train_file = output_dir / "moondream2_vision_train.jsonl"

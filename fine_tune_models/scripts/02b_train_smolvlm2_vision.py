@@ -371,7 +371,7 @@ def train_cuda_mps(config: dict, args):
     print(f"     LoRA adapters:  {output_dir}")
     print(f"     Merged model:   {merged_dir}")
     print(f"     Next: python 07a_export_smolvlm2_gguf.py --quant-types Q8_0")
-    print(f"     Then: python 08b_compare_models.py --model smolvlm2 --backend api")
+    print(f"     Then: python 08b_compare_models.py --model smolvlm2 --backend cli")
 
 
 # ═════════════════════════════════════════════════════════════════

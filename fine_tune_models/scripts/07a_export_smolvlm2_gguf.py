@@ -12,7 +12,7 @@ The vision projector (mmproj) is exported separately since llama.cpp
 loads the text model and vision encoder as two files.
 
 Usage:
-    # Export merged model (after 06_merge_lora.py)
+    # Export merged model (after 02b_train_smolvlm2_vision.py)
     python 07a_export_smolvlm2_gguf.py
 
     # Export from MLX fused model
@@ -293,7 +293,7 @@ def main():
             print(f"    - {d}")
         print("    Run these first:")
         print("    1. python 02b_train_smolvlm2_vision.py")
-        print("    2. python 06_merge_lora.py --model smolvlm2")
+        print("    2. Ensure merged model exists at ../models/lora_adapters/smolvlm2-vision-merged")
         sys.exit(1)
 
     output_dir = args.output_dir

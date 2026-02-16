@@ -274,7 +274,7 @@ def main():
             print(f"    - {d}")
         print("    Run these first:")
         print("    1. python 03b_train_moondream2_vision.py")
-        print("    2. python 06_merge_lora.py --model moondream2")
+        print("    2. Ensure merged model exists at ../models/merged/moondream2-vision-merged")
         sys.exit(1)
 
     output_dir = args.output_dir

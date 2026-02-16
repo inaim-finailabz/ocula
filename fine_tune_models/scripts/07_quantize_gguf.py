@@ -251,7 +251,7 @@ def quantize_one(model_name, quant_types=None, quantize_only=False):
 
     if not os.path.isdir(merged_path):
         print(f"[!] Merged model not found: {merged_path}")
-        print(f"    Run 06_merge_lora.py --model {model_name} first.")
+        print(f"    Ensure a merged model exists at that path before quantizing.")
         return {}
 
     is_embedding = config.get("model", {}).get("type") == "embedding"

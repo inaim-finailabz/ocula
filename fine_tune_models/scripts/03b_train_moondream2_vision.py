@@ -48,6 +48,37 @@ DEFAULT_VAL     = "../data/vision_moondream/moondream2_vision_val.jsonl"
 DEFAULT_OUTPUT  = "../models/lora_adapters/moondream2-vision"
 
 
+def resolve_model_path(config: dict) -> str:
+    """
+    Prefer local model path if present. If missing, try downloading from HF into local_path.
+    Falls back to remote model id when download is unavailable.
+    """
+    model_cfg = config.get("model", {})
+    model_name = model_cfg.get("name", DEFAULT_MODEL)
+    local_path = model_cfg.get("local_path", "")
+
+    if local_path and Path(local_path).exists():
+        return local_path
+
+    if local_path:
+        try:
+            from huggingface_hub import snapshot_download
+            target = Path(local_path)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            print(f"[*] Base model not found locally. Downloading {model_name} → {target}")
+            snapshot_download(
+                repo_id=model_name,
+                local_dir=str(target),
+                local_dir_use_symlinks=False,
+            )
+            if target.exists():
+                return str(target)
+        except Exception as e:
+            print(f"[WARN] Could not download base model to {local_path}: {e}")
+
+    return model_name
+
+
 def load_config(path: str) -> dict:
     p = Path(path)
     if p.exists():
@@ -108,8 +139,7 @@ def train_cuda(config: dict, args):
     from PIL import Image
 
     model_name = config.get("model", {}).get("name", DEFAULT_MODEL)
-    local_path = config.get("model", {}).get("local_path", "")
-    model_path = local_path if local_path and Path(local_path).exists() else model_name
+    model_path = resolve_model_path(config)
     revision = config.get("model", {}).get("revision", "2025-01-09")
 
     train_cfg = config.get("training", {})
@@ -340,8 +370,7 @@ def train_cuda_hf(config: dict, args):
     from PIL import Image
 
     model_name = config.get("model", {}).get("name", DEFAULT_MODEL)
-    local_path = config.get("model", {}).get("local_path", "")
-    model_path = local_path if local_path and Path(local_path).exists() else model_name
+    model_path = resolve_model_path(config)
     revision = config.get("model", {}).get("revision", "main")
 
     train_cfg = config.get("training", {})
@@ -370,7 +399,16 @@ def train_cuda_hf(config: dict, args):
         except Exception as e:
             print(f"[WARN] 4-bit unavailable ({e}), continuing in 16-bit.")
 
-    model = AutoModelForCausalLM.from_pretrained(model_path, **model_kwargs)
+    try:
+        model = AutoModelForCausalLM.from_pretrained(model_path, **model_kwargs)
+    except OSError as e:
+        msg = str(e).lower()
+        if "libvips" in msg or "_libvips" in msg or "cannot load l" in msg:
+            print("[!] Missing system dependency: libvips (required by moondream remote code).")
+            print("    Install and retry:")
+            print("      Ubuntu/Debian: sudo apt-get install -y libvips libvips-dev")
+            print("      macOS:         brew install vips")
+        raise
     try:
         model.gradient_checkpointing_enable()
     except Exception:
@@ -518,7 +556,19 @@ def train_cuda_hf(config: dict, args):
     print(f"\n[*] Saving LoRA adapters to {output_dir}")
     trainer.save_model(output_dir)
     processor.save_pretrained(output_dir)
+
+    merged_dir = str(Path(output_dir).parent / "moondream2-vision-merged")
+    print(f"[*] Saving merged model to {merged_dir}")
+    merged_model = trainer.model
+    if hasattr(merged_model, "merge_and_unload"):
+        merged_model = merged_model.merge_and_unload()
+    merged_model.save_pretrained(merged_dir, safe_serialization=True)
+    processor.save_pretrained(merged_dir)
+
     print("[OK] Moondream2 vision fine-tuning complete (Transformers fallback)!")
+    print(f"     LoRA adapters:  {output_dir}")
+    print(f"     Merged model:   {merged_dir}")
+    print(f"     Next: python 07b_export_moondream2_gguf.py")
 
 
 # ═════════════════════════════════════════════════════════════════
@@ -535,8 +585,7 @@ def train_mps(config: dict, args):
     from PIL import Image
 
     model_name = config.get("model", {}).get("name", DEFAULT_MODEL)
-    local_path = config.get("model", {}).get("local_path", "")
-    model_path = local_path if local_path and Path(local_path).exists() else model_name
+    model_path = resolve_model_path(config)
     revision = config.get("model", {}).get("revision", "2025-01-09")
 
     train_cfg = config.get("training", {})
@@ -712,8 +761,7 @@ def train_mlx(config: dict, args):
     import subprocess
 
     model_name = config.get("model", {}).get("name", DEFAULT_MODEL)
-    local_path = config.get("model", {}).get("local_path", "")
-    model_path = local_path if local_path and Path(local_path).exists() else model_name
+    model_path = resolve_model_path(config)
 
     train_cfg = config.get("training", {})
     lora_cfg = config.get("lora", {})

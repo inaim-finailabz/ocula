@@ -67,9 +67,11 @@ NC = "\033[0m"
 # ── Model registry ──────────────────────────────────────────────
 MODELS = {
     "smolvlm2": {
-        "base_gguf_pattern": "../models/base/smolvlm2/SmolVLM2-*Q*.gguf",
+        "base_gguf_pattern": "../models/base/smolvlm2/SmolVLM2-*500M*Q*.gguf",
         "finetuned_gguf_pattern": "SmolVLM2-500M-*finetuned-*.gguf",
         "finetuned_model_pattern": "SmolVLM2-500M-*finetuned-*.gguf",
+        "base_api_url": "http://localhost:8080/v1",
+        "finetuned_api_url": "http://localhost:8081/v1",
         "ctx": 2048,
         "max_tokens": 150,
         "temp": 0.1,
@@ -690,6 +692,11 @@ def find_base_gguf(model_name: str, info: dict, finetuned_path: Optional[Path]) 
         cands = sorted(GGUF_DIR.glob(base_pattern))
         cands = [c for c in cands if "finetuned" not in c.name.lower()]
         if cands:
+            if model_name == "smolvlm2":
+                # For SmolVLM2, prefer Q8_0 for baseline quality parity.
+                for c in cands:
+                    if "Q8_0" in c.name:
+                        return c
             for c in cands:
                 if "Q4_K_M" in c.name:
                     return c
@@ -710,9 +717,15 @@ def find_base_gguf(model_name: str, info: dict, finetuned_path: Optional[Path]) 
                 continue
             cands = sorted(search_dir.rglob(f"{prefix}.gguf"))
             cands = [c for c in cands if "finetuned" not in c.name.lower()]
+            if model_name == "smolvlm2":
+                cands = [c for c in cands if "500m" in c.name.lower()] or cands
             if finetuned_path:
                 cands = [c for c in cands if c.name != finetuned_path.name]
             if cands:
+                if model_name == "smolvlm2":
+                    for c in cands:
+                        if "Q8_0" in c.name:
+                            return c
                 for c in cands:
                     if "Q4_K_M" in c.name:
                         return c
@@ -786,8 +799,12 @@ def compare_model(model_name: str, prompts: list, backend_default: str,
         if not ok_base or not ok_ft:
             return None
 
-    if backend == "cli" and not base_gguf_path and not finetuned_gguf_path:
-        print(f"  {RED}[!] No models found for {model_name}, skipping{NC}")
+    # Comparison is only meaningful when both models are present.
+    if not base_gguf_path and base_model_id is None:
+        print(f"  {RED}[!] Base model missing for {model_name}.{NC}")
+        return None
+    if not finetuned_gguf_path and finetuned_model_id is None:
+        print(f"  {RED}[!] Fine-tuned model missing for {model_name}.{NC}")
         return None
 
     comparisons = []
