@@ -1,6 +1,7 @@
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:file_picker/file_picker.dart';
+import 'package:path_provider/path_provider.dart';
 import 'package:url_launcher/url_launcher.dart';
 import '../widgets/model_management.dart';
 import '../screens/enterprise_settings.dart';
@@ -1647,6 +1648,7 @@ class _IndexStatsCardState extends State<_IndexStatsCard> {
   int _totalChunks = 0;
   int _knowledgeTriples = 0;
   bool _reindexing = false;
+  bool _importing = false;
 
   @override
   void initState() {
@@ -1672,6 +1674,58 @@ class _IndexStatsCardState extends State<_IndexStatsCard> {
     await Indexer().runFullIndex();
     await _loadStats();
     if (mounted) setState(() => _reindexing = false);
+  }
+
+  Future<void> _importFiles() async {
+    setState(() => _importing = true);
+    try {
+      final result = await FilePicker.platform.pickFiles(
+        allowMultiple: true,
+        type: FileType.custom,
+        allowedExtensions: [
+          'pdf', 'txt', 'md', 'doc', 'docx', 'rtf',
+          'csv', 'json', 'xml', 'html', 'htm',
+        ],
+      );
+      if (result == null || result.files.isEmpty) return;
+
+      final docsDir = await getApplicationDocumentsDirectory();
+      int indexed = 0;
+
+      for (final f in result.files) {
+        final sourcePath = f.path;
+        if (sourcePath == null) continue;
+
+        // Copy to Documents so Files app also shows it and scanner picks it up
+        final destPath = '${docsDir.path}/${f.name}';
+        await File(sourcePath).copy(destPath);
+
+        final ok = await Indexer().indexFilePath(destPath);
+        if (ok) indexed++;
+      }
+
+      await _loadStats();
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              indexed == result.files.length
+                  ? 'Indexed $indexed file${indexed == 1 ? '' : 's'}'
+                  : 'Indexed $indexed of ${result.files.length} files (some may be image-based)',
+            ),
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Import failed: $e')),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _importing = false);
+    }
   }
 
   static const _sourceConfig = <String, (IconData, String)>{
@@ -1748,19 +1802,39 @@ class _IndexStatsCardState extends State<_IndexStatsCard> {
             ),
           ],
           const SizedBox(height: 12),
-          SizedBox(
-            width: double.infinity,
-            child: OutlinedButton.icon(
-              onPressed: _reindexing ? null : _reindex,
-              icon: _reindexing
-                  ? const SizedBox(
-                      width: 16,
-                      height: 16,
-                      child: CircularProgressIndicator(strokeWidth: 2),
-                    )
-                  : const Icon(Icons.refresh, size: 18),
-              label: Text(_reindexing ? 'Re-indexing...' : 'Re-index Now'),
-            ),
+          Row(
+            children: [
+              Expanded(
+                child: OutlinedButton.icon(
+                  onPressed: _reindexing ? null : _reindex,
+                  icon: _reindexing
+                      ? const SizedBox(
+                          width: 16,
+                          height: 16,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(Icons.refresh, size: 18),
+                  label: Text(_reindexing ? 'Re-indexing...' : 'Re-index'),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: FilledButton.icon(
+                  onPressed: _importing ? null : _importFiles,
+                  icon: _importing
+                      ? const SizedBox(
+                          width: 16,
+                          height: 16,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                            color: Colors.white,
+                          ),
+                        )
+                      : const Icon(Icons.upload_file, size: 18),
+                  label: Text(_importing ? 'Importing...' : 'Import Files'),
+                ),
+              ),
+            ],
           ),
         ],
       ),

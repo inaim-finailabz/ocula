@@ -63,58 +63,72 @@ class LocalData {
   /// Get recent photos from the device photo library.
   /// Returns photos with metadata (date, dimensions) for indexing.
   Future<List<LocalPhoto>> recentPhotos({int limit = 100}) async {
-    try {
-      final permitted = await PhotoManager.requestPermissionExtend();
-      if (!permitted.isAuth && permitted != PermissionState.limited) {
-        if (kDebugMode) print('[LocalData] Photo permission denied');
-        return [];
-      }
+    // Retry once if assetsd is interrupted by iOS memory pressure.
+    for (int attempt = 0; attempt < 2; attempt++) {
+      try {
+        final permitted = await PhotoManager.requestPermissionExtend();
+        if (!permitted.isAuth && permitted != PermissionState.limited) {
+          if (kDebugMode) print('[LocalData] Photo permission denied');
+          return [];
+        }
 
-      // Get all albums, start with recent/camera roll
-      final albums = await PhotoManager.getAssetPathList(
-        type: RequestType.image,
-        hasAll: true,
-      );
-      if (albums.isEmpty) return [];
-
-      // "Recent" or "All Photos" album is usually first
-      final recentAlbum = albums.first;
-      final assets = await recentAlbum.getAssetListRange(start: 0, end: limit);
-
-      final photos = <LocalPhoto>[];
-      for (final asset in assets) {
-        final file = await asset.file;
-        if (file == null) continue;
-
-        // Build a descriptive label from available metadata
-        final label = _buildPhotoLabel(asset);
-
-        photos.add(
-          LocalPhoto(
-            path: file.path,
-            date: asset.createDateTime,
-            label: label,
-            width: asset.width,
-            height: asset.height,
-            assetId: asset.id,
-          ),
+        // Get all albums, start with recent/camera roll
+        final albums = await PhotoManager.getAssetPathList(
+          type: RequestType.image,
+          hasAll: true,
         );
-      }
+        if (albums.isEmpty) return [];
 
-      if (kDebugMode) {
-        print('[LocalData] Loaded ${photos.length} photos from library');
+        // "Recent" or "All Photos" album is usually first
+        final recentAlbum = albums.first;
+        final assets =
+            await recentAlbum.getAssetListRange(start: 0, end: limit);
+
+        final photos = <LocalPhoto>[];
+        for (final asset in assets) {
+          // asset.file may return null if assetsd was interrupted mid-loop
+          try {
+            final file = await asset.file;
+            if (file == null) continue;
+            photos.add(
+              LocalPhoto(
+                path: file.path,
+                date: asset.createDateTime,
+                label: _buildPhotoLabel(asset),
+                width: asset.width,
+                height: asset.height,
+                assetId: asset.id,
+              ),
+            );
+          } catch (_) {
+            continue; // skip individual asset on assetsd hiccup
+          }
+        }
+
+        if (kDebugMode) {
+          print('[LocalData] Loaded ${photos.length} photos from library');
+        }
+        return photos;
+      } catch (e) {
+        if (attempt == 0) {
+          // assetsd may have been killed by iOS — wait for it to restart
+          if (kDebugMode) {
+            print('[LocalData] Photo access error (attempt 1), retrying: $e');
+          }
+          await Future.delayed(const Duration(seconds: 3));
+        } else {
+          if (kDebugMode) print('[LocalData] Photo access error: $e');
+          return [];
+        }
       }
-      return photos;
-    } catch (e) {
-      if (kDebugMode) print('[LocalData] Photo access error: $e');
-      return [];
     }
+    return [];
   }
 
   /// Search photos by date range or keyword in title/label.
   Future<List<LocalPhoto>> searchPhotos(String query) async {
     // Get all recent photos and filter locally
-    final all = await recentPhotos(limit: 500);
+    final all = await recentPhotos(limit: 100);
     if (query.isEmpty) return all;
 
     final lower = query.toLowerCase();
