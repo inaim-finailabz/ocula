@@ -18,6 +18,9 @@ class LlamaConfig {
   /// Использовать ли Metal (iOS) или GPU акселерацию (Android)
   final bool useGpu;
 
+  /// Предпочитаемый GPU backend на Android: auto/opencl/vulkan/cpu
+  final String gpuBackend;
+
   /// Verbose логирование
   final bool verbose;
 
@@ -28,6 +31,7 @@ class LlamaConfig {
     this.contextSize = 2048,
     this.batchSize = 512,
     this.useGpu = true,
+    this.gpuBackend = 'auto',
     this.verbose = false,
   });
 
@@ -39,6 +43,7 @@ class LlamaConfig {
       'contextSize': contextSize,
       'batchSize': batchSize,
       'useGpu': useGpu,
+      'gpuBackend': gpuBackend,
       'verbose': verbose,
     };
   }
@@ -51,6 +56,7 @@ class LlamaConfig {
     int? contextSize,
     int? batchSize,
     bool? useGpu,
+    String? gpuBackend,
     bool? verbose,
   }) {
     return LlamaConfig(
@@ -60,6 +66,7 @@ class LlamaConfig {
       contextSize: contextSize ?? this.contextSize,
       batchSize: batchSize ?? this.batchSize,
       useGpu: useGpu ?? this.useGpu,
+      gpuBackend: gpuBackend ?? this.gpuBackend,
       verbose: verbose ?? this.verbose,
     );
   }
@@ -68,10 +75,10 @@ class LlamaConfig {
   String toString() {
     return 'LlamaConfig(modelPath: $modelPath, nThreads: $nThreads, '
         'nGpuLayers: $nGpuLayers, contextSize: $contextSize, '
-        'batchSize: $batchSize, useGpu: $useGpu, verbose: $verbose)';
+        'batchSize: $batchSize, useGpu: $useGpu, gpuBackend: $gpuBackend, '
+        'verbose: $verbose)';
   }
 }
-
 
 
 

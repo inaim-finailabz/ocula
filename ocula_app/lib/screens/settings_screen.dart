@@ -88,13 +88,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
     return Scaffold(
       appBar: AppBar(
         title: const Text('Settings'),
-        actions: [
-          TextButton.icon(
-            onPressed: () => widget.speech.preview(),
-            icon: const Icon(Icons.play_arrow, size: 20),
-            label: const Text('Preview'),
-          ),
-        ],
       ),
       body: _loading
           ? const Center(child: CircularProgressIndicator())
@@ -109,7 +102,26 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 _languageDropdown(colors),
                 const SizedBox(height: 24),
 
-                const _SectionHeader(title: 'Voice'),
+                Row(
+                  children: [
+                    const Text(
+                      'Voice',
+                      style: TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    const Spacer(),
+                    TextButton.icon(
+                      onPressed: () => widget.speech.preview(),
+                      icon: const Icon(Icons.play_circle_outline, size: 18),
+                      label: const Text('Preview'),
+                      style: TextButton.styleFrom(
+                        visualDensity: VisualDensity.compact,
+                      ),
+                    ),
+                  ],
+                ),
                 const SizedBox(height: 8),
                 _voiceList(colors),
                 const SizedBox(height: 16),

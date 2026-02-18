@@ -10,6 +10,7 @@ import 'services/ai_manager.dart';
 import 'services/speech_service.dart';
 import 'services/export_service.dart';
 import 'services/indexer.dart';
+import 'services/local_data.dart';
 import 'services/model_manager.dart';
 import 'services/orchestrator.dart';
 import 'services/ocula_db.dart';
@@ -107,6 +108,7 @@ class _AssistantScreenState extends State<AssistantScreen>
   String? _attachedDocName;
 
   bool _orbExpanded = true;
+  Map<String, double> _activeDownloads = {};
 
   late final AnimationController _orbSizeController;
 
@@ -150,10 +152,94 @@ class _AssistantScreenState extends State<AssistantScreen>
       _showFeatureReady(featureName);
     });
 
+    // Track active background downloads for the in-chat progress banner.
+    _downloadProgressSubscription = _modelManager.downloadProgressStream.listen(
+      (progress) {
+        if (mounted) {
+          setState(() {
+            _activeDownloads = Map.from(progress)
+              ..removeWhere((_, v) => v >= 1.0);
+          });
+        }
+      },
+    );
+
     // Update tier badge when model switches (e.g. from settings or auto-route).
     _tierChangeSubscription = _ai.activeTierStream.listen((_) {
       if (mounted) setState(() {});
     });
+  }
+
+  /// Thin banner shown below the top bar when models are downloading in background.
+  Widget _buildDownloadBanner(ColorScheme colors) {
+    // Show the main model being downloaded (skip vision projectors & embed for label)
+    final primary = _activeDownloads.entries
+        .where((e) {
+          final m = OculaModelManager.models
+              .where((m) => m.fileName == e.key)
+              .firstOrNull;
+          return m != null && !m.isVisionProjector && !m.isEmbeddingModel;
+        })
+        .firstOrNull ??
+        _activeDownloads.entries.firstOrNull;
+
+    if (primary == null) return const SizedBox.shrink();
+
+    final modelInfo = OculaModelManager.models
+        .where((m) => m.fileName == primary.key)
+        .firstOrNull;
+    final label = modelInfo?.displayName ?? primary.key.split('.').first;
+    final pct = (primary.value * 100).toStringAsFixed(0);
+
+    return Container(
+      padding: const EdgeInsets.fromLTRB(16, 6, 16, 8),
+      decoration: BoxDecoration(
+        color: colors.primaryContainer.withAlpha(45),
+        border: Border(
+          bottom: BorderSide(color: colors.primary.withAlpha(30), width: 0.5),
+        ),
+      ),
+      child: Row(
+        children: [
+          SizedBox(
+            width: 14,
+            height: 14,
+            child: CircularProgressIndicator(
+              value: primary.value > 0 ? primary.value : null,
+              strokeWidth: 1.5,
+              color: colors.primary,
+            ),
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  'Downloading $label ($pct%)',
+                  style: TextStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.w500,
+                    color: colors.primary,
+                  ),
+                ),
+                const SizedBox(height: 3),
+                ClipRRect(
+                  borderRadius: BorderRadius.circular(1),
+                  child: LinearProgressIndicator(
+                    value: primary.value > 0 ? primary.value : null,
+                    minHeight: 2,
+                    backgroundColor: colors.primary.withAlpha(25),
+                    valueColor: AlwaysStoppedAnimation<Color>(colors.primary),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
   }
 
   /// Show a friendly notification when a new feature becomes available.
@@ -378,9 +464,11 @@ class _AssistantScreenState extends State<AssistantScreen>
         if (indexed) {
           _showSnackbar('Indexed "$name" — you can ask about it now');
         } else {
-          _showSnackbar(
-            'Attached "$name". Text extraction is limited for this file type.',
-          );
+          final ext = name.contains('.') ? name.split('.').last.toLowerCase() : '';
+          final msg = ext == 'pdf'
+              ? '"$name" appears to be a scanned/image PDF — text could not be extracted'
+              : 'Could not extract text from "$name"';
+          _showSnackbar(msg);
         }
       }
     } catch (e) {
@@ -445,23 +533,32 @@ class _AssistantScreenState extends State<AssistantScreen>
     var runScope = _retrievalScope;
     if (doc != null && docName != null) {
       runScope = RetrievalScope.docs;
-      try {
-        final content = await doc.readAsString();
-        if (content.isNotEmpty) {
-          // Truncate to avoid overflowing context
-          final truncated = content.length > 4000
-              ? content.substring(0, 4000)
-              : content;
-          queryText =
-              '[Attached document: $docName]\n'
-              '--- DOCUMENT CONTENT ---\n$truncated\n--- END DOCUMENT ---\n\n'
-              'User request: $text';
-        }
-      } catch (_) {
-        // Non-text file (for example PDF). Keep the prompt clean and rely on RAG.
+      // Use LocalData.readFileContent so PDFs and Office docs are properly
+      // extracted (Syncfusion text extraction) rather than read as raw bytes.
+      final content = await LocalData().readFileContent(doc.path);
+      if (content != null && content.isNotEmpty) {
+        final truncated = content.length > 4000
+            ? content.substring(0, 4000)
+            : content;
         queryText =
-            '[Attached file: $docName]\n'
-            'Use indexed document context to answer.\n'
+            '[Attached document: $docName]\n'
+            '--- DOCUMENT CONTENT ---\n$truncated\n--- END DOCUMENT ---\n\n'
+            'User request: $text';
+      } else {
+        // Text extraction returned nothing — likely a scanned/image-only PDF.
+        // Tell the user directly rather than silently falling through to RAG.
+        final ext = docName.contains('.')
+            ? docName.split('.').last.toLowerCase()
+            : '';
+        final reason = ext == 'pdf'
+            ? 'This PDF appears to be scanned or image-based — its text could '
+                'not be extracted. Only searchable (text-layer) PDFs can be read.'
+            : 'The text in "$docName" could not be extracted.';
+        queryText =
+            '[File attached: $docName — content unavailable]\n'
+            '$reason\n'
+            'Please tell the user you cannot read this file\'s content and '
+            'explain why. Do NOT invent or guess any document contents.\n'
             'User request: $text';
       }
     }
@@ -770,6 +867,10 @@ class _AssistantScreenState extends State<AssistantScreen>
                       ],
                     ),
                   ),
+
+                  // Background download progress banner
+                  if (_activeDownloads.isNotEmpty)
+                    _buildDownloadBanner(colors),
 
                   // Chat messages
                   Expanded(
@@ -1249,6 +1350,10 @@ class _AssetChip extends StatelessWidget {
   IconData get _icon {
     switch (asset.assetType) {
       case 'file':
+        final ext = asset.assetRef.contains('.')
+            ? asset.assetRef.split('.').last.toLowerCase()
+            : '';
+        if (ext == 'pdf') return Icons.picture_as_pdf_outlined;
         return Icons.insert_drive_file_outlined;
       case 'photo':
         return Icons.photo_outlined;

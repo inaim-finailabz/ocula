@@ -52,6 +52,9 @@ class AIManager {
   /// The best tier that finished downloading but hasn't been loaded yet.
   /// Set by the tierReadyStream listener, consumed by applyPendingUpgrade().
   AITier? _pendingUpgradeTier;
+
+  /// Prevents concurrent embedding model load attempts.
+  bool _isLoadingEmbedding = false;
   StreamSubscription<AITier>? _tierReadySub;
 
   /// Stream that fires whenever the active tier changes (for UI updates).
@@ -475,13 +478,40 @@ class AIManager {
         } else {
           gpuLayers = 20;
         }
+
+        // Attempt 1: GPU (Vulkan/OpenCL) — preferred for performance.
         attempts.add(
           LlamaConfig(
             modelPath: mainPath,
             nGpuLayers: gpuLayers,
-            useGpu: gpuLayers != 0,
+            useGpu: true,
             contextSize: tier == AITier.pro ? proCtx : 2048,
             batchSize: 256,
+            nThreads: nThreads,
+          ),
+        );
+
+        // Attempt 2: Fewer GPU layers — helps on devices with limited VRAM.
+        attempts.add(
+          LlamaConfig(
+            modelPath: mainPath,
+            nGpuLayers: (gpuLayers / 2).floor(),
+            useGpu: true,
+            contextSize: tier == AITier.pro ? proCtx : 2048,
+            batchSize: 128,
+            nThreads: nThreads,
+          ),
+        );
+
+        // Attempt 3: CPU-only — fallback for Nothing OS, HarmonyOS, or any
+        // device where the Vulkan/OpenCL driver crashes llama.cpp natively.
+        attempts.add(
+          LlamaConfig(
+            modelPath: mainPath,
+            nGpuLayers: 0,
+            useGpu: false,
+            contextSize: tier == AITier.pro ? 1536 : 2048,
+            batchSize: 128,
             nThreads: nThreads,
           ),
         );
@@ -639,10 +669,14 @@ class AIManager {
 
   /// Load the dedicated embedding model if it's downloaded.
   /// Fire-and-forget — doesn't block text generation.
-  /// If the embedding model is new, triggers a full re-index so existing
-  /// chunks get proper sentence embeddings.
+  /// Called after every tier switch so embedding stays active regardless of
+  /// which text model is loaded (lite, plus, or pro).
   void _loadEmbeddingModelIfAvailable() async {
+    // Prevent concurrent calls — only one load attempt at a time.
+    if (_isLoadingEmbedding) return;
+    // Skip if already loaded AND still usable (separate native instance).
     if (_textEngine.isEmbeddingModelLoaded) return;
+    _isLoadingEmbedding = true;
     try {
       final path = await _models.embeddingModelPath();
       if (path != null) {
@@ -667,6 +701,8 @@ class AIManager {
       }
     } catch (e) {
       debugPrint('[AIManager] Embedding model load failed (non-fatal): $e');
+    } finally {
+      _isLoadingEmbedding = false;
     }
   }
 

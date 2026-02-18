@@ -1,6 +1,7 @@
 package net.nativemind.flutter_llama
 
 import android.os.Handler
+import android.os.Build
 import android.os.Looper
 import android.util.Log
 import io.flutter.embedding.engine.plugins.FlutterPlugin
@@ -51,6 +52,7 @@ class FlutterLlamaPlugin : FlutterPlugin, MethodCallHandler, EventChannel.Stream
     
     private var modelLoaded = false
     private var modelPath: String? = null
+    private var activeBackend: String = "cpu"
     private var shouldStop = false
 
     // Multimodal plugin (separate channels for image+text inference)
@@ -121,6 +123,7 @@ class FlutterLlamaPlugin : FlutterPlugin, MethodCallHandler, EventChannel.Stream
                 val contextSize = call.argument<Int>("contextSize") ?: 2048
                 val batchSize = call.argument<Int>("batchSize") ?: 512
                 val useGpu = call.argument<Boolean>("useGpu") ?: true
+                val gpuBackend = call.argument<String>("gpuBackend") ?: "auto"
                 val verbose = call.argument<Boolean>("verbose") ?: false
 
                 // Check if model file exists
@@ -133,6 +136,7 @@ class FlutterLlamaPlugin : FlutterPlugin, MethodCallHandler, EventChannel.Stream
                 }
 
                 this.modelPath = modelPath
+                val selectedBackend = resolveBackendPreference(gpuBackend, useGpu)
 
                 // Initialize model through JNI
                 val success = nativeInitModel(
@@ -141,16 +145,21 @@ class FlutterLlamaPlugin : FlutterPlugin, MethodCallHandler, EventChannel.Stream
                     nGpuLayers,
                     contextSize,
                     batchSize,
+                    selectedBackend,
                     useGpu,
                     verbose
                 )
 
                 modelLoaded = success
+                if (success) {
+                    activeBackend = nativeGetActiveBackend() ?: "cpu"
+                }
 
                 mainHandler.post {
                     if (success) {
                         Log.d(TAG, "Model loaded: $modelPath")
                         Log.d(TAG, "GPU layers: $nGpuLayers, threads: $nThreads, context: $contextSize")
+                        Log.d(TAG, "GPU backend requested=$gpuBackend resolved=$selectedBackend active=$activeBackend")
                         result.success(true)
                     } else {
                         result.error("INIT_FAILED", "Failed to initialize model", null)
@@ -316,7 +325,8 @@ class FlutterLlamaPlugin : FlutterPlugin, MethodCallHandler, EventChannel.Stream
                     "modelPath" to modelPath!!,
                     "nParams" to info.nParams,
                     "nLayers" to info.nLayers,
-                    "contextSize" to info.contextSize
+                    "contextSize" to info.contextSize,
+                    "backend" to activeBackend
                 )
                 result.success(infoMap)
             } else {
@@ -382,6 +392,55 @@ class FlutterLlamaPlugin : FlutterPlugin, MethodCallHandler, EventChannel.Stream
         result.success(dim)
     }
 
+    private fun resolveBackendPreference(requested: String, useGpu: Boolean): String {
+        if (!useGpu) return "cpu"
+
+        val normalized = requested.trim().lowercase()
+        if (normalized == "opencl" || normalized == "vulkan" || normalized == "cpu") {
+            return normalized
+        }
+
+        val fingerprint = buildHardwareFingerprint()
+        val preferOpenCL = fingerprint.any {
+            it.contains("qcom") ||
+            it.contains("qualcomm") ||
+            it.contains("adreno") ||
+            it.contains("snapdragon") ||
+            it.startsWith("sm") ||
+            it.startsWith("sdm") ||
+            it.startsWith("msm")
+        }
+        if (preferOpenCL) return "opencl"
+
+        val preferVulkan = fingerprint.any {
+            it.contains("mali") ||
+            it.contains("exynos") ||
+            it.contains("mediatek") ||
+            it.contains("mt") ||
+            it.contains("kirin") ||
+            it.contains("tensor") ||
+            it.contains("immortalis")
+        }
+        return if (preferVulkan) "vulkan" else "auto"
+    }
+
+    private fun buildHardwareFingerprint(): List<String> {
+        val values = mutableListOf(
+            Build.MANUFACTURER.orEmpty(),
+            Build.BRAND.orEmpty(),
+            Build.MODEL.orEmpty(),
+            Build.HARDWARE.orEmpty(),
+            Build.BOARD.orEmpty(),
+            Build.DEVICE.orEmpty(),
+            Build.PRODUCT.orEmpty()
+        )
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            values.add(Build.SOC_MODEL.orEmpty())
+            values.add(Build.SOC_MANUFACTURER.orEmpty())
+        }
+        return values.map { it.lowercase() }.filter { it.isNotBlank() }
+    }
+
     // MARK: - Native Methods (JNI)
 
     private external fun nativeInitModel(
@@ -390,6 +449,7 @@ class FlutterLlamaPlugin : FlutterPlugin, MethodCallHandler, EventChannel.Stream
         nGpuLayers: Int,
         contextSize: Int,
         batchSize: Int,
+        preferredBackend: String,
         useGpu: Boolean,
         verbose: Boolean
     ): Boolean
@@ -426,6 +486,8 @@ class FlutterLlamaPlugin : FlutterPlugin, MethodCallHandler, EventChannel.Stream
 
     private external fun nativeGetEmbeddingDim(): Int
 
+    private external fun nativeGetActiveBackend(): String?
+
     // Data classes for JNI results
     data class GenerationResult(
         val text: String,
@@ -438,4 +500,3 @@ class FlutterLlamaPlugin : FlutterPlugin, MethodCallHandler, EventChannel.Stream
         val contextSize: Int
     )
 }
-

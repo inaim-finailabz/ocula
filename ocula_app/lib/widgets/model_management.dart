@@ -12,14 +12,36 @@ class ModelManagement extends StatefulWidget {
 class _ModelManagementState extends State<ModelManagement> {
   final OculaModelManager _modelManager = OculaModelManager();
   Map<String, ModelStatus> _modelStatuses = {};
-  Map<String, double> _downloadProgress = {};
+  final Map<String, double> _downloadProgress = {};
+  final Map<String, String> _downloadStatusText = {};
+  final Map<String, DateTime> _downloadStartTime = {};
+  final Map<String, double> _downloadSpeedMBps = {};
+
   /// Verified models: true = GGUF header + size OK, false = failed, null = not checked
   Map<String, bool?> _verified = {};
+
+  /// Best tier the device can run (null while loading)
+  String? _recommendedTierLabel;
 
   @override
   void initState() {
     super.initState();
     _loadModelStatuses();
+    _loadRecommendedTier();
+  }
+
+  Future<void> _loadRecommendedTier() async {
+    final ai = AIManager();
+    AITier best = AITier.free;
+    for (final tier in [AITier.pro, AITier.plus, AITier.free]) {
+      if (await ai.canDeviceRunTier(tier)) {
+        best = tier;
+        break;
+      }
+    }
+    if (mounted) {
+      setState(() => _recommendedTierLabel = OculaModelManager.featureLabel(best));
+    }
   }
 
   Future<void> _loadModelStatuses() async {
@@ -27,7 +49,6 @@ class _ModelManagementState extends State<ModelManagement> {
     final verified = <String, bool?>{};
     for (final model in OculaModelManager.models) {
       statuses[model.fileName] = await _modelManager.getStatus(model.fileName);
-      // Verify downloaded models (GGUF header + size)
       if (statuses[model.fileName] == ModelStatus.ready) {
         final path = await _modelManager.modelPath(model.fileName);
         verified[model.fileName] = await _modelManager.isValidLocalModel(
@@ -45,16 +66,36 @@ class _ModelManagementState extends State<ModelManagement> {
   }
 
   void _downloadModel(ModelInfo model) {
+    final startTime = DateTime.now();
+    final startProgress = _downloadProgress[model.fileName] ?? 0.0;
     setState(() {
       _modelStatuses[model.fileName] = ModelStatus.downloading;
+      _downloadStartTime[model.fileName] = startTime;
     });
+
     _modelManager.download(
       model,
       onProgress: (progress, status) {
         if (mounted) {
           setState(() {
             _downloadProgress[model.fileName] = progress;
-            if (progress == 1.0) {
+            _downloadStatusText[model.fileName] = status;
+
+            // Calculate download speed for ETA
+            final elapsed =
+                DateTime.now().difference(startTime).inSeconds.toDouble();
+            if (elapsed > 2) {
+              final progressDone = progress - startProgress;
+              if (progressDone > 0) {
+                final speedMBps = (progressDone * model.sizeMB) / elapsed;
+                _downloadSpeedMBps[model.fileName] = speedMBps;
+              }
+            }
+
+            if (progress >= 1.0) {
+              _downloadStartTime.remove(model.fileName);
+              _downloadSpeedMBps.remove(model.fileName);
+              _downloadStatusText.remove(model.fileName);
               _loadModelStatuses();
             }
           });
@@ -64,13 +105,14 @@ class _ModelManagementState extends State<ModelManagement> {
   }
 
   Future<void> _forceRedownload(ModelInfo model) async {
-    // Delete existing file first, then re-download
     await _modelManager.deleteModel(model.fileName);
     if (mounted) {
       setState(() {
         _modelStatuses[model.fileName] = ModelStatus.notDownloaded;
         _verified.remove(model.fileName);
         _downloadProgress.remove(model.fileName);
+        _downloadStatusText.remove(model.fileName);
+        _downloadSpeedMBps.remove(model.fileName);
       });
       _downloadModel(model);
     }
@@ -80,6 +122,29 @@ class _ModelManagementState extends State<ModelManagement> {
     _modelManager.deleteModel(model.fileName).then((_) {
       _loadModelStatuses();
     });
+  }
+
+  /// Format "X.X MB / Y MB · ~Z left" for the download subtitle.
+  String _progressSubtitle(ModelInfo model, double progress) {
+    final receivedMB = progress * model.sizeMB;
+    final received = receivedMB >= 1024
+        ? '${(receivedMB / 1024).toStringAsFixed(2)} GB'
+        : '${receivedMB.toStringAsFixed(1)} MB';
+    final total = model.sizeLabel;
+    final base = '$received / $total';
+
+    final speedMBps = _downloadSpeedMBps[model.fileName];
+    if (speedMBps != null && speedMBps > 0 && progress < 1.0) {
+      final remainingMB = (1.0 - progress) * model.sizeMB;
+      final remainingSec = remainingMB / speedMBps;
+      final eta = remainingSec < 60
+          ? '~${remainingSec.round()}s left'
+          : remainingSec < 3600
+          ? '~${(remainingSec / 60).floor()}m ${(remainingSec % 60).round()}s left'
+          : '~${(remainingSec / 3600).toStringAsFixed(1)}h left';
+      return '$base · $eta';
+    }
+    return base;
   }
 
   @override
@@ -92,7 +157,36 @@ class _ModelManagementState extends State<ModelManagement> {
           'AI Models',
           style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
         ),
-        const SizedBox(height: 8),
+        const SizedBox(height: 10),
+
+        // Recommended tier for this device
+        if (_recommendedTierLabel != null)
+          Container(
+            margin: const EdgeInsets.only(bottom: 14),
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
+            decoration: BoxDecoration(
+              color: colors.primaryContainer.withAlpha(70),
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(color: colors.primary.withAlpha(50)),
+            ),
+            child: Row(
+              children: [
+                Icon(Icons.memory_outlined, size: 16, color: colors.primary),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    'Recommended for your device: $_recommendedTierLabel',
+                    style: TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w500,
+                      color: colors.primary,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+
         for (final tier in AITier.values)
           _buildTierSection(tier, colors),
       ],
@@ -127,35 +221,113 @@ class _ModelManagementState extends State<ModelManagement> {
     final status = _modelStatuses[model.fileName] ?? ModelStatus.notDownloaded;
     final progress = _downloadProgress[model.fileName];
     final isVerified = _verified[model.fileName];
+    final isDownloading = status == ModelStatus.downloading;
 
     return Card(
       margin: const EdgeInsets.symmetric(vertical: 4),
       color: colors.surfaceContainerHighest,
-      child: ListTile(
-        title: Row(
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(16, 10, 8, 10),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Expanded(child: Text(model.displayName)),
-            if (status == ModelStatus.ready && isVerified == true)
-              Icon(Icons.verified, size: 16, color: Colors.greenAccent),
-            if (status == ModelStatus.ready && isVerified == false)
-              Icon(Icons.error_outline, size: 16, color: colors.error),
+            Row(
+              children: [
+                // Model name + status icon
+                Expanded(
+                  child: Row(
+                    children: [
+                      Flexible(
+                        child: Text(
+                          model.displayName,
+                          style: const TextStyle(
+                            fontSize: 14,
+                            fontWeight: FontWeight.w500,
+                          ),
+                        ),
+                      ),
+                      if (status == ModelStatus.ready && isVerified == true)
+                        Padding(
+                          padding: const EdgeInsets.only(left: 6),
+                          child: Icon(
+                            Icons.verified,
+                            size: 15,
+                            color: Colors.greenAccent,
+                          ),
+                        ),
+                      if (status == ModelStatus.ready && isVerified == false)
+                        Padding(
+                          padding: const EdgeInsets.only(left: 6),
+                          child: Icon(
+                            Icons.error_outline,
+                            size: 15,
+                            color: colors.error,
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
+
+                // Action buttons / spinner
+                _buildActionWidget(model, status, progress, isVerified, colors),
+              ],
+            ),
+
+            // Subtitle row
+            Padding(
+              padding: const EdgeInsets.only(top: 2),
+              child: Row(
+                children: [
+                  Text(
+                    model.sizeLabel,
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: colors.onSurface.withAlpha(140),
+                    ),
+                  ),
+                  if (status == ModelStatus.ready && isVerified == true)
+                    Text(
+                      '  ·  verified',
+                      style: TextStyle(
+                        fontSize: 11,
+                        color: Colors.greenAccent,
+                      ),
+                    ),
+                  if (status == ModelStatus.ready && isVerified == false)
+                    Text(
+                      '  ·  corrupt',
+                      style: TextStyle(fontSize: 11, color: colors.error),
+                    ),
+                  if (isDownloading && progress != null)
+                    Expanded(
+                      child: Text(
+                        '  ·  ${_progressSubtitle(model, progress)}',
+                        style: TextStyle(
+                          fontSize: 11,
+                          color: colors.primary,
+                        ),
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                ],
+              ),
+            ),
+
+            // LinearProgressIndicator during download
+            if (isDownloading) ...[
+              const SizedBox(height: 8),
+              ClipRRect(
+                borderRadius: BorderRadius.circular(2),
+                child: LinearProgressIndicator(
+                  value: progress,
+                  minHeight: 3,
+                  backgroundColor: colors.primary.withAlpha(25),
+                  valueColor: AlwaysStoppedAnimation<Color>(colors.primary),
+                ),
+              ),
+            ],
           ],
         ),
-        subtitle: Row(
-          children: [
-            Text(model.sizeLabel),
-            if (status == ModelStatus.ready && isVerified == true)
-              Text('  ·  verified',
-                style: TextStyle(fontSize: 11, color: Colors.greenAccent)),
-            if (status == ModelStatus.ready && isVerified == false)
-              Text('  ·  corrupt',
-                style: TextStyle(fontSize: 11, color: colors.error)),
-            if (status == ModelStatus.downloading && progress != null)
-              Text('  ·  ${(progress * 100).toStringAsFixed(0)}%',
-                style: TextStyle(fontSize: 11, color: colors.primary)),
-          ],
-        ),
-        trailing: _buildActionWidget(model, status, progress, isVerified),
       ),
     );
   }
@@ -165,13 +337,13 @@ class _ModelManagementState extends State<ModelManagement> {
     ModelStatus status,
     double? progress,
     bool? isVerified,
+    ColorScheme colors,
   ) {
     switch (status) {
       case ModelStatus.ready:
         return Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            // Force re-download (refresh) button
             IconButton(
               icon: const Icon(Icons.refresh, size: 20),
               tooltip: 'Force re-download',
@@ -185,12 +357,16 @@ class _ModelManagementState extends State<ModelManagement> {
           ],
         );
       case ModelStatus.downloading:
-        return SizedBox(
-          width: 24,
-          height: 24,
-          child: CircularProgressIndicator(
-            value: progress,
-            strokeWidth: 2.5,
+        return Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 12),
+          child: SizedBox(
+            width: 20,
+            height: 20,
+            child: CircularProgressIndicator(
+              value: progress,
+              strokeWidth: 2,
+              color: colors.primary,
+            ),
           ),
         );
       case ModelStatus.notDownloaded:

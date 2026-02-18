@@ -332,6 +332,29 @@ class OculaModelManager {
         _tierReadyController.add(tier);
       }
     }
+    // Guarantee the embedding model is available across all tiers.
+    // It may have been skipped during splash (e.g. network error or bundled
+    // copy not present). Re-check and download if missing.
+    final embedModel = models.where((m) => m.isEmbeddingModel).firstOrNull;
+    if (embedModel != null && !await isDownloaded(embedModel.fileName)) {
+      final copied = await _ensureBundledModelCopied(embedModel.fileName);
+      if (!copied) {
+        try {
+          debugPrint('[ModelManager] Downloading embedding model (missed during splash)...');
+          await download(
+            embedModel,
+            onProgress: (progress, status) {
+              _downloadProgress[embedModel.fileName] = progress;
+              _downloadProgressStreamController.add(_downloadProgress);
+            },
+          ).timeout(const Duration(minutes: 5));
+          debugPrint('[ModelManager] ✓ Embedding model downloaded');
+        } catch (e) {
+          debugPrint('[ModelManager] ✗ Embedding model download failed: $e');
+        }
+      }
+    }
+
     debugPrint('[ModelManager] Background download pass complete');
   }
 

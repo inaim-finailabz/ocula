@@ -464,28 +464,76 @@ class Orchestrator {
       // Collect linked assets from RAG source IDs
       try {
         final sourceIds = results.map((r) => r.sourceId).toList();
-        state.linkedAssets = await OculaDB().findLinkedAssets(sourceIds);
+        final dbAssets = await OculaDB().findLinkedAssets(sourceIds);
+        final linkedById = {for (final a in dbAssets) a.sourceId: a};
+
+        // Synthesize chips for file/photo sources not in the DB so tappable
+        // links always appear even when linkAsset was never called for them.
+        for (final r in results) {
+          if (linkedById.containsKey(r.sourceId)) continue;
+          if (r.sourceId.startsWith('file:')) {
+            final path = r.sourceId.substring('file:'.length);
+            linkedById[r.sourceId] = LinkedAsset(
+              sourceId: r.sourceId,
+              assetType: 'file',
+              assetRef: path,
+              label: path.split('/').last,
+            );
+          } else if (r.sourceId.startsWith('photo:')) {
+            final path = r.sourceId.substring('photo:'.length);
+            linkedById[r.sourceId] = LinkedAsset(
+              sourceId: r.sourceId,
+              assetType: 'photo',
+              assetRef: path,
+              label: path.split('/').last,
+            );
+          }
+        }
+
+        // Filter asset types to match query intent.
+        // For file/photo queries only show file & photo chips — not phone
+        // numbers/emails that were detected inside file content, since those
+        // are confusing when the user is asking about a document.
+        final allAssets = linkedById.values.toList();
+        final isFileOrPhoto = state.intent == QueryIntent.file ||
+            state.intent == QueryIntent.photo;
+        state.linkedAssets = isFileOrPhoto
+            ? allAssets
+                .where(
+                  (a) => a.assetType == 'file' || a.assetType == 'photo',
+                )
+                .toList()
+            : allAssets;
       } catch (e) {
         if (kDebugMode) print('[Orchestrator] Asset linking skipped: $e');
       }
     }
 
-    // Enrich with knowledge graph context — find related entities
-    // This adds relationship data ("user has_contact john", "john works_at acme")
-    // that helps the LLM connect dots across indexed items.
-    try {
-      final graphCtx = await OculaDB().graphContext(
-        state.query,
-        limit: retrievePlan.graphLimit,
-      );
-      if (graphCtx.isNotEmpty) {
-        state.ragContext += '\n\n[Linked entities] $graphCtx';
-        debugPrint(
-          '[Orchestrator] Graph context added: ${graphCtx.length} chars',
+    // Enrich with knowledge graph context — only for social/calendar intents.
+    // Skipping for file/chat/web intents prevents unrelated contacts from
+    // appearing as linked chips when the user asks about documents or topics.
+    final _socialIntents = {
+      QueryIntent.contact,
+      QueryIntent.email,
+      QueryIntent.calendar,
+    };
+    if (_socialIntents.contains(state.intent)) {
+      try {
+        final graphCtx = await OculaDB().graphContext(
+          state.query,
+          limit: retrievePlan.graphLimit,
         );
+        if (graphCtx.isNotEmpty) {
+          state.ragContext += '\n\n[Linked entities] $graphCtx';
+          debugPrint(
+            '[Orchestrator] Graph context added: ${graphCtx.length} chars',
+          );
+        }
+      } catch (e) {
+        if (kDebugMode) {
+          print('[Orchestrator] Knowledge graph query skipped: $e');
+        }
       }
-    } catch (e) {
-      if (kDebugMode) print('[Orchestrator] Knowledge graph query skipped: $e');
     }
 
     state.stepsCompleted.add('retrieve');

@@ -708,7 +708,15 @@ class LocalData {
             .replaceAll('\r', '\n')
             .replaceAll(RegExp(r'\n{3,}'), '\n\n')
             .trim();
-        if (normalized.isEmpty) return null;
+        if (normalized.isEmpty) {
+          debugPrint(
+            '[LocalData] PDF extraction empty (scanned/image PDF?): ${file.path}',
+          );
+          return null;
+        }
+        debugPrint(
+          '[LocalData] PDF extracted ${normalized.length} chars from ${file.path.split('/').last}',
+        );
         if (normalized.length > _maxExtractedChars) {
           return normalized.substring(0, _maxExtractedChars);
         }

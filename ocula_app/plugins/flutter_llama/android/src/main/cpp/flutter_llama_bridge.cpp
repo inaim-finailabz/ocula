@@ -9,6 +9,8 @@
 #include <string>
 #include <vector>
 #include <mutex>
+#include <algorithm>
+#include <cctype>
 #include <android/log.h>
 
 #define LOG_TAG "FlutterLlamaBridge"
@@ -28,6 +30,65 @@ static bool g_should_stop = false;
 static std::vector<std::string> g_stream_tokens;
 static size_t g_stream_pos = 0;
 static llama_context* g_embed_ctx = nullptr;  // Embedding context (for RAG)
+static std::string g_active_backend = "cpu";
+static bool g_backends_loaded = false;
+
+static std::string to_lower_copy(std::string value) {
+    std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) {
+        return static_cast<char>(std::tolower(c));
+    });
+    return value;
+}
+
+static bool str_contains(const std::string& haystack, const std::string& needle) {
+    return haystack.find(needle) != std::string::npos;
+}
+
+static ggml_backend_dev_t find_gpu_device_for_backend(const std::string& requested_backend) {
+    const size_t n_devices = ggml_backend_dev_count();
+    ggml_backend_dev_t first_gpu = nullptr;
+
+    for (size_t i = 0; i < n_devices; ++i) {
+        ggml_backend_dev_t dev = ggml_backend_dev_get(i);
+        if (!dev) {
+            continue;
+        }
+
+        const auto dev_type = ggml_backend_dev_type(dev);
+        if (dev_type != GGML_BACKEND_DEVICE_TYPE_GPU && dev_type != GGML_BACKEND_DEVICE_TYPE_IGPU) {
+            continue;
+        }
+
+        ggml_backend_reg_t reg = ggml_backend_dev_backend_reg(dev);
+        const std::string reg_name = to_lower_copy(reg && ggml_backend_reg_name(reg) ? ggml_backend_reg_name(reg) : "");
+        const std::string dev_name = to_lower_copy(ggml_backend_dev_name(dev) ? ggml_backend_dev_name(dev) : "");
+
+        if (!first_gpu) {
+            first_gpu = dev;
+        }
+
+        if (requested_backend == "opencl" && (str_contains(reg_name, "opencl") || str_contains(dev_name, "opencl"))) {
+            return dev;
+        }
+        if (requested_backend == "vulkan" && (str_contains(reg_name, "vulkan") || str_contains(dev_name, "vulkan"))) {
+            return dev;
+        }
+    }
+
+    return requested_backend == "auto" ? first_gpu : nullptr;
+}
+
+static std::string backend_name_for_device(ggml_backend_dev_t dev) {
+    if (!dev) {
+        return "cpu";
+    }
+    ggml_backend_reg_t reg = ggml_backend_dev_backend_reg(dev);
+    const char* reg_name = reg ? ggml_backend_reg_name(reg) : nullptr;
+    if (!reg_name || reg_name[0] == '\0') {
+        return "gpu";
+    }
+    return to_lower_copy(reg_name);
+}
 
 extern "C" {
 
@@ -41,15 +102,19 @@ Java_net_nativemind_flutter_1llama_FlutterLlamaPlugin_nativeInitModel(
     jint n_gpu_layers,
     jint context_size,
     jint batch_size,
+    jstring preferred_backend,
     jboolean use_gpu,
     jboolean verbose
 ) {
     std::lock_guard<std::mutex> lock(g_mutex);
     
     const char* path = env->GetStringUTFChars(model_path, nullptr);
+    const char* preferred_backend_c = env->GetStringUTFChars(preferred_backend, nullptr);
+    const std::string requested_backend = to_lower_copy(preferred_backend_c ? preferred_backend_c : "auto");
     
     LOGI("Initializing model: %s", path);
     LOGI("Threads: %d, GPU layers: %d, Context: %d", n_threads, n_gpu_layers, context_size);
+    LOGI("Requested backend: %s, use_gpu=%d", requested_backend.c_str(), (int) use_gpu);
     
     // Free existing model if any
     if (g_sampler) {
@@ -65,17 +130,57 @@ Java_net_nativemind_flutter_1llama_FlutterLlamaPlugin_nativeInitModel(
         g_model = nullptr;
     }
     
-    // Load dynamic backends
-    ggml_backend_load_all();
+    // Load backends once. On CPU fallback we intentionally avoid loading
+    // GPU backends (Vulkan/OpenCL), which are unstable on Android emulators.
+    if (!g_backends_loaded) {
+        if (use_gpu) {
+            ggml_backend_load_all();
+        } else {
+            LOGI("GPU disabled — loading CPU backend only");
+        }
+        g_backends_loaded = true;
+    }
     
     // Set up model parameters
     llama_model_params model_params = llama_model_default_params();
     model_params.n_gpu_layers = use_gpu ? n_gpu_layers : 0;
+
+    std::vector<ggml_backend_dev_t> selected_devices;
+    ggml_backend_dev_t cpu_devices[2] = { nullptr, nullptr };
+    if (use_gpu && requested_backend != "cpu") {
+        ggml_backend_dev_t selected_dev = find_gpu_device_for_backend(requested_backend);
+        if (selected_dev) {
+            selected_devices.push_back(selected_dev);
+            selected_devices.push_back(nullptr); // Null-terminated list required by llama_model_params
+            model_params.devices = selected_devices.data();
+            g_active_backend = backend_name_for_device(selected_dev);
+            LOGI("Selected GPU backend: %s", g_active_backend.c_str());
+        } else {
+            // Requested GPU backend is unavailable: fallback to CPU to avoid init crashes.
+            model_params.n_gpu_layers = 0;
+            model_params.devices = nullptr;
+            g_active_backend = "cpu";
+            LOGI("Requested backend unavailable, falling back to CPU");
+        }
+    } else {
+        model_params.n_gpu_layers = 0;
+        ggml_backend_dev_t cpu_dev = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_CPU);
+        if (cpu_dev) {
+            cpu_devices[0] = cpu_dev;
+            model_params.devices = cpu_devices;
+            LOGI("Restricting to CPU-only device: %s", ggml_backend_dev_name(cpu_dev));
+        } else {
+            model_params.devices = nullptr;
+            LOGI("CPU device not found, using default backend selection");
+        }
+        g_active_backend = "cpu";
+    }
     
     // Load model
     g_model = llama_model_load_from_file(path, model_params);
     if (!g_model) {
         LOGE("Failed to load model from: %s", path);
+        env->ReleaseStringUTFChars(preferred_backend, preferred_backend_c);
         env->ReleaseStringUTFChars(model_path, path);
         return JNI_FALSE;
     }
@@ -95,6 +200,7 @@ Java_net_nativemind_flutter_1llama_FlutterLlamaPlugin_nativeInitModel(
         LOGE("Failed to create context");
         llama_free_model(g_model);
         g_model = nullptr;
+        env->ReleaseStringUTFChars(preferred_backend, preferred_backend_c);
         env->ReleaseStringUTFChars(model_path, path);
         return JNI_FALSE;
     }
@@ -113,8 +219,18 @@ Java_net_nativemind_flutter_1llama_FlutterLlamaPlugin_nativeInitModel(
     LOGI("Model loaded successfully");
     LOGI("Context size: %d", llama_n_ctx(g_context));
     
+    env->ReleaseStringUTFChars(preferred_backend, preferred_backend_c);
     env->ReleaseStringUTFChars(model_path, path);
     return JNI_TRUE;
+}
+
+JNIEXPORT jstring JNICALL
+Java_net_nativemind_flutter_1llama_FlutterLlamaPlugin_nativeGetActiveBackend(
+    JNIEnv* env,
+    jobject thiz
+) {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    return env->NewStringUTF(g_active_backend.c_str());
 }
 
 // Generate text
@@ -404,6 +520,7 @@ Java_net_nativemind_flutter_1llama_FlutterLlamaPlugin_nativeFreeModel(
     // Guard: don't run any free logic when nothing is loaded
     if (!g_model && !g_context && !g_sampler && !g_embed_ctx) {
         LOGI("free_model called but nothing loaded — skipping");
+        g_active_backend = "cpu";
         return;
     }
     
@@ -437,6 +554,7 @@ Java_net_nativemind_flutter_1llama_FlutterLlamaPlugin_nativeFreeModel(
     } else {
         g_vocab = nullptr;
     }
+    g_active_backend = "cpu";
     
     LOGI("Model freed successfully");
 }
