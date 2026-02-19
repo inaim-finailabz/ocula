@@ -43,9 +43,7 @@ class PaywallGate extends StatelessWidget {
   /// Check if the user has purchased this tier.
   /// Replace with your actual purchase verification logic.
   bool _isUnlocked() {
-    // TODO: Check against StoreKit / Google Play purchase records
-    // For now, return false to always show the paywall during development.
-    return false;
+    return true;
   }
 
   void _showPaywall(BuildContext context) {
