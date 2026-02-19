@@ -83,6 +83,7 @@
 		8169DFD116C87BF343FB15D3 /* Pods-RunnerTests.profile.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-RunnerTests.profile.xcconfig"; path = "Target Support Files/Pods-RunnerTests/Pods-RunnerTests.profile.xcconfig"; sourceTree = "<group>"; };
 		93D3F732D82B294CA559D5FA /* OculaShare.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = OculaShare.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		9740EEB21CF90195004384FC /* Debug.xcconfig */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.xcconfig; name = Debug.xcconfig; path = Flutter/Debug.xcconfig; sourceTree = "<group>"; };
+		D1E2F3A4B5C6D1E2F3A4B5C6 /* OculaShareExtension.xcconfig */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.xcconfig; name = OculaShareExtension.xcconfig; path = Flutter/OculaShareExtension.xcconfig; sourceTree = "<group>"; };
 		9740EEB31CF90195004384FC /* Generated.xcconfig */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.xcconfig; name = Generated.xcconfig; path = Flutter/Generated.xcconfig; sourceTree = "<group>"; };
 		97C146EE1CF9000F007C117D /* Runner.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Runner.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		97C146FB1CF9000F007C117D /* Base */ = {isa = PBXFileReference; lastKnownFileType = file.storyboard; name = Base; path = Base.lproj/Main.storyboard; sourceTree = "<group>"; };
@@ -157,6 +158,7 @@
 			children = (
 				3B3967151E833CAA004F5970 /* AppFrameworkInfo.plist */,
 				9740EEB21CF90195004384FC /* Debug.xcconfig */,
+				D1E2F3A4B5C6D1E2F3A4B5C6 /* OculaShareExtension.xcconfig */,
 				7AFA3C8E1D35360C0083082E /* Release.xcconfig */,
 				9740EEB31CF90195004384FC /* Generated.xcconfig */,
 			);
@@ -531,6 +533,7 @@
 /* Begin XCBuildConfiguration section */
 		143C45F324DE60B0CDDC89F5 /* Profile */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReference = D1E2F3A4B5C6D1E2F3A4B5C6 /* OculaShareExtension.xcconfig */;
 			buildSettings = {
 				CLANG_ENABLE_OBJC_WEAK = NO;
 				CODE_SIGN_ENTITLEMENTS = OculaShare/OculaShare.entitlements;
@@ -678,6 +681,7 @@
 		};
 		3A9AD04DA010259C645D50DA /* Debug */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReference = D1E2F3A4B5C6D1E2F3A4B5C6 /* OculaShareExtension.xcconfig */;
 			buildSettings = {
 				CLANG_ENABLE_OBJC_WEAK = NO;
 				CODE_SIGN_ENTITLEMENTS = OculaShare/OculaShare.entitlements;
@@ -857,6 +861,7 @@
 		};
 		CC3E1C4339DC419779F57119 /* Release */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReference = D1E2F3A4B5C6D1E2F3A4B5C6 /* OculaShareExtension.xcconfig */;
 			buildSettings = {
 				CLANG_ENABLE_OBJC_WEAK = NO;
 				CODE_SIGN_ENTITLEMENTS = OculaShare/OculaShare.entitlements;
