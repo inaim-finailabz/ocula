@@ -887,6 +887,10 @@ class OculaModelManager {
 
   /// Set the model server URL.
   Future<void> setModelServerUrl(String url) async {
+    final uri = Uri.tryParse(url);
+    if (uri == null || uri.scheme.toLowerCase() != 'https') {
+      throw ArgumentError('Model server URL must use https://');
+    }
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(_prefKeyModelServer, url);
     _cachedModelServerUrl = url;
@@ -923,8 +927,12 @@ class OculaModelManager {
       _httpClient ??= HttpClient()
         ..connectionTimeout = const Duration(seconds: 15);
       final resolvedUrl = _resolveUrl(model.downloadUrl);
+      final resolvedUri = Uri.parse(resolvedUrl);
+      if (resolvedUri.scheme.toLowerCase() != 'https') {
+        throw Exception('Blocked insecure model download URL: $resolvedUrl');
+      }
       debugPrint('[ModelManager] Downloading from: $resolvedUrl');
-      final request = await _httpClient!.getUrl(Uri.parse(resolvedUrl));
+      final request = await _httpClient!.getUrl(resolvedUri);
 
       // Resume support — if partial file exists, request remaining bytes
       int existingBytes = 0;

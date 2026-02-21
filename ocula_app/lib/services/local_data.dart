@@ -369,6 +369,9 @@ class LocalData {
     required String password,
     bool useSsl = true,
   }) async {
+    if (!useSsl) {
+      throw ArgumentError('IMAP must use SSL/TLS.');
+    }
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString('imap_host', host);
     await prefs.setInt('imap_port', port);
@@ -391,6 +394,12 @@ class LocalData {
 
       if (host.isEmpty || user.isEmpty || password.isEmpty) {
         return []; // Not configured
+      }
+      if (!useSsl) {
+        if (kDebugMode) {
+          print('[LocalData] Blocked IMAP connection without SSL/TLS');
+        }
+        return [];
       }
 
       final client = imap.ImapClient(isLogEnabled: false);

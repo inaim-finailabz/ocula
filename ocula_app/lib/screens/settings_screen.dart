@@ -1434,6 +1434,12 @@ class _EmailConfigTileState extends State<_EmailConfigTile> {
       );
       return;
     }
+    if (port != 993) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Use IMAP over SSL/TLS on port 993.')),
+      );
+      return;
+    }
 
     setState(() => _testing = true);
 
@@ -1549,7 +1555,8 @@ class _EmailConfigTileState extends State<_EmailConfigTile> {
                     const SizedBox(height: 8),
                     Text(
                       'For iCloud/Gmail, use an App-Specific Password. '
-                      'Credentials are stored only on this device.',
+                      'Credentials are stored only on this device. '
+                      'Only IMAP over SSL/TLS (port 993) is supported.',
                       style: TextStyle(
                         fontSize: 11,
                         color: colors.onSurface.withAlpha(100),
