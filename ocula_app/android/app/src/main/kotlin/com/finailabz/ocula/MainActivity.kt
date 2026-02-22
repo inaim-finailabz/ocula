@@ -35,13 +35,21 @@ class MainActivity : FlutterActivity() {
                                 result.success(null)
                             }
                         } else {
-                            result.success(null)
+                            // Fallback for emulator/sideloaded builds: check external files dir
+                            val fallbackFile = File(getExternalFilesDir(null), "models/$fileName")
+                            if (fallbackFile.exists()) {
+                                result.success(fallbackFile.absolutePath)
+                            } else {
+                                result.success(null)
+                            }
                         }
                     }
                     "isAssetPackAvailable" -> {
                         val packName = call.argument<String>("packName") ?: "models_pack"
                         val location = assetPackManager.getPackLocations()[packName]
-                        result.success(location != null)
+                        // Also consider available if fallback models exist
+                        val fallbackDir = File(getExternalFilesDir(null), "models")
+                        result.success(location != null || (fallbackDir.exists() && fallbackDir.listFiles()?.isNotEmpty() == true))
                     }
                     else -> result.notImplemented()
                 }
