@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:permission_handler/permission_handler.dart';
@@ -18,7 +19,9 @@ import 'services/share_receiver.dart';
 import 'screens/splash_screen.dart';
 import 'screens/onboarding_screen.dart';
 import 'screens/settings_screen.dart';
+import 'screens/recorder_screen.dart';
 import 'widgets/ocula_orb.dart';
+import 'widgets/help_tour.dart';
 import 'services/env_config.dart';
 import 'services/notification_service.dart';
 
@@ -65,6 +68,7 @@ class OculaApp extends StatelessWidget {
         '/': (context) => const OculaSplashScreen(),
         '/onboarding': (context) => const OnboardingScreen(),
         '/home': (context) => const AssistantScreen(),
+        '/recorder': (context) => const RecorderScreen(),
       },
     );
   }
@@ -96,10 +100,22 @@ class _AssistantScreenState extends State<AssistantScreen>
   StreamSubscription? _featureReadySubscription;
   StreamSubscription? _tierChangeSubscription;
 
+  // ── Help Tour ──
+  static final _orbKey = GlobalKey();
+  static final _inputBarKey = GlobalKey();
+  static final _cameraButtonKey = GlobalKey();
+  static final _scopeChipsKey = GlobalKey();
+  bool _showingHelpTour = false;
+
+  void _startHelpTour() {
+    if (mounted) setState(() => _showingHelpTour = true);
+  }
+
   final List<_Message> _messages = [];
   bool _isThinking = false;
   bool _isListening = false;
   bool _isSpeaking = false;
+  bool _isRecordingNotes = false;
   bool _stopRequested = false;
   OrbState _orbState = OrbState.idle;
   RetrievalScope _retrievalScope = RetrievalScope.all;
@@ -168,19 +184,26 @@ class _AssistantScreenState extends State<AssistantScreen>
     _tierChangeSubscription = _ai.activeTierStream.listen((_) {
       if (mounted) setState(() {});
     });
+
+    // Check if we should show the help tour after first onboarding.
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      final prefs = await SharedPreferences.getInstance();
+      if ((prefs.getBool('show_help_tour') ?? false) && mounted) {
+        _startHelpTour();
+      }
+    });
   }
 
   /// Thin banner shown below the top bar when models are downloading in background.
   Widget _buildDownloadBanner(ColorScheme colors) {
     // Show the main model being downloaded (skip vision projectors & embed for label)
-    final primary = _activeDownloads.entries
-        .where((e) {
+    final primary =
+        _activeDownloads.entries.where((e) {
           final m = OculaModelManager.models
               .where((m) => m.fileName == e.key)
               .firstOrNull;
           return m != null && !m.isVisionProjector && !m.isEmbeddingModel;
-        })
-        .firstOrNull ??
+        }).firstOrNull ??
         _activeDownloads.entries.firstOrNull;
 
     if (primary == null) return const SizedBox.shrink();
@@ -464,7 +487,9 @@ class _AssistantScreenState extends State<AssistantScreen>
         if (indexed) {
           _showSnackbar('Indexed "$name" — you can ask about it now');
         } else {
-          final ext = name.contains('.') ? name.split('.').last.toLowerCase() : '';
+          final ext = name.contains('.')
+              ? name.split('.').last.toLowerCase()
+              : '';
           final msg = ext == 'pdf'
               ? '"$name" appears to be a scanned/image PDF — text could not be extracted'
               : 'Could not extract text from "$name"';
@@ -502,12 +527,120 @@ class _AssistantScreenState extends State<AssistantScreen>
         _isThinking = false;
         _isListening = false;
         _isSpeaking = false;
+        _isRecordingNotes = false;
         _orbState = OrbState.idle;
       });
     }
   }
 
-  Future<void> _send(String text) async {
+  String _recordingSummaryPrompt({
+    required String transcript,
+    required String contextType,
+  }) {
+    return 'You are an expert note-taking assistant. Summarize this '
+        '$contextType recording into clear, structured notes.\n\n'
+        'Required format:\n'
+        '1) One-line summary\n'
+        '2) Key points (bullets)\n'
+        '3) Decisions (if any)\n'
+        '4) Action items with owner and due date if mentioned\n'
+        '5) Follow-up questions / unclear points\n\n'
+        'If something is missing, write "Not mentioned". Keep it concise.\n\n'
+        'Transcript:\n'
+        '$transcript';
+  }
+
+  Future<void> _startRecordingSummary({required String contextType}) async {
+    if (_isThinking || _isSpeaking) {
+      await _stopEverything();
+    }
+    if (_isListening) {
+      await _speech.stopListening();
+      if (!mounted) return;
+      setState(() {
+        _isListening = false;
+        _isRecordingNotes = false;
+        _orbState = OrbState.idle;
+      });
+      return;
+    }
+
+    if (mounted) {
+      setState(() {
+        _isListening = true;
+        _isRecordingNotes = true;
+        _orbState = OrbState.listening;
+        _orbExpanded = true;
+      });
+      _textController.clear();
+      _orbSizeController.forward();
+    }
+
+    try {
+      _speech.startListening(
+        onResult: (text) {
+          _textController.text = text;
+        },
+        onFinalText: (transcript) {
+          final cleaned = transcript.trim();
+          if (!mounted) return;
+          setState(() {
+            _isListening = false;
+            _isRecordingNotes = false;
+            _orbState = OrbState.idle;
+            _textController.clear();
+          });
+          if (cleaned.isEmpty) {
+            _showSnackbar('No speech captured. Try recording again.');
+            return;
+          }
+          _send(
+            'Summarize my $contextType recording',
+            queryOverride: _recordingSummaryPrompt(
+              transcript: cleaned,
+              contextType: contextType,
+            ),
+            displayTextOverride: 'Recorded $contextType notes',
+            forcedTier: AITier.pro,
+          );
+        },
+        onError: () {
+          if (!mounted) return;
+          setState(() {
+            _isListening = false;
+            _isRecordingNotes = false;
+            _orbState = OrbState.idle;
+          });
+          _showSnackbar(
+            'Could not start listening. Please check microphone permissions.',
+          );
+        },
+      );
+    } on ModelNotReadyException catch (e) {
+      _showSnackbar(e.toString());
+      if (!mounted) return;
+      setState(() {
+        _isListening = false;
+        _isRecordingNotes = false;
+        _orbState = OrbState.idle;
+      });
+    } catch (e) {
+      _showSnackbar('An error occurred: $e');
+      if (!mounted) return;
+      setState(() {
+        _isListening = false;
+        _isRecordingNotes = false;
+        _orbState = OrbState.idle;
+      });
+    }
+  }
+
+  Future<void> _send(
+    String text, {
+    String? queryOverride,
+    String? displayTextOverride,
+    AITier? forcedTier,
+  }) async {
     final image = _attachedImage;
     final doc = _attachedDocument;
     final docName = _attachedDocName;
@@ -529,7 +662,7 @@ class _AssistantScreenState extends State<AssistantScreen>
     }
 
     // If a document is attached, prepend its content to the query
-    String queryText = text;
+    String queryText = queryOverride ?? text;
     var runScope = _retrievalScope;
     if (doc != null && docName != null) {
       runScope = RetrievalScope.docs;
@@ -552,7 +685,7 @@ class _AssistantScreenState extends State<AssistantScreen>
             : '';
         final reason = ext == 'pdf'
             ? 'This PDF appears to be scanned or image-based — its text could '
-                'not be extracted. Only searchable (text-layer) PDFs can be read.'
+                  'not be extracted. Only searchable (text-layer) PDFs can be read.'
             : 'The text in "$docName" could not be extracted.';
         queryText =
             '[File attached: $docName — content unavailable]\n'
@@ -565,10 +698,11 @@ class _AssistantScreenState extends State<AssistantScreen>
 
     // Display text — show the actual user text, not the augmented query
     final displayText =
-        image != null &&
-            text == 'Describe this image in detail. What do you see?'
-        ? 'Analyze this image'
-        : text;
+        displayTextOverride ??
+        ((image != null &&
+                text == 'Describe this image in detail. What do you see?')
+            ? 'Analyze this image'
+            : text);
 
     // Reset stop flag — this new query is intentional
     _stopRequested = false;
@@ -592,6 +726,7 @@ class _AssistantScreenState extends State<AssistantScreen>
             hasImage: image != null,
             imagePath: image?.path,
             retrievalScope: runScope,
+            forcedTier: forcedTier,
           )
           .timeout(
             const Duration(minutes: 2),
@@ -665,11 +800,13 @@ class _AssistantScreenState extends State<AssistantScreen>
       _speech.stopListening();
       setState(() {
         _isListening = false;
+        _isRecordingNotes = false;
         _orbState = OrbState.idle;
       });
     } else {
       setState(() {
         _isListening = true;
+        _isRecordingNotes = false;
         _orbState = OrbState.listening;
         _orbExpanded = true;
       });
@@ -684,6 +821,7 @@ class _AssistantScreenState extends State<AssistantScreen>
               _messages.add(_Message(text: _textController.text, isUser: true));
               _messages.add(_Message(text: response, isUser: false));
               _isListening = false;
+              _isRecordingNotes = false;
               _orbState = OrbState.idle;
               _textController.clear();
               _orbExpanded = false;
@@ -697,6 +835,7 @@ class _AssistantScreenState extends State<AssistantScreen>
             );
             setState(() {
               _isListening = false;
+              _isRecordingNotes = false;
               _orbState = OrbState.idle;
             });
           },
@@ -705,12 +844,14 @@ class _AssistantScreenState extends State<AssistantScreen>
         _showSnackbar(e.toString());
         setState(() {
           _isListening = false;
+          _isRecordingNotes = false;
           _orbState = OrbState.idle;
         });
       } catch (e) {
         _showSnackbar('An error occurred: $e');
         setState(() {
           _isListening = false;
+          _isRecordingNotes = false;
           _orbState = OrbState.idle;
         });
       }
@@ -854,12 +995,27 @@ class _AssistantScreenState extends State<AssistantScreen>
                             ),
                           ),
                         IconButton(
+                          icon: const Icon(Icons.mic_none_rounded, size: 20),
+                          tooltip: 'Record meeting / lecture',
+                          onPressed: () {
+                            Navigator.of(context).pushNamed('/recorder');
+                          },
+                        ),
+                        IconButton(
+                          icon: const Icon(Icons.help_outline, size: 20),
+                          tooltip: 'Help tour',
+                          onPressed: _startHelpTour,
+                        ),
+                        IconButton(
                           icon: const Icon(Icons.settings_outlined, size: 20),
                           tooltip: 'Settings',
                           onPressed: () {
                             Navigator.of(context).push(
                               MaterialPageRoute(
-                                builder: (_) => SettingsScreen(speech: _speech),
+                                builder: (_) => SettingsScreen(
+                                  speech: _speech,
+                                  onRequestHelpTour: _startHelpTour,
+                                ),
                               ),
                             );
                           },
@@ -869,8 +1025,7 @@ class _AssistantScreenState extends State<AssistantScreen>
                   ),
 
                   // Background download progress banner
-                  if (_activeDownloads.isNotEmpty)
-                    _buildDownloadBanner(colors),
+                  if (_activeDownloads.isNotEmpty) _buildDownloadBanner(colors),
 
                   // Chat messages
                   Expanded(
@@ -977,6 +1132,7 @@ class _AssistantScreenState extends State<AssistantScreen>
 
                   // ── Retrieval scope chips ──
                   SizedBox(
+                    key: _scopeChipsKey,
                     height: 40,
                     child: ListView(
                       scrollDirection: Axis.horizontal,
@@ -1018,8 +1174,36 @@ class _AssistantScreenState extends State<AssistantScreen>
                     ),
                   ),
 
+                  // ── Quick voice-note actions ──
+                  SizedBox(
+                    height: 36,
+                    child: ListView(
+                      scrollDirection: Axis.horizontal,
+                      padding: const EdgeInsets.symmetric(horizontal: 12),
+                      children: [
+                        _QuickActionChip(
+                          label: _isRecordingNotes
+                              ? 'Stop Recording'
+                              : 'Meeting Recap',
+                          icon: _isRecordingNotes ? Icons.stop : Icons.mic,
+                          selected: _isRecordingNotes,
+                          onTap: () =>
+                              _startRecordingSummary(contextType: 'meeting'),
+                        ),
+                        _QuickActionChip(
+                          label: 'Class Notes',
+                          icon: Icons.school_outlined,
+                          onTap: () => _startRecordingSummary(
+                            contextType: 'college class',
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+
                   // ── Enhanced input bar ──
                   Container(
+                    key: _inputBarKey,
                     padding: const EdgeInsets.fromLTRB(6, 8, 6, 8),
                     decoration: BoxDecoration(
                       color: colors.surfaceContainerHighest,
@@ -1039,10 +1223,13 @@ class _AssistantScreenState extends State<AssistantScreen>
                       child: Row(
                         children: [
                           // Camera button
-                          _InputAction(
-                            icon: Icons.camera_alt_outlined,
-                            label: 'Camera',
-                            onTap: _pickImage,
+                          SizedBox(
+                            key: _cameraButtonKey,
+                            child: _InputAction(
+                              icon: Icons.camera_alt_outlined,
+                              label: 'Camera',
+                              onTap: _pickImage,
+                            ),
                           ),
                           // Document attach button
                           _InputAction(
@@ -1124,6 +1311,7 @@ class _AssistantScreenState extends State<AssistantScreen>
                 left: 0,
                 right: _orbExpanded ? 0 : null,
                 child: GestureDetector(
+                  key: _orbKey,
                   onTap: _orbExpanded && hasMessages
                       ? _toggleOrb
                       : _toggleVoice,
@@ -1196,6 +1384,43 @@ class _AssistantScreenState extends State<AssistantScreen>
                       ),
                     ),
                   ),
+                ),
+
+              // ── Layer 4: Help Tour overlay ──
+              if (_showingHelpTour)
+                HelpTour(
+                  steps: [
+                    HelpStep(
+                      targetKey: _orbKey,
+                      title: 'Talk to Ocula',
+                      description:
+                          'Tap the orb to start speaking. Ocula listens and responds aloud.',
+                    ),
+                    HelpStep(
+                      targetKey: _inputBarKey,
+                      title: 'Type a Question',
+                      description:
+                          'Type anything here, or attach a photo or document.',
+                    ),
+                    HelpStep(
+                      targetKey: _cameraButtonKey,
+                      title: 'Analyze Images',
+                      description:
+                          'Take or pick a photo — Ocula analyzes it entirely on-device.',
+                    ),
+                    HelpStep(
+                      targetKey: _scopeChipsKey,
+                      title: 'Focus Your Search',
+                      description:
+                          'Use All / Docs / Images / Location to narrow what Ocula looks through.',
+                    ),
+                  ],
+                  onComplete: () {
+                    setState(() => _showingHelpTour = false);
+                    SharedPreferences.getInstance().then(
+                      (p) => p.setBool('show_help_tour', false),
+                    );
+                  },
                 ),
             ],
           ),
@@ -1593,6 +1818,64 @@ class _ScopeChip extends StatelessWidget {
                   fontSize: 12,
                   fontWeight: FontWeight.w600,
                   color: selected ? colors.primary : colors.onSurface,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _QuickActionChip extends StatelessWidget {
+  final String label;
+  final IconData icon;
+  final bool selected;
+  final VoidCallback onTap;
+
+  const _QuickActionChip({
+    required this.label,
+    required this.icon,
+    required this.onTap,
+    this.selected = false,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    return Padding(
+      padding: const EdgeInsets.only(right: 8),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(18),
+        onTap: onTap,
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+          decoration: BoxDecoration(
+            color: selected
+                ? const Color(0xFFFF7675).withAlpha(35)
+                : colors.secondary.withAlpha(26),
+            borderRadius: BorderRadius.circular(18),
+            border: Border.all(
+              color: selected
+                  ? const Color(0xFFFF7675).withAlpha(110)
+                  : colors.secondary.withAlpha(90),
+            ),
+          ),
+          child: Row(
+            children: [
+              Icon(
+                icon,
+                size: 14,
+                color: selected ? const Color(0xFFFF7675) : colors.secondary,
+              ),
+              const SizedBox(width: 5),
+              Text(
+                label,
+                style: TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w600,
+                  color: selected ? const Color(0xFFFF7675) : colors.secondary,
                 ),
               ),
             ],

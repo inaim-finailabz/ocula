@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import '../services/ai_manager.dart';
 import '../services/model_manager.dart';
@@ -22,12 +23,30 @@ class _ModelManagementState extends State<ModelManagement> {
 
   /// Best tier the device can run (null while loading)
   String? _recommendedTierLabel;
+  AITier? _recommendedTier;
+
+  /// Currently active AI tier (from AIManager stream)
+  AITier? _activeTier;
+  StreamSubscription<AITier>? _activeTierSub;
+
+  /// Tier being activated right now (for loading state)
+  AITier? _activatingTier;
 
   @override
   void initState() {
     super.initState();
+    _activeTier = AIManager().activeTier;
+    _activeTierSub = AIManager().activeTierStream.listen((tier) {
+      if (mounted) setState(() => _activeTier = tier);
+    });
     _loadModelStatuses();
     _loadRecommendedTier();
+  }
+
+  @override
+  void dispose() {
+    _activeTierSub?.cancel();
+    super.dispose();
   }
 
   Future<void> _loadRecommendedTier() async {
@@ -40,8 +59,55 @@ class _ModelManagementState extends State<ModelManagement> {
       }
     }
     if (mounted) {
-      setState(() => _recommendedTierLabel = OculaModelManager.featureLabel(best));
+      setState(() {
+        _recommendedTier = best;
+        _recommendedTierLabel = OculaModelManager.featureLabel(best);
+      });
     }
+  }
+
+  Future<void> _activateTier(AITier tier) async {
+    if (_activatingTier != null) return;
+    setState(() => _activatingTier = tier);
+    try {
+      await AIManager().switchEngine(tier);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              '${OculaModelManager.featureLabel(tier)} is now active',
+            ),
+            duration: const Duration(seconds: 2),
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Could not activate ${OculaModelManager.featureLabel(tier)}: $e'),
+            duration: const Duration(seconds: 3),
+          ),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _activatingTier = null);
+    }
+  }
+
+  /// Returns true if all main (non-projector, non-embed) models for a tier
+  /// are downloaded and verified.
+  bool _isTierFullyReady(AITier tier) {
+    final tierModels = _modelManager
+        .modelsForTier(tier)
+        .where((m) => !m.isVisionProjector && !m.isEmbeddingModel)
+        .toList();
+    if (tierModels.isEmpty) return false;
+    return tierModels.every(
+      (m) =>
+          _modelStatuses[m.fileName] == ModelStatus.ready &&
+          _verified[m.fileName] == true,
+    );
   }
 
   Future<void> _loadModelStatuses() async {
@@ -175,7 +241,11 @@ class _ModelManagementState extends State<ModelManagement> {
                 const SizedBox(width: 8),
                 Expanded(
                   child: Text(
-                    'Recommended for your device: $_recommendedTierLabel',
+                    _recommendedTier != null &&
+                            _isTierFullyReady(_recommendedTier!) &&
+                            _activeTier != _recommendedTier
+                        ? '$_recommendedTierLabel is ready — tap Activate to switch'
+                        : 'Recommended for your device: $_recommendedTierLabel',
                     style: TextStyle(
                       fontSize: 13,
                       fontWeight: FontWeight.w500,
@@ -196,22 +266,77 @@ class _ModelManagementState extends State<ModelManagement> {
   Widget _buildTierSection(AITier tier, ColorScheme colors) {
     final tierModels = _modelManager.modelsForTier(tier);
     if (tierModels.isEmpty) return const SizedBox.shrink();
+
+    final isActive = _activeTier == tier;
+    final isFree = tier == AITier.free;
+    final fullyReady = _isTierFullyReady(tier);
+    final isActivating = _activatingTier == tier;
+
     return Padding(
       padding: const EdgeInsets.only(bottom: 16.0),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(
-            OculaModelManager.featureLabel(tier),
-            style: TextStyle(
-              fontSize: 14,
-              fontWeight: FontWeight.bold,
-              color: colors.primary,
-            ),
+          Row(
+            children: [
+              Text(
+                OculaModelManager.featureLabel(tier),
+                style: TextStyle(
+                  fontSize: 14,
+                  fontWeight: FontWeight.bold,
+                  color: colors.primary,
+                ),
+              ),
+              const SizedBox(width: 8),
+              // Active / Default chip
+              if (isActive || isFree)
+                Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 8,
+                    vertical: 2,
+                  ),
+                  decoration: BoxDecoration(
+                    color: isActive
+                        ? Colors.green.withAlpha(40)
+                        : colors.surfaceContainerHighest,
+                    borderRadius: BorderRadius.circular(10),
+                    border: Border.all(
+                      color: isActive
+                          ? Colors.green
+                          : colors.outline.withAlpha(80),
+                    ),
+                  ),
+                  child: Text(
+                    isFree && !isActive ? 'Default' : 'Active',
+                    style: TextStyle(
+                      fontSize: 11,
+                      color: isActive ? Colors.green : colors.onSurface.withAlpha(160),
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ),
+            ],
           ),
           const SizedBox(height: 8),
           for (final model in tierModels)
             _buildModelTile(model, colors),
+          // Activate button (non-free tiers that are fully ready but not active)
+          if (!isFree && fullyReady && !isActive) ...[
+            const SizedBox(height: 4),
+            SizedBox(
+              width: double.infinity,
+              child: FilledButton(
+                onPressed: isActivating ? null : () => _activateTier(tier),
+                child: isActivating
+                    ? const SizedBox(
+                        width: 18,
+                        height: 18,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Text('Activate'),
+              ),
+            ),
+          ],
         ],
       ),
     );

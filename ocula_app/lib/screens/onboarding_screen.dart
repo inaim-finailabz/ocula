@@ -14,36 +14,49 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
   final _controller = PageController();
   int _currentPage = 0;
 
-  static const _pages = [
-    _OnboardingPage(
+  static final _pages = [
+    const _OnboardingPage(
       icon: Icons.auto_awesome,
       title: 'Meet Ocula.',
       subtitle: 'Your personal assistant that lives entirely on your device.',
       color: Colors.deepPurple,
     ),
-    _OnboardingPage(
+    const _OnboardingPage(
       icon: Icons.cloud_off_rounded,
       title: 'Cloud-Free AI.',
       subtitle: 'Your thoughts, photos, and voice never leave this phone. Total privacy by design.',
       color: Colors.teal,
     ),
-    _OnboardingPage(
+    const _OnboardingPage(
       icon: Icons.mic_none_rounded,
       title: 'Voice First.',
       subtitle: 'Talk to Ocula like a friend. It listens and learns offline.',
       color: Colors.blue,
     ),
-    _OnboardingPage(
+    const _OnboardingPage(
       icon: Icons.security_rounded,
       title: 'Zero Data Leak.',
       subtitle: 'We physically cannot see your data. It never touches a server.',
       color: Colors.green,
+    ),
+    const _OnboardingPage(
+      icon: Icons.chat_bubble_outline,
+      title: 'Ask Anything.',
+      subtitle: 'Type or speak any question. Ocula reasons on-device and answers instantly.',
+      color: Color(0xFF6C5CE7),
+    ),
+    const _OnboardingPage(
+      icon: Icons.lock_person_rounded,
+      title: 'Your Private Data.',
+      subtitle: 'Search docs, photos, contacts, and calendar — without the cloud.',
+      color: Colors.teal,
     ),
   ];
 
   Future<void> _complete() async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool('onboarding_complete', true);
+    await prefs.setBool('show_help_tour', true);
     if (mounted) Navigator.pushReplacementNamed(context, '/home');
   }
 
@@ -81,8 +94,8 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                 itemCount: _pages.length,
                 onPageChanged: (i) => setState(() => _currentPage = i),
                 itemBuilder: (context, index) {
-                  final page = _pages[index];
-                  return _buildPage(page);
+                  if (index >= 4) return _buildFeaturePage(index);
+                  return _buildPage(_pages[index]);
                 },
               ),
             ),
@@ -165,6 +178,119 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
             ),
             textAlign: TextAlign.center,
           ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildFeaturePage(int index) {
+    final page = _pages[index];
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 32),
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          _AssistantOrb(color: page.color),
+          const SizedBox(height: 40),
+          Text(
+            page.title,
+            style: const TextStyle(
+              color: Colors.white,
+              fontSize: 28,
+              fontWeight: FontWeight.bold,
+            ),
+            textAlign: TextAlign.center,
+          ),
+          const SizedBox(height: 12),
+          Text(
+            page.subtitle,
+            style: TextStyle(
+              color: Colors.white.withAlpha(150),
+              fontSize: 16,
+              height: 1.5,
+            ),
+            textAlign: TextAlign.center,
+          ),
+          const SizedBox(height: 32),
+          // Page 4: mock chat bubbles
+          if (index == 4) ...[
+            Align(
+              alignment: Alignment.centerRight,
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                decoration: BoxDecoration(
+                  color: page.color.withAlpha(180),
+                  borderRadius: const BorderRadius.only(
+                    topLeft: Radius.circular(16),
+                    topRight: Radius.circular(16),
+                    bottomLeft: Radius.circular(16),
+                  ),
+                ),
+                child: const Text(
+                  'What\'s the capital of France?',
+                  style: TextStyle(color: Colors.white, fontSize: 14),
+                ),
+              ),
+            ),
+            const SizedBox(height: 10),
+            Align(
+              alignment: Alignment.centerLeft,
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                decoration: BoxDecoration(
+                  color: Colors.white.withAlpha(20),
+                  borderRadius: const BorderRadius.only(
+                    topLeft: Radius.circular(16),
+                    topRight: Radius.circular(16),
+                    bottomRight: Radius.circular(16),
+                  ),
+                ),
+                child: const Text(
+                  'Paris is the capital of France.',
+                  style: TextStyle(color: Colors.white, fontSize: 14),
+                ),
+              ),
+            ),
+          ],
+          // Page 5: private data chips
+          if (index == 5)
+            Wrap(
+              spacing: 12,
+              runSpacing: 12,
+              alignment: WrapAlignment.center,
+              children: const [
+                _DataChip(icon: Icons.insert_drive_file, label: 'Documents'),
+                _DataChip(icon: Icons.photo_library, label: 'Photos'),
+                _DataChip(icon: Icons.people, label: 'Contacts'),
+                _DataChip(icon: Icons.event, label: 'Calendar'),
+              ],
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+class _DataChip extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  const _DataChip({required this.icon, required this.label});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+      decoration: BoxDecoration(
+        color: Colors.white.withAlpha(20),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: Colors.white.withAlpha(40)),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 16, color: Colors.white),
+          const SizedBox(width: 6),
+          Text(label, style: const TextStyle(color: Colors.white, fontSize: 13)),
         ],
       ),
     );

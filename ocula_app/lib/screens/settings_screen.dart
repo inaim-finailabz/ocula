@@ -21,8 +21,13 @@ import '../services/env_config.dart';
 /// Settings screen — voice customisation + privacy controls.
 class SettingsScreen extends StatefulWidget {
   final SpeechService speech;
+  final VoidCallback? onRequestHelpTour;
 
-  const SettingsScreen({super.key, required this.speech});
+  const SettingsScreen({
+    super.key,
+    required this.speech,
+    this.onRequestHelpTour,
+  });
 
   @override
   State<SettingsScreen> createState() => _SettingsScreenState();
@@ -32,6 +37,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   late double _rate;
   late double _pitch;
   late double _volume;
+  late bool _voiceEnabled;
   String? _selectedVoiceName;
   String? _selectedLanguage;
 
@@ -52,6 +58,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _rate = widget.speech.rate;
     _pitch = widget.speech.pitch;
     _volume = widget.speech.volume;
+    _voiceEnabled = widget.speech.voiceEnabled;
     _selectedVoiceName = widget.speech.voice?['name'];
     _selectedLanguage = widget.speech.language;
     _internetAccess = _network.access;
@@ -96,85 +103,96 @@ class _SettingsScreenState extends State<SettingsScreen> {
               padding: const EdgeInsets.all(16),
               children: [
                 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-                // VOICE SETTINGS
+                // VOICE OUTPUT TOGGLE
                 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-                const _SectionHeader(title: 'Language'),
-                const SizedBox(height: 8),
-                _languageDropdown(colors),
+                _buildVoiceToggleCard(colors),
                 const SizedBox(height: 24),
 
-                Row(
-                  children: [
-                    const Text(
-                      'Voice',
-                      style: TextStyle(
-                        fontSize: 16,
-                        fontWeight: FontWeight.w600,
-                      ),
-                    ),
-                    const Spacer(),
-                    TextButton.icon(
-                      onPressed: () => widget.speech.preview(),
-                      icon: const Icon(Icons.play_circle_outline, size: 18),
-                      label: const Text('Preview'),
-                      style: TextButton.styleFrom(
-                        visualDensity: VisualDensity.compact,
-                      ),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 8),
-                _voiceList(colors),
-                const SizedBox(height: 16),
-
                 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-                // CUSTOM VOICE UPLOAD
+                // VOICE SETTINGS (hidden when voice off)
                 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-                _customVoiceSection(colors),
-                const SizedBox(height: 24),
+                if (_voiceEnabled) ...[
+                  const _SectionHeader(title: 'Language'),
+                  const SizedBox(height: 8),
+                  _languageDropdown(colors),
+                  const SizedBox(height: 24),
 
-                _SectionHeader(title: 'Speed', trailing: _rateLabel(_rate)),
-                Slider(
-                  value: _rate,
-                  min: 0.1,
-                  max: 1.0,
-                  divisions: 9,
-                  onChanged: (v) {
-                    setState(() => _rate = v);
-                    widget.speech.setRate(v);
-                  },
-                ),
-                const SizedBox(height: 16),
+                  Row(
+                    children: [
+                      const Text(
+                        'Voice',
+                        style: TextStyle(
+                          fontSize: 16,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                      const Spacer(),
+                      TextButton.icon(
+                        onPressed: () => widget.speech.preview(),
+                        icon: const Icon(Icons.play_circle_outline, size: 18),
+                        label: const Text('Preview'),
+                        style: TextButton.styleFrom(
+                          visualDensity: VisualDensity.compact,
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  _voiceList(colors),
+                  const SizedBox(height: 16),
 
-                _SectionHeader(title: 'Pitch', trailing: _pitchLabel(_pitch)),
-                Slider(
-                  value: _pitch,
-                  min: 0.5,
-                  max: 2.0,
-                  divisions: 15,
-                  onChanged: (v) {
-                    setState(() => _pitch = v);
-                    widget.speech.setPitch(v);
-                  },
-                ),
-                const SizedBox(height: 16),
+                  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+                  // CUSTOM VOICE UPLOAD
+                  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+                  _customVoiceSection(colors),
+                  const SizedBox(height: 24),
 
-                _SectionHeader(
-                  title: 'Volume',
-                  trailing: '${(_volume * 100).round()}%',
-                ),
-                Slider(
-                  value: _volume,
-                  min: 0.0,
-                  max: 1.0,
-                  divisions: 10,
-                  onChanged: (v) {
-                    setState(() => _volume = v);
-                    widget.speech.setVolume(v);
-                  },
-                ),
+                  _SectionHeader(title: 'Speed', trailing: _rateLabel(_rate)),
+                  Slider(
+                    value: _rate,
+                    min: 0.1,
+                    max: 1.0,
+                    divisions: 9,
+                    onChanged: (v) {
+                      setState(() => _rate = v);
+                      widget.speech.setRate(v);
+                    },
+                  ),
+                  const SizedBox(height: 16),
 
-                const SizedBox(height: 32),
+                  _SectionHeader(
+                    title: 'Pitch',
+                    trailing: _pitchLabel(_pitch),
+                  ),
+                  Slider(
+                    value: _pitch,
+                    min: 0.5,
+                    max: 2.0,
+                    divisions: 15,
+                    onChanged: (v) {
+                      setState(() => _pitch = v);
+                      widget.speech.setPitch(v);
+                    },
+                  ),
+                  const SizedBox(height: 16),
+
+                  _SectionHeader(
+                    title: 'Volume',
+                    trailing: '${(_volume * 100).round()}%',
+                  ),
+                  Slider(
+                    value: _volume,
+                    min: 0.0,
+                    max: 1.0,
+                    divisions: 10,
+                    onChanged: (v) {
+                      setState(() => _volume = v);
+                      widget.speech.setVolume(v);
+                    },
+                  ),
+
+                  const SizedBox(height: 32),
+                ],
 
                 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
                 // AI MODELS
@@ -330,6 +348,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   }).toList(),
                 ),
 
+                const SizedBox(height: 32),
+
+                // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+                // HELP & GETTING STARTED
+                // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+                _buildHelpSection(colors),
                 const SizedBox(height: 32),
 
                 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -638,6 +662,182 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 const SizedBox(height: 24),
               ],
             ),
+    );
+  }
+
+  // ── Voice Output Toggle Card ──
+
+  Widget _buildVoiceToggleCard(ColorScheme colors) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+      decoration: BoxDecoration(
+        color: colors.surfaceContainerHighest,
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Row(
+        children: [
+          Icon(
+            _voiceEnabled ? Icons.volume_up : Icons.volume_off,
+            size: 22,
+            color: _voiceEnabled ? colors.primary : colors.onSurface.withAlpha(120),
+          ),
+          const SizedBox(width: 14),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'Voice Output',
+                  style: TextStyle(fontWeight: FontWeight.w500),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  _voiceEnabled
+                      ? 'Ocula speaks responses aloud'
+                      : 'Ocula responds silently (text only)',
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: colors.onSurface.withAlpha(100),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          Switch(
+            value: _voiceEnabled,
+            activeColor: colors.primary,
+            onChanged: (v) {
+              setState(() => _voiceEnabled = v);
+              widget.speech.setVoiceEnabled(v);
+            },
+          ),
+        ],
+      ),
+    );
+  }
+
+  // ── Help & Getting Started Section ──
+
+  Widget _buildHelpSection(ColorScheme colors) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const _SectionHeader(title: 'Help & Getting Started'),
+        const SizedBox(height: 8),
+        Container(
+          decoration: BoxDecoration(
+            color: colors.surfaceContainerHighest,
+            borderRadius: BorderRadius.circular(12),
+          ),
+          child: Column(
+            children: [
+              _faqTile(
+                'How do I use voice?',
+                'Tap the orb or the mic icon and speak naturally. '
+                    'Ocula listens and responds aloud. '
+                    'To disable voice output, go to Settings > Voice Output and toggle it off.',
+                colors,
+              ),
+              _faqTile(
+                'How do I analyze a photo?',
+                'Tap the camera icon in the input bar. '
+                    'You can take a new photo or pick one from your library. '
+                    'Ocula analyzes it entirely on-device — nothing is uploaded.',
+                colors,
+              ),
+              _faqTile(
+                'How do I search my documents?',
+                'Go to the Docs tab and type or speak your question. '
+                    'Use the paperclip icon to import files directly. '
+                    'Ocula indexes PDFs, Word docs, text files, and more.',
+                colors,
+              ),
+              _faqTile(
+                'What is Ocula Pro?',
+                'Ocula has three tiers — Lite (always on), Plus (spatial & counting), '
+                    'and Pro (reasoning with chain-of-thought). '
+                    'The app recommends the best tier your device can run. '
+                    'Download models in Settings > AI Models, then tap Activate to switch.',
+                colors,
+              ),
+              _faqTile(
+                'Is my data private?',
+                'Yes — fully. All AI models run on-device. '
+                    'Your emails, files, photos, and contacts never leave your phone. '
+                    'Ocula works completely offline with no cloud connection required.',
+                colors,
+              ),
+              _faqTile(
+                'How does internet access work?',
+                'Three modes: Never (fully offline — no data leaves your device), '
+                    'Ask Every Time (Ocula will prompt you before each web search so you stay in control), '
+                    'and Always Allow (Ocula searches the web automatically when needed). '
+                    'Set your preference in Settings > Internet Access.',
+                colors,
+              ),
+              _faqTile(
+                'How do I record a meeting or lecture?',
+                'Tap the mic icon (🎙) in the top bar to open the Recorder. '
+                    'Choose a mode — Meeting (action items & decisions), Lecture (key concepts & study notes), '
+                    'or Notes (organised bullets). Tap Start Recording, then Stop when finished. '
+                    'Tap Generate Summary and Ocula summarises everything on-device using the most capable model you have downloaded. '
+                    'Tap the share icon to export the summary as a PDF.',
+                colors,
+                isLast: true,
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 8),
+        ListTile(
+          contentPadding: const EdgeInsets.symmetric(horizontal: 4),
+          leading: Icon(Icons.tour_outlined, color: colors.primary),
+          title: const Text('Replay App Tour'),
+          subtitle: const Text('Walk through Ocula\'s key features again'),
+          trailing: Icon(Icons.arrow_forward_ios, size: 14, color: colors.onSurface.withAlpha(60)),
+          onTap: () {
+            widget.onRequestHelpTour?.call();
+            Navigator.pop(context);
+          },
+        ),
+      ],
+    );
+  }
+
+  Widget _faqTile(
+    String question,
+    String answer,
+    ColorScheme colors, {
+    bool isLast = false,
+  }) {
+    return Column(
+      children: [
+        ExpansionTile(
+          tilePadding: const EdgeInsets.symmetric(horizontal: 16),
+          childrenPadding: const EdgeInsets.fromLTRB(16, 0, 16, 14),
+          title: Text(
+            question,
+            style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w500),
+          ),
+          children: [
+            Text(
+              answer,
+              style: TextStyle(
+                fontSize: 13,
+                height: 1.5,
+                color: colors.onSurface.withAlpha(160),
+              ),
+            ),
+          ],
+        ),
+        if (!isLast)
+          Divider(
+            height: 1,
+            indent: 16,
+            endIndent: 16,
+            color: colors.outline.withAlpha(40),
+          ),
+      ],
     );
   }
 

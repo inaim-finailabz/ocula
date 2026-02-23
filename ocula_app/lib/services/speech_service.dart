@@ -39,6 +39,15 @@ class SpeechService {
   bool get hasCustomVoice =>
       _customVoicePath != null && _customVoicePath!.isNotEmpty;
 
+  bool _voiceEnabled = true;
+  bool get voiceEnabled => _voiceEnabled;
+
+  Future<void> setVoiceEnabled(bool v) async {
+    _voiceEnabled = v;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool('voice_enabled', v);
+  }
+
   SpeechService({AIManager? aiManager}) : _aiManager = aiManager ?? AIManager();
 
   /// Initialize TTS with saved or default voice settings.
@@ -121,6 +130,7 @@ class SpeechService {
   Future<void> startListening({
     required Function(String) onResult,
     Function(String)? onAIResponse,
+    Function(String)? onFinalText,
     Function? onError,
   }) async {
     // Initialize STT only once
@@ -159,6 +169,9 @@ class SpeechService {
         if (val.finalResult && text.isNotEmpty && !handled) {
           handled = true;
           _isListening = false;
+          if (onFinalText != null) {
+            onFinalText(text);
+          }
           if (onAIResponse != null) {
             final response = await _aiManager.ask(text);
             onAIResponse(response);
@@ -183,6 +196,7 @@ class SpeechService {
   Future<void> speak(String text) async {
     final normalized = text.trim();
     if (normalized.isEmpty) return;
+    if (!_voiceEnabled) return;
 
     // Avoid audio-session conflicts between STT input and TTS output.
     if (_isListening) {
@@ -260,6 +274,7 @@ class SpeechService {
     _pitch = prefs.getDouble('tts_pitch') ?? 1.0;
     _volume = prefs.getDouble('tts_volume') ?? 1.0;
     _language = prefs.getString('tts_language') ?? 'en-US';
+    _voiceEnabled = prefs.getBool('voice_enabled') ?? true;
     _customVoicePath = prefs.getString('tts_custom_voice_path');
     final voiceName = prefs.getString('tts_voice_name');
     final voiceLocale = prefs.getString('tts_voice_locale');
