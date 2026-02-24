@@ -811,11 +811,15 @@ class AIManager {
       userMsg = prompt;
     } else if (compactContext.isNotEmpty) {
       if (isSmallModel) {
-        // Free tier: absolute minimum prompt. The model can't follow complex rules.
-        // "Do not make up" is the most effective anti-hallucination phrase for tiny models.
+        // Free tier: question-first format so the tiny model knows what to find
+        // BEFORE reading the data — dramatically improves relevance on <1B models.
         systemMsg =
-            '${rolePrefix}Answer using ONLY the data below. Do not make up information. Be brief.';
-        userMsg = '$compactContext\n\nQ: $prompt';
+            '${rolePrefix}'
+            'Answer ONLY from DATA — never invent names, numbers, dates or details. '
+            'Check: does DATA answer the QUESTION? '
+            'If yes, give the direct factual answer from DATA. '
+            'If no, say exactly: "I don\'t have that in your data."';
+        userMsg = 'QUESTION: $prompt\n\nDATA:\n$compactContext\n\nANSWER:';
       } else if (isProModel) {
         // Ocula Pro: can handle richer instructions and structured output
         systemMsg =
@@ -836,10 +840,11 @@ class AIManager {
         // Plus tier: moderate instructions with light structure
         systemMsg =
             '$rolePrefix'
-            'Answer using ONLY the data provided. Do not make up information. '
-            'If the data does not answer the question, say so. '
-            'Be specific and brief. Use bullet points for lists. '
-            'Start with where you found the answer.';
+            'Answer using ONLY the data provided. Never invent or guess. '
+            'Include specific values: names, numbers, dates, file names. '
+            'If the data does not contain the answer, say: "I don\'t have that in your data." '
+            'Use bullet points for lists. Cite the source type (document, contact, calendar, etc). '
+            'Be concise — no filler phrases, no repetition.';
         userMsg = '$dataLabel:\n$compactContext\n\nQ: $prompt';
       }
     } else {
@@ -853,9 +858,9 @@ class AIManager {
             'Do NOT invent contacts, events, or files. '
             'If the user asks about their phone data, tell them you don\'t '
             'have that information yet and suggest checking Settings > Your Data. '
-            'For general questions, answer helpfully and concisely. '
+            'For general knowledge questions answer helpfully, concisely and accurately. '
             'If the user is searching phone info, ask one clarifying question: '
-            'whether to search docs, images, contacts, calendar, or email.';
+            'which source to search — docs, images, contacts, calendar, or email.';
       } else {
         systemMsg =
             '$rolePrefix'
@@ -885,6 +890,8 @@ class AIManager {
       compactContext = _summarizeContext(compactContext, maxChars: targetCtx);
       userMsg = isProModel
           ? '$dataLabel:\n$compactContext\n\nQuestion: $prompt'
+          : isSmallModel
+          ? 'QUESTION: $prompt\n\nDATA:\n$compactContext\n\nANSWER:'
           : '$dataLabel:\n$compactContext\n\nQ: $prompt';
       fullPrompt =
           '<|im_start|>system\n$systemMsg<|im_end|>\n'
@@ -1066,19 +1073,19 @@ class AIManager {
     // ── Text path ──
     // Tier-tuned generation: small models need low temperature to stay coherent,
     // pro models can handle more creativity and longer output.
-    // 2026-02: Reduced maxTokens across all tiers to fight rambling.
-    //   free: 80 tokens (~2 sentences), temp 0.1 (near-greedy)
-    //   plus: 150 tokens, temp 0.3
-    //   pro:  384 tokens, temp 0.5
-    // User-configurable max tokens, scaled per tier
+    // 2026-02 update: increased token budgets, tightened temperatures.
+    //   free: 220 tokens max, temp 0.15, repPen 1.4  (was 150/0.1/1.8)
+    //   plus: 400 tokens max, temp 0.25, repPen 1.2  (was 300/0.3/1.3)
+    //   pro:  512 tokens max, temp 0.35, repPen 1.2  (was 384/0.5/1.3)
+    // Bigger budgets prevent answer truncation; lower temps improve accuracy.
     final configMaxTok = ragConfig.maxResponseTokens;
     final int maxTok = isSmallModel
-        ? (configMaxTok * 0.2).round().clamp(40, 150)
+        ? (configMaxTok * 0.25).round().clamp(80, 220)
         : (isProModel
-              ? configMaxTok
-              : (configMaxTok * 0.4).round().clamp(80, 300));
-    final double temp = isSmallModel ? 0.1 : (isProModel ? 0.5 : 0.3);
-    final double repPen = isSmallModel ? 1.8 : 1.3;
+              ? (configMaxTok * 1.33).round().clamp(256, 512)
+              : (configMaxTok * 0.6).round().clamp(140, 400));
+    final double temp = isSmallModel ? 0.15 : (isProModel ? 0.35 : 0.25);
+    final double repPen = isSmallModel ? 1.4 : 1.2;
 
     LlamaResponse response;
     try {
@@ -1109,7 +1116,9 @@ class AIManager {
         maxChars: isProModel ? 1200 : 800,
       );
       final retryUserMsg = tighterContext.isNotEmpty
-          ? '${_intentDataLabel(intent)}:\n$tighterContext\n\nQ: $prompt'
+          ? (isSmallModel
+              ? 'QUESTION: $prompt\n\nDATA:\n$tighterContext\n\nANSWER:'
+              : '${_intentDataLabel(intent)}:\n$tighterContext\n\nQ: $prompt')
           : prompt;
       final retryPrompt =
           '<|im_start|>system\n$systemMsg<|im_end|>\n'
@@ -1166,12 +1175,12 @@ class AIManager {
     // Small models: aggressive truncation at 150 chars.
     // Plus models: truncate at 300 chars.
     // Pro models: truncate at 800 chars.
-    if (isSmallModel && text.length > 150) {
-      text = _truncateToFirstParagraph(text, maxChars: 150);
-    } else if (!isProModel && text.length > 300) {
-      text = _truncateToFirstParagraph(text, maxChars: 300);
-    } else if (isProModel && text.length > 800) {
-      text = _truncateToFirstParagraph(text, maxChars: 800);
+    if (isSmallModel && text.length > 320) {
+      text = _truncateToFirstParagraph(text, maxChars: 320);
+    } else if (!isProModel && text.length > 560) {
+      text = _truncateToFirstParagraph(text, maxChars: 560);
+    } else if (isProModel && text.length > 1200) {
+      text = _truncateToFirstParagraph(text, maxChars: 1200);
     }
 
     // Anti-hallucination: detect and reject off-topic or nonsensical output.
@@ -1233,8 +1242,14 @@ class AIManager {
     if (compactContext.isNotEmpty) {
       final dataLabel = _intentDataLabel(intent);
       if (isSmallModel) {
-        systemMsg = '${rolePrefix}Answer from data only. Be brief.';
-        userMsg = '$compactContext\n\nQ: $prompt';
+        // Same question-first format as non-streaming path for consistency
+        systemMsg =
+            '${rolePrefix}'
+            'Answer ONLY from DATA — never invent names, numbers, dates or details. '
+            'Check: does DATA answer the QUESTION? '
+            'If yes, give the direct factual answer from DATA. '
+            'If no, say exactly: "I don\'t have that in your data."';
+        userMsg = 'QUESTION: $prompt\n\nDATA:\n$compactContext\n\nANSWER:';
       } else if (isProModel) {
         systemMsg =
             '$rolePrefix'
@@ -1298,6 +1313,8 @@ class AIManager {
       compactContext = _summarizeContext(compactContext, maxChars: targetCtx);
       userMsg = isProModel
           ? '$dataLabel:\n$compactContext\n\nQuestion: $prompt'
+          : isSmallModel
+          ? 'QUESTION: $prompt\n\nDATA:\n$compactContext\n\nANSWER:'
           : '$dataLabel:\n$compactContext\n\nQ: $prompt';
       fullPrompt =
           '<|im_start|>system\n$systemMsg<|im_end|>\n'
@@ -1310,12 +1327,12 @@ class AIManager {
 
     final configMaxTok = ragConfig.maxResponseTokens;
     final int maxTok = isSmallModel
-        ? (configMaxTok * 0.2).round().clamp(40, 150)
+        ? (configMaxTok * 0.25).round().clamp(80, 220)
         : (isProModel
-              ? configMaxTok
-              : (configMaxTok * 0.4).round().clamp(80, 300));
-    final double temp = isSmallModel ? 0.1 : (isProModel ? 0.5 : 0.3);
-    final double repPen = isSmallModel ? 1.8 : 1.3;
+              ? (configMaxTok * 1.33).round().clamp(256, 512)
+              : (configMaxTok * 0.6).round().clamp(140, 400));
+    final double temp = isSmallModel ? 0.15 : (isProModel ? 0.35 : 0.25);
+    final double repPen = isSmallModel ? 1.4 : 1.2;
 
     final buffer = StringBuffer();
     await for (final token in _textEngine.generateStream(
@@ -1345,7 +1362,7 @@ class AIManager {
         .trim();
     text = stripLeakedContext(text);
 
-    final int maxChars = isSmallModel ? 150 : (isProModel ? 800 : 300);
+    final int maxChars = isSmallModel ? 320 : (isProModel ? 1200 : 560);
     if (text.length > maxChars) {
       text = _truncateToFirstParagraph(text, maxChars: maxChars);
     }
@@ -1779,23 +1796,47 @@ class AIManager {
         .where((l) => l.trim().isNotEmpty)
         .toList();
 
-    // Remove header/label-only lines to save space
-    final contentLines = lines.where((l) {
-      final trimmed = l.trim();
-      return trimmed.length > 10 && // skip tiny lines
-          !trimmed.startsWith('[Recent') &&
-          !trimmed.startsWith('[Note:') &&
-          !trimmed.startsWith('[Knowledge');
-    }).toList();
-
-    // Take the most informative lines that fit within budget
-    final buffer = StringBuffer();
-    for (final line in contentLines) {
-      if (buffer.length + line.length + 1 > maxChars) break;
-      buffer.writeln(line);
+    // Score each line by information density so the most factual lines
+    // survive context compression, not just the first-N.
+    int scoreLine(String line) {
+      final t = line.trim();
+      if (t.startsWith('[SOURCE')) { return 100; }
+      if (t.startsWith('Content:')) { return 80; }
+      if (t.startsWith('Reference:') || t.startsWith('Type:')) { return 70; }
+      if (t.startsWith('Date:')) { return 65; }
+      if (t.startsWith('[Recent') || t.startsWith('[Knowledge') ||
+          t.startsWith('[Note:')) { return 0; }
+      int score = 10;
+      if (RegExp(r'\d').hasMatch(t)) { score += 15; }
+      if (RegExp(r'\d{1,2}[/\-:]\d{1,2}').hasMatch(t)) { score += 10; }
+      if (RegExp(r'@|\+?\d[\d\s\-]{6,}').hasMatch(t)) { score += 12; }
+      if (RegExp(r'[A-Z][a-z]+ [A-Z][a-z]+').hasMatch(t)) { score += 8; }
+      if (t.length > 40) { score += 5; }
+      return score;
     }
 
-    return buffer.toString().trim();
+    // Sort by score descending, then fill to budget
+    final scored = lines
+        .where((l) => l.trim().length > 5)
+        .map((l) => (line: l, score: scoreLine(l)))
+        .where((e) => e.score > 0)
+        .toList()
+      ..sort((a, b) => b.score.compareTo(a.score));
+
+    final kept = <String>[];
+    int total = 0;
+    for (final e in scored) {
+      if (total + e.line.length + 1 > maxChars) break;
+      kept.add(e.line);
+      total += e.line.length + 1;
+    }
+
+    // Re-sort kept lines to restore original document order
+    final lineOrder = {for (var i = 0; i < lines.length; i++) lines[i]: i};
+    kept.sort((a, b) =>
+        (lineOrder[a] ?? 999).compareTo(lineOrder[b] ?? 999));
+
+    return kept.join('\n').trim();
   }
 
   /// Keep prompts within safe limits per tier to avoid native decode failures.
@@ -1809,7 +1850,7 @@ class AIManager {
     if (context.isEmpty) return context;
 
     if (isSmallModel) {
-      return _summarizeContext(context, maxChars: (budgetChars * 0.5).round());
+      return _summarizeContext(context, maxChars: (budgetChars * 0.68).round());
     }
 
     if (isProModel) {

@@ -3,6 +3,8 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:uuid/uuid.dart';
+import 'screens/sessions_screen.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:permission_handler/permission_handler.dart';
@@ -106,6 +108,28 @@ class _AssistantScreenState extends State<AssistantScreen>
   static final _cameraButtonKey = GlobalKey();
   static final _scopeChipsKey = GlobalKey();
   bool _showingHelpTour = false;
+  String _sessionId = const Uuid().v4();
+
+  void _startNewSession() {
+    if (mounted) {
+      setState(() {
+        _messages.clear();
+        _sessionId = const Uuid().v4();
+      });
+    }
+  }
+
+  void _openSessionHistory(BuildContext context) {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      useSafeArea: true,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (_) => SessionsScreen(onStartNewChat: _startNewSession),
+    );
+  }
 
   void _startHelpTour() {
     if (mounted) setState(() => _showingHelpTour = true);
@@ -727,6 +751,7 @@ class _AssistantScreenState extends State<AssistantScreen>
             imagePath: image?.path,
             retrievalScope: runScope,
             forcedTier: forcedTier,
+            sessionId: _sessionId,
           )
           .timeout(
             const Duration(minutes: 2),
@@ -994,6 +1019,18 @@ class _AssistantScreenState extends State<AssistantScreen>
                               },
                             ),
                           ),
+                        IconButton(
+                          icon: const Icon(Icons.add_comment_outlined, size: 20),
+                          tooltip: 'New chat',
+                          onPressed: _startNewSession,
+                        ),
+                        Builder(
+                          builder: (ctx) => IconButton(
+                            icon: const Icon(Icons.history_outlined, size: 20),
+                            tooltip: 'Chat history',
+                            onPressed: () => _openSessionHistory(ctx),
+                          ),
+                        ),
                         IconButton(
                           icon: const Icon(Icons.mic_none_rounded, size: 20),
                           tooltip: 'Record meeting / lecture',

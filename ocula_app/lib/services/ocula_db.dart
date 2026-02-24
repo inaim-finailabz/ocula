@@ -24,7 +24,7 @@ class OculaDB {
   OculaDB._();
 
   static const _dbName = 'ocula.db';
-  static const _dbVersion = 2;
+  static const _dbVersion = 3;
 
   Database? _db;
   bool _migrated = false;
@@ -64,6 +64,7 @@ class OculaDB {
         intent     TEXT DEFAULT 'chat',
         model_used TEXT DEFAULT 'free',
         steps      TEXT,
+        session_id TEXT,
         created_at TEXT NOT NULL DEFAULT (datetime('now'))
       )
     ''');
@@ -179,6 +180,16 @@ class OculaDB {
   }
 
   Future<void> _onUpgrade(Database db, int oldVersion, int newVersion) async {
+    if (oldVersion < 3) {
+      try {
+        await db.execute(
+          'ALTER TABLE chat_turns ADD COLUMN session_id TEXT',
+        );
+        await db.execute(
+          'CREATE INDEX IF NOT EXISTS idx_chat_session ON chat_turns(session_id)',
+        );
+      } catch (_) {}
+    }
     if (oldVersion < 2) {
       await db.execute('''
         CREATE TABLE IF NOT EXISTS asset_links (
@@ -210,6 +221,7 @@ class OculaDB {
     String intent = 'chat',
     String modelUsed = 'free',
     List<String>? steps,
+    String? sessionId,
   }) async {
     final d = await db;
     return d.insert('chat_turns', {
@@ -221,12 +233,49 @@ class OculaDB {
       'model_used': modelUsed,
       'steps': steps != null ? jsonEncode(steps) : null,
       'created_at': DateTime.now().toIso8601String(),
+      'session_id': sessionId,
     });
   }
 
+  /// Returns a summary of all saved sessions, newest first.
+  ///
+  /// Each map contains: session_id, first_query, started_at, turn_count.
+  Future<List<Map<String, dynamic>>> sessionsIndex() async {
+    final d = await db;
+    return d.rawQuery('''
+      SELECT session_id,
+             MIN(query)      AS first_query,
+             MIN(created_at) AS started_at,
+             COUNT(*)        AS turn_count
+      FROM   chat_turns
+      WHERE  session_id IS NOT NULL
+      GROUP  BY session_id
+      ORDER  BY started_at DESC
+    ''');
+  }
+
+  /// Returns all turns for [sessionId], oldest first.
+  ///
+  /// Each map contains: query, response, intent, model_used, created_at.
+  Future<List<Map<String, dynamic>>> sessionTurns(String sessionId) async {
+    final d = await db;
+    return d.query(
+      'chat_turns',
+      columns: ['query', 'response', 'intent', 'model_used', 'created_at'],
+      where: 'session_id = ?',
+      whereArgs: [sessionId],
+      orderBy: 'created_at ASC',
+    );
+  }
+
   /// Recall recent conversations matching keywords.
-  /// Uses FTS if terms are long enough, else LIKE fallback.
-  Future<String> recallChat(String query, {int limit = 3}) async {
+  /// When [sessionId] is provided, only returns turns from that session
+  /// (ensures a new session starts with no cross-session memory).
+  Future<String> recallChat(
+    String query, {
+    int limit = 3,
+    String? sessionId,
+  }) async {
     final d = await db;
     final keywords = query
         .toLowerCase()
@@ -237,10 +286,21 @@ class OculaDB {
     if (keywords.isEmpty) return '';
 
     // Build a simple OR query
-    final where = keywords
+    final keywordWhere = keywords
         .map((_) => "(query LIKE ? OR response LIKE ?)")
         .join(' OR ');
-    final args = keywords.expand((k) => ['%$k%', '%$k%']).toList();
+    final keywordArgs = keywords.expand((k) => ['%$k%', '%$k%']).toList();
+
+    // Scope to current session if provided (new session = no cross-session recall)
+    final String where;
+    final List<dynamic> args;
+    if (sessionId != null) {
+      where = '($keywordWhere) AND session_id = ?';
+      args = [...keywordArgs, sessionId];
+    } else {
+      where = keywordWhere;
+      args = keywordArgs;
+    }
 
     final rows = await d.query(
       'chat_turns',
