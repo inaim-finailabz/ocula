@@ -1,7 +1,7 @@
 name: ocula_app
 description: "Multi-agent on-device AI app with vision, reasoning, and voice."
 publish_to: 'none'
-version: 1.0.2+9
+version: 1.0.2+10
 
 environment:
   sdk: '>=3.10.0 <4.0.0'
@@ -31,6 +31,7 @@ dependencies:
   # Database — On-device persistence (system SQLite, zero binary bloat)
   sqflite: ^2.4.1
   path: ^1.9.0
+  uuid: ^4.0.0
 
   # Local data access
   flutter_contacts: ^1.1.9       # Read contacts

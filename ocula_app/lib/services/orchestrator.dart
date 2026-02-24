@@ -36,6 +36,7 @@ class AgentState {
   final String query;
   final bool hasImage;
   String? imagePath;
+  AITier? forcedTier;
   RetrievalScope retrievalScope;
   QueryIntent intent;
   AITier modelUsed;
@@ -50,6 +51,7 @@ class AgentState {
     required this.query,
     this.hasImage = false,
     this.imagePath,
+    this.forcedTier,
     this.retrievalScope = RetrievalScope.all,
     this.intent = QueryIntent.chat,
     this.modelUsed = AITier.free,
@@ -125,6 +127,8 @@ class Orchestrator {
     bool hasImage = false,
     String? imagePath,
     RetrievalScope retrievalScope = RetrievalScope.all,
+    AITier? forcedTier,
+    String? sessionId,
   }) async {
     // If a previous run is still active, stop it first.
     if (_isRunning) {
@@ -142,6 +146,8 @@ class Orchestrator {
         hasImage: hasImage,
         imagePath: imagePath,
         retrievalScope: retrievalScope,
+        forcedTier: forcedTier,
+        sessionId: sessionId,
       );
     } finally {
       _isRunning = false;
@@ -154,11 +160,14 @@ class Orchestrator {
     bool hasImage = false,
     String? imagePath,
     RetrievalScope retrievalScope = RetrievalScope.all,
+    AITier? forcedTier,
+    String? sessionId,
   }) async {
     var state = AgentState(
       query: query,
       hasImage: hasImage,
       imagePath: imagePath,
+      forcedTier: forcedTier,
       retrievalScope: retrievalScope,
     );
     state.status = StepStatus.running;
@@ -234,7 +243,7 @@ class Orchestrator {
     if (_cancelled) return OrchestratorResult.empty;
 
     // STEP 7: Log to episodic memory
-    await _memory.log(state);
+    await _memory.log(state, sessionId: sessionId);
 
     // STEP 8: Index conversation for RAG (non-blocking)
     Indexer().indexChatTurn(state.query, state.response).catchError((_) {});
@@ -495,14 +504,13 @@ class Orchestrator {
         // numbers/emails that were detected inside file content, since those
         // are confusing when the user is asking about a document.
         final allAssets = linkedById.values.toList();
-        final isFileOrPhoto = state.intent == QueryIntent.file ||
+        final isFileOrPhoto =
+            state.intent == QueryIntent.file ||
             state.intent == QueryIntent.photo;
         state.linkedAssets = isFileOrPhoto
             ? allAssets
-                .where(
-                  (a) => a.assetType == 'file' || a.assetType == 'photo',
-                )
-                .toList()
+                  .where((a) => a.assetType == 'file' || a.assetType == 'photo')
+                  .toList()
             : allAssets;
       } catch (e) {
         if (kDebugMode) print('[Orchestrator] Asset linking skipped: $e');
@@ -512,12 +520,12 @@ class Orchestrator {
     // Enrich with knowledge graph context — only for social/calendar intents.
     // Skipping for file/chat/web intents prevents unrelated contacts from
     // appearing as linked chips when the user asks about documents or topics.
-    final _socialIntents = {
+    final socialIntents = {
       QueryIntent.contact,
       QueryIntent.email,
       QueryIntent.calendar,
     };
-    if (_socialIntents.contains(state.intent)) {
+    if (socialIntents.contains(state.intent)) {
       try {
         final graphCtx = await OculaDB().graphContext(
           state.query,
@@ -943,6 +951,25 @@ class Orchestrator {
   /// 3. Spatial intent   → Specialist (plus / Moondream 2).
   /// 4. Default          → Sensor (free / SmolVLM2).
   Future<AgentState> _routeModel(AgentState state) async {
+    // Per-request forced tier (used by feature-specific flows like
+    // recording summarization that must run on a specific model).
+    final forcedTier = state.forcedTier;
+    if (forcedTier != null) {
+      if (!await _ai.isTierDownloaded(forcedTier)) {
+        throw ModelNotReadyException(forcedTier);
+      }
+      if (_ai.activeTier != forcedTier) {
+        await _ai.switchEngine(forcedTier);
+      }
+      if (_ai.activeTier != forcedTier) {
+        throw ModelNotReadyException(forcedTier);
+      }
+      state.modelUsed = forcedTier;
+      debugPrint('[Orchestrator] Route: forced -> ${forcedTier.name}');
+      state.stepsCompleted.add('route_model');
+      return state;
+    }
+
     // ── Manual override: if user set a specific model, try it first ──
     final overrideTier = RagConfig().modelOverrideTier;
     debugPrint(
@@ -1143,13 +1170,14 @@ class EpisodicMemory {
   final OculaDB _db = OculaDB();
 
   /// Log a completed interaction.
-  Future<void> log(AgentState state) async {
+  Future<void> log(AgentState state, {String? sessionId}) async {
     await _db.logChat(
       query: state.query,
       response: state.response,
       intent: state.intent.name,
       modelUsed: state.modelUsed.name,
       steps: state.stepsCompleted,
+      sessionId: sessionId,
     );
 
     // Extract knowledge graph triples from conversation
