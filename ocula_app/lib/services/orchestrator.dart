@@ -213,6 +213,7 @@ class Orchestrator {
           imagePath: imagePath,
           retrievalScope: retrievalScope,
         )..intent = state.intent,
+        sessionId: sessionId,
       ),
     ]);
     if (_cancelled) return OrchestratorResult.empty;
@@ -899,8 +900,16 @@ class Orchestrator {
   }
 
   /// Node 3: Check episodic memory for recent conversations about this topic.
-  Future<AgentState> _recallMemory(AgentState state) async {
-    final recentMemories = await _memory.recall(state.query);
+  /// [sessionId] scopes recall to the current session only — a new session
+  /// starts with a clean slate and does NOT inherit previous sessions' memory.
+  Future<AgentState> _recallMemory(
+    AgentState state, {
+    String? sessionId,
+  }) async {
+    final recentMemories = await _memory.recall(
+      state.query,
+      sessionId: sessionId,
+    );
     if (recentMemories.isNotEmpty) {
       state.ragContext += '\n\n[Recent conversations]\n$recentMemories';
     }
@@ -1204,9 +1213,14 @@ class EpisodicMemory {
   }
 
   /// Recall recent conversations relevant to a query.
-  Future<String> recall(String query, {int limit = 3}) async {
+  /// [sessionId] scopes recall to the current session only.
+  Future<String> recall(String query, {int limit = 3, String? sessionId}) async {
     // Combine keyword recall with knowledge graph context
-    final chatRecall = await _db.recallChat(query, limit: limit);
+    final chatRecall = await _db.recallChat(
+      query,
+      limit: limit,
+      sessionId: sessionId,
+    );
     final graphContext = await _db.graphContext(query, limit: 3);
 
     final parts = <String>[];

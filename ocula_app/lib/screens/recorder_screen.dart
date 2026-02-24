@@ -179,6 +179,8 @@ class _RecorderScreenState extends State<RecorderScreen> {
         return 'Lecture';
       case RecorderMode.notes:
         return 'Voice Notes';
+      case RecorderMode.journalist:
+        return 'Journalist Notes';
     }
   }
 
@@ -247,6 +249,11 @@ class _RecorderScreenState extends State<RecorderScreen> {
                       value: RecorderMode.notes,
                       icon: Icon(Icons.mic_none_rounded, size: 18),
                       label: Text('Notes'),
+                    ),
+                    ButtonSegment(
+                      value: RecorderMode.journalist,
+                      icon: Icon(Icons.article_outlined, size: 18),
+                      label: Text('Journalist'),
                     ),
                   ],
                   selected: {_mode},

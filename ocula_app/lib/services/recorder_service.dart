@@ -5,7 +5,7 @@ import 'package:speech_to_text/speech_to_text.dart' as stt;
 import 'ai_manager.dart';
 
 /// Recording mode — controls the AI summarization prompt.
-enum RecorderMode { meeting, lecture, notes }
+enum RecorderMode { meeting, lecture, notes, journalist }
 
 /// Result of [RecorderService.start].
 enum RecorderStartResult {
@@ -260,6 +260,24 @@ Use these sections (omit any that are not applicable):
 ## To-Do / Follow-Ups  (use a checklist: - [ ] item)
 
 Remove filler words, repetition, and false starts. Keep the meaning intact.
+
+--- TRANSCRIPT ---
+$text
+--- END ---''';
+
+      case RecorderMode.journalist:
+        return '''You are an experienced journalist and editor. Analyse the following recorded transcript and produce a structured journalist's notes document in Markdown.
+
+Use these sections (omit any that are not applicable):
+## Headline (draft)
+## Story Angle / Key Theme
+## Who / What / Where / When / Why
+## Key Quotes  (exact words from the transcript, in "quotation marks")
+## Background & Context
+## Follow-Up Questions
+## Story Notes
+
+Preserve exact quotes verbatim. Flag anything that needs verification with [CHECK].
 
 --- TRANSCRIPT ---
 $text

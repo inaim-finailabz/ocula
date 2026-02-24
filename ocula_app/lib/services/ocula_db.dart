@@ -269,8 +269,13 @@ class OculaDB {
   }
 
   /// Recall recent conversations matching keywords.
-  /// Uses FTS if terms are long enough, else LIKE fallback.
-  Future<String> recallChat(String query, {int limit = 3}) async {
+  /// When [sessionId] is provided, only returns turns from that session
+  /// (ensures a new session starts with no cross-session memory).
+  Future<String> recallChat(
+    String query, {
+    int limit = 3,
+    String? sessionId,
+  }) async {
     final d = await db;
     final keywords = query
         .toLowerCase()
@@ -281,10 +286,21 @@ class OculaDB {
     if (keywords.isEmpty) return '';
 
     // Build a simple OR query
-    final where = keywords
+    final keywordWhere = keywords
         .map((_) => "(query LIKE ? OR response LIKE ?)")
         .join(' OR ');
-    final args = keywords.expand((k) => ['%$k%', '%$k%']).toList();
+    final keywordArgs = keywords.expand((k) => ['%$k%', '%$k%']).toList();
+
+    // Scope to current session if provided (new session = no cross-session recall)
+    final String where;
+    final List<dynamic> args;
+    if (sessionId != null) {
+      where = '($keywordWhere) AND session_id = ?';
+      args = [...keywordArgs, sessionId];
+    } else {
+      where = keywordWhere;
+      args = keywordArgs;
+    }
 
     final rows = await d.query(
       'chat_turns',

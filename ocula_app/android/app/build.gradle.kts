@@ -62,6 +62,14 @@ android {
         }
     }
 
+    packaging {
+        jniLibs {
+            // Broaden this to all .so files to bypass the stripping error
+            // This is a known workaround when the NDK strip tool fails
+            keepDebugSymbols += "**/*.so"
+        }
+    }
+
     // Play Asset Delivery: models delivered as fast-follow asset pack
     assetPacks += listOf(":models_pack")
 }
