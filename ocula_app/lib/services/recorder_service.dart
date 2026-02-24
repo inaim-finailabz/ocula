@@ -1,10 +1,19 @@
 import 'dart:async';
 import 'package:flutter/foundation.dart';
+import 'package:permission_handler/permission_handler.dart';
 import 'package:speech_to_text/speech_to_text.dart' as stt;
 import 'ai_manager.dart';
 
 /// Recording mode — controls the AI summarization prompt.
 enum RecorderMode { meeting, lecture, notes }
+
+/// Result of [RecorderService.start].
+enum RecorderStartResult {
+  ok,
+  permissionDenied,
+  permissionPermanentlyDenied,
+  unavailable,
+}
 
 /// Continuous speech-to-text recorder with AI summarization.
 ///
@@ -52,30 +61,40 @@ class RecorderService {
   // ── Lifecycle ──
 
   /// Initialize STT and start continuous recording.
-  /// Returns false if the microphone / STT is unavailable.
-  Future<bool> start() async {
-    if (_isRecording) return true;
+  /// Returns [RecorderStartResult] so the caller can distinguish
+  /// permission-denied from a hardware/engine failure.
+  Future<RecorderStartResult> start() async {
+    if (_isRecording) return RecorderStartResult.ok;
 
+    // ── 1. Explicitly request microphone permission ──
+    // speech_to_text.initialize() also requests permission, but calling
+    // it first lets us show a targeted "open settings" prompt if denied.
+    final micStatus = await Permission.microphone.request();
+    if (micStatus.isPermanentlyDenied) {
+      return RecorderStartResult.permissionPermanentlyDenied;
+    }
+    if (!micStatus.isGranted) {
+      return RecorderStartResult.permissionDenied;
+    }
+
+    // ── 2. Initialise STT engine ──
     if (!_sttInitialized) {
       final available = await _speech.initialize(
         onError: (error) {
           debugPrint('[RecorderService] STT error: $error');
-          // If the session ends permanently and we're still recording, restart.
           if (error.permanent && _isRecording) {
             Future.delayed(const Duration(milliseconds: 200), _startSession);
           }
         },
         onStatus: (status) {
           debugPrint('[RecorderService] STT status: $status');
-          // 'done' / 'notListening' fires at the end of each session.
-          // Restart immediately if we're still recording.
           if (_isRecording &&
               (status == 'done' || status == 'notListening')) {
             Future.delayed(const Duration(milliseconds: 150), _startSession);
           }
         },
       );
-      if (!available) return false;
+      if (!available) return RecorderStartResult.unavailable;
       _sttInitialized = true;
     }
 
@@ -87,7 +106,7 @@ class RecorderService {
       ..reset()
       ..start();
     _startSession();
-    return true;
+    return RecorderStartResult.ok;
   }
 
   /// Stop recording and return the committed transcript.

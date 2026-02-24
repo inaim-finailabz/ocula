@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
+import 'package:permission_handler/permission_handler.dart';
 import '../services/recorder_service.dart';
 import '../services/export_service.dart';
 import '../services/ai_manager.dart';
@@ -48,12 +49,23 @@ class _RecorderScreenState extends State<RecorderScreen> {
   // ── Control ──
 
   Future<void> _startRecording() async {
-    final ok = await _recorder.start();
-    if (!ok) {
+    final result = await _recorder.start();
+
+    if (result == RecorderStartResult.permissionPermanentlyDenied) {
+      if (mounted) _showPermissionDialog(permanent: true);
+      return;
+    }
+    if (result == RecorderStartResult.permissionDenied) {
+      if (mounted) _showPermissionDialog(permanent: false);
+      return;
+    }
+    if (result == RecorderStartResult.unavailable) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
-            content: Text('Microphone unavailable — check permissions.'),
+            content: Text(
+              'Speech recognition is unavailable on this device.',
+            ),
           ),
         );
       }
@@ -75,6 +87,36 @@ class _RecorderScreenState extends State<RecorderScreen> {
       _transcript = '';
       _elapsed = Duration.zero;
     });
+  }
+
+  void _showPermissionDialog({required bool permanent}) {
+    showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Microphone Access Required'),
+        content: Text(
+          permanent
+              ? 'Microphone permission was denied. '
+                'Please open Settings and enable it for Ocula to record.'
+              : 'Ocula needs microphone access to record. '
+                'Please allow it when prompted.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Cancel'),
+          ),
+          if (permanent)
+            FilledButton(
+              onPressed: () {
+                Navigator.pop(ctx);
+                openAppSettings();
+              },
+              child: const Text('Open Settings'),
+            ),
+        ],
+      ),
+    );
   }
 
   Future<void> _stopRecording() async {
