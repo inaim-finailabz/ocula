@@ -504,14 +504,27 @@ class Orchestrator {
         // numbers/emails that were detected inside file content, since those
         // are confusing when the user is asking about a document.
         final allAssets = linkedById.values.toList();
+        // Only show asset chips that are relevant to the query intent.
+        // Contact/phone/email chips only appear for contact, email, or
+        // calendar queries — not for plain chat, notes, or file lookups.
+        final isSocial =
+            state.intent == QueryIntent.contact ||
+            state.intent == QueryIntent.email ||
+            state.intent == QueryIntent.calendar;
         final isFileOrPhoto =
             state.intent == QueryIntent.file ||
             state.intent == QueryIntent.photo;
-        state.linkedAssets = isFileOrPhoto
-            ? allAssets
-                  .where((a) => a.assetType == 'file' || a.assetType == 'photo')
-                  .toList()
-            : allAssets;
+        state.linkedAssets = allAssets.where((a) {
+          if (a.assetType == 'contact' ||
+              a.assetType == 'phone' ||
+              a.assetType == 'email') {
+            return isSocial;
+          }
+          if (a.assetType == 'file' || a.assetType == 'photo') {
+            return isFileOrPhoto || isSocial;
+          }
+          return true;
+        }).toList();
       } catch (e) {
         if (kDebugMode) print('[Orchestrator] Asset linking skipped: $e');
       }
