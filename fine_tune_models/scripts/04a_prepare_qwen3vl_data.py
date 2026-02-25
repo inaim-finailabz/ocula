@@ -387,7 +387,7 @@ def main():
     print(f"  Val:    {val_size:,}")
     print(f"  Output: {train_file}")
     print(f"{'═' * 60}")
-    print(f"\n  Next: python 04b_train_qwen3vl_vision.py --backend auto")
+    print(f"\n  Next: python 04b_train_vision_qwen.py --backend auto")
 
 
 if __name__ == "__main__":

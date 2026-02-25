@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """
-Moondream 2 (Specialist) Fine-tuning Script
-1.8B params — QLoRA (4-bit) for CUDA, LoRA for MLX
+Qwen Text LLM Fine-tuning Script
+
+Default target is Ocula Lite (Qwen2.5-1.5B) via config.
 
 Usage:
-    python 03_train_moondream2.py                  # Auto-detect backend
-    python 03_train_moondream2.py --backend mlx    # Force MLX
-    python 03_train_moondream2.py --backend cuda   # Force CUDA
+    python 04_train_text_qwen.py
+    python 04_train_text_qwen.py --backend mlx
+    python 04_train_text_qwen.py --backend cuda
 """
 
 import argparse
@@ -18,7 +19,7 @@ from pathlib import Path
 import yaml
 
 
-def load_config(config_path="../configs/moondream2.yaml"):
+def load_config(config_path="../configs/qwen25_1_5b_text.yaml"):
     with open(config_path) as f:
         return yaml.safe_load(f)
 
@@ -34,7 +35,7 @@ def detect_backend():
 
 
 def train_cuda(config):
-    """QLoRA fine-tune Moondream 2 on CUDA. ~8GB VRAM."""
+    """QLoRA fine-tune Qwen3-VL-2B on CUDA. ~10GB VRAM."""
     import torch
     from datasets import load_dataset
     from transformers import (
@@ -51,9 +52,8 @@ def train_cuda(config):
     train_cfg = config["training"]
     lora_cfg = config["lora"]
 
-    print(f"\n[*] Loading Moondream 2 with 4-bit quantization...")
+    print(f"\n[*] Loading Qwen3-VL-2B with 4-bit quantization...")
 
-    # 4-bit quantization config for QLoRA
     bnb_config = BitsAndBytesConfig(
         load_in_4bit=True,
         bnb_4bit_compute_dtype=torch.bfloat16,
@@ -73,7 +73,7 @@ def train_cuda(config):
     )
     model = prepare_model_for_kbit_training(model)
 
-    # LoRA config
+    # Apply LoRA
     lora_config = LoraConfig(
         task_type=TaskType.CAUSAL_LM,
         r=lora_cfg["rank"],
@@ -104,8 +104,10 @@ def train_cuda(config):
     print(f"  [*] {len(dataset)} training examples")
 
     def tokenize_fn(examples):
+        """Qwen3 uses ChatML format natively."""
         texts = []
         for messages in examples["messages"]:
+            # Qwen3's native ChatML
             text = ""
             for msg in messages:
                 role = msg["role"]
@@ -126,7 +128,7 @@ def train_cuda(config):
         remove_columns=dataset.column_names, num_proc=4,
     )
 
-    model_name = config["model"].get("short_name", "moondream2")
+    model_name = config["model"].get("short_name", "qwen3vl")
     output_dir = f"../models/lora_adapters/{model_name}-qlora"
     training_args = TrainingArguments(
         output_dir=output_dir,
@@ -143,8 +145,9 @@ def train_cuda(config):
         save_total_limit=3,
         report_to=["tensorboard"],
         logging_dir=f"../logs/{model_name}",
-        gradient_checkpointing=True,  # Save VRAM
-        optim="paged_adamw_8bit",     # Memory-efficient optimizer
+        gradient_checkpointing=True,
+        optim="paged_adamw_8bit",
+        dataloader_num_workers=4,
     )
 
     trainer = Trainer(
@@ -155,27 +158,31 @@ def train_cuda(config):
     )
 
     print(f"\n[*] Starting QLoRA training → {output_dir}")
+    print(f"    Epochs: {train_cfg['epochs']}, Batch: {train_cfg['batch_size']}, "
+          f"Grad Accum: {train_cfg['gradient_accumulation']}")
+    print(f"    Effective batch: {train_cfg['batch_size'] * train_cfg['gradient_accumulation']}")
     trainer.train()
+
     trainer.save_model(output_dir)
     tokenizer.save_pretrained(output_dir)
-    print("[OK] Moondream 2 training complete!")
+    print("[OK] Qwen3-VL-2B training complete!")
 
 
 def train_mlx(config):
-    """LoRA fine-tune Moondream 2 on MLX (Apple Silicon)."""
+    """LoRA fine-tune Qwen3-VL-2B on MLX."""
     import subprocess
 
     model_path = config["model"]["local_path"]
     mlx_cfg = config.get("mlx", {})
     train_cfg = config["training"]
-    model_name = config["model"].get("short_name", "moondream2")
+    model_name = config["model"].get("short_name", "qwen3vl")
     output_dir = f"../models/lora_adapters/{model_name}-mlx-lora"
     os.makedirs(output_dir, exist_ok=True)
 
-    # Prepare MLX data
+    # Prepare data
     data_files = list(Path(config["data"]["train"]).parent.glob(
         Path(config["data"]["train"]).name))
-    mlx_data = "../data/processed/moondream2_mlx_train.jsonl"
+    mlx_data = "../data/processed/qwen3vl_mlx_train.jsonl"
 
     with open(mlx_data, "w") as out:
         for f in data_files:
@@ -194,9 +201,9 @@ def train_mlx(config):
         "--train",
         "--data", mlx_data,
         "--adapter-path", output_dir,
-        "--batch-size", str(mlx_cfg.get("batch_size", 2)),
-        "--lora-layers", str(mlx_cfg.get("lora_layers", 12)),
-        "--iters", str(train_cfg["epochs"] * 1000),
+        "--batch-size", str(mlx_cfg.get("batch_size", 1)),
+        "--lora-layers", str(mlx_cfg.get("lora_layers", 8)),
+        "--iters", str(train_cfg["epochs"] * 1500),
         "--learning-rate", str(train_cfg["learning_rate"]),
     ]
 
@@ -206,8 +213,8 @@ def train_mlx(config):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Moondream 2 Fine-tuning")
-    parser.add_argument("--config", default="../configs/moondream2.yaml")
+    parser = argparse.ArgumentParser(description="Qwen Text LLM Fine-tuning")
+    parser.add_argument("--config", default="../configs/qwen25_1_5b_text.yaml")
     parser.add_argument("--backend", choices=["cuda", "mlx", "auto"], default="auto")
     args = parser.parse_args()
 

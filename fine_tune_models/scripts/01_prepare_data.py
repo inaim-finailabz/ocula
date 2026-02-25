@@ -13,7 +13,7 @@ Usage:
     python 01_prepare_data.py --input ../data/raw/ --output ../data/processed/
 
     # Prepare for specific model only
-    python 01_prepare_data.py --download-datasets --model qwen3vl
+    python 01_prepare_data.py --download-datasets --model ocula_plus
 """
 
 import argparse
@@ -37,7 +37,7 @@ RECOMMENDED_DATASETS = {
             "url": "https://huggingface.co/datasets/OpenAssistant/oasst2",
             "size": "~50 MB",
             "license": "Apache 2.0",
-            "use_for": ["smolvlm2", "moondream2", "qwen3vl"],
+            "use_for": ["ocula_lite"],
         },
         {
             "name": "HuggingFaceH4/ultrachat_200k",
@@ -45,7 +45,7 @@ RECOMMENDED_DATASETS = {
             "url": "https://huggingface.co/datasets/HuggingFaceH4/ultrachat_200k",
             "size": "~500 MB",
             "license": "MIT",
-            "use_for": ["qwen3vl"],
+            "use_for": ["ocula_lite"],
         },
         {
             "name": "teknium/OpenHermes-2.5",
@@ -53,7 +53,7 @@ RECOMMENDED_DATASETS = {
             "url": "https://huggingface.co/datasets/teknium/OpenHermes-2.5",
             "size": "~1.5 GB",
             "license": "Apache 2.0",
-            "use_for": ["qwen3vl"],
+            "use_for": ["ocula_lite"],
         },
         {
             "name": "argilla/distilabel-capybara-dpo-7k-binarized",
@@ -61,7 +61,7 @@ RECOMMENDED_DATASETS = {
             "url": "https://huggingface.co/datasets/argilla/distilabel-capybara-dpo-7k-binarized",
             "size": "~15 MB",
             "license": "Apache 2.0",
-            "use_for": ["qwen3vl"],
+            "use_for": ["ocula_lite"],
         },
     ],
     # ── Vision / Image Understanding ──
@@ -72,7 +72,7 @@ RECOMMENDED_DATASETS = {
             "url": "https://huggingface.co/datasets/HuggingFaceM4/the_cauldron",
             "size": "~20 GB (subset recommended)",
             "license": "Mixed (mostly permissive)",
-            "use_for": ["smolvlm2", "moondream2", "qwen3vl"],
+            "use_for": ["ocula_plus", "ocula_pro"],
         },
         {
             "name": "lmms-lab/LLaVA-OneVision-Data",
@@ -80,7 +80,7 @@ RECOMMENDED_DATASETS = {
             "url": "https://huggingface.co/datasets/lmms-lab/LLaVA-OneVision-Data",
             "size": "~10 GB",
             "license": "Apache 2.0",
-            "use_for": ["smolvlm2", "qwen3vl"],
+            "use_for": ["ocula_plus", "ocula_pro"],
         },
         {
             "name": "liuhaotian/LLaVA-Instruct-150K",
@@ -88,7 +88,7 @@ RECOMMENDED_DATASETS = {
             "url": "https://huggingface.co/datasets/liuhaotian/LLaVA-Instruct-150K",
             "size": "~200 MB (text only, images from COCO)",
             "license": "CC BY 4.0",
-            "use_for": ["smolvlm2", "moondream2", "qwen3vl"],
+            "use_for": ["ocula_plus", "ocula_pro"],
         },
         {
             "name": "merve/vqav2-small",
@@ -96,7 +96,7 @@ RECOMMENDED_DATASETS = {
             "url": "https://huggingface.co/datasets/merve/vqav2-small",
             "size": "~500 MB",
             "license": "CC BY 4.0",
-            "use_for": ["smolvlm2", "moondream2"],
+            "use_for": ["ocula_plus", "ocula_pro"],
         },
     ],
     # ── RAG / Retrieval / Search ──
@@ -107,7 +107,7 @@ RECOMMENDED_DATASETS = {
             "url": "https://huggingface.co/datasets/sentence-transformers/all-nli",
             "size": "~50 MB",
             "license": "Apache 2.0",
-            "use_for": ["minilm"],
+            "use_for": ["qwen3embed"],
         },
         {
             "name": "sentence-transformers/msmarco-distilbert-base-tas-b",
@@ -115,7 +115,7 @@ RECOMMENDED_DATASETS = {
             "url": "https://huggingface.co/datasets/sentence-transformers/msmarco-co-condenser-margin-mse-sym-mnrl-mean-v1",
             "size": "~200 MB",
             "license": "MIT",
-            "use_for": ["minilm"],
+            "use_for": ["qwen3embed"],
         },
         {
             "name": "sentence-transformers/natural-questions",
@@ -123,7 +123,7 @@ RECOMMENDED_DATASETS = {
             "url": "https://huggingface.co/datasets/sentence-transformers/natural-questions",
             "size": "~300 MB",
             "license": "Apache 2.0",
-            "use_for": ["minilm"],
+            "use_for": ["qwen3embed"],
         },
         {
             "name": "BeIR/hotpotqa",
@@ -131,7 +131,7 @@ RECOMMENDED_DATASETS = {
             "url": "https://huggingface.co/datasets/BeIR/hotpotqa",
             "size": "~100 MB",
             "license": "CC BY-SA 4.0",
-            "use_for": ["minilm"],
+            "use_for": ["qwen3embed"],
         },
     ],
     # ── Domain-Specific (Ocula use cases) ──
@@ -142,7 +142,7 @@ RECOMMENDED_DATASETS = {
             "url": "https://huggingface.co/datasets/Open-Orca/SlimOrca",
             "size": "~400 MB",
             "license": "MIT",
-            "use_for": ["qwen3vl"],
+            "use_for": ["ocula_lite"],
         },
         {
             "name": "TIGER-Lab/MathInstruct",
@@ -150,7 +150,7 @@ RECOMMENDED_DATASETS = {
             "url": "https://huggingface.co/datasets/TIGER-Lab/MathInstruct",
             "size": "~100 MB",
             "license": "MIT",
-            "use_for": ["qwen3vl"],
+            "use_for": ["ocula_lite"],
         },
         {
             "name": "ccdv/pubmed-summarization",
@@ -158,7 +158,7 @@ RECOMMENDED_DATASETS = {
             "url": "https://huggingface.co/datasets/ccdv/pubmed-summarization",
             "size": "~1 GB",
             "license": "Apache 2.0",
-            "use_for": ["qwen3vl"],
+            "use_for": ["ocula_lite"],
         },
     ],
 }
@@ -184,7 +184,7 @@ def print_datasets():
 
     print(f"\n{'=' * 80}")
     print("To download: python 01_prepare_data.py --download-datasets")
-    print("To download specific: python 01_prepare_data.py --download-datasets --model minilm")
+    print("To download specific: python 01_prepare_data.py --download-datasets --model qwen3embed")
     print("=" * 80 + "\n")
 
 
@@ -479,7 +479,7 @@ def main():
     parser.add_argument("--output", default="../data/processed", help="Output directory")
     parser.add_argument("--download-datasets", action="store_true", help="Download recommended HF datasets")
     parser.add_argument("--list-datasets", action="store_true", help="List recommended datasets")
-    parser.add_argument("--model", choices=["smolvlm2", "moondream2", "qwen3vl", "minilm", "all"],
+    parser.add_argument("--model", choices=["ocula_lite", "ocula_plus", "ocula_pro", "qwen3embed", "all"],
                        default="all", help="Prepare data for specific model")
     parser.add_argument("--val-ratio", type=float, default=0.05, help="Validation split ratio")
     args = parser.parse_args()

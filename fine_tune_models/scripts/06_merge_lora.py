@@ -6,22 +6,20 @@ Merges trained LoRA adapters back into base models to create full-weight checkpo
 Supports: CUDA (PEFT merge) + MLX (mlx_lm.fuse)
 
 Usage:
-    # Merge all models with trained adapters
+    # Merge all active models with trained adapters
     python 06_merge_lora.py
 
     # Merge a specific model
-    python 06_merge_lora.py --model smolvlm2
-    python 06_merge_lora.py --model moondream2
-    python 06_merge_lora.py --model qwen3vl
+    python 06_merge_lora.py --model ocula_lite
 
     # Custom paths
-    python 06_merge_lora.py --model smolvlm2 \
-        --base-path ../models/base/smolvlm2-500m \
-        --adapter-path ../models/lora_adapters/smolvlm2-lora \
-        --output-path ../models/merged/smolvlm2-merged
+    python 06_merge_lora.py --model ocula_lite \
+        --base-path ../models/base/qwen2.5-1.5b-instruct \
+        --adapter-path ../models/lora_adapters/ocula-lite-qwen25-1_5b-qlora \
+        --output-path ../models/merged/ocula-lite-qwen25-1_5b-merged
 
     # MLX merge
-    python 06_merge_lora.py --model smolvlm2 --backend mlx
+    python 06_merge_lora.py --model ocula_lite --backend mlx
 """
 
 import argparse
@@ -36,23 +34,11 @@ import yaml
 
 # ── Model registry ──────────────────────────────────────────────
 MODELS = {
-    "smolvlm2": {
-        "config": "../configs/smolvlm2.yaml",
-        "base_path": "../models/base/smolvlm2-500m",
-        "adapter_glob": "../models/lora_adapters/smolvlm2-*",
-        "output": "../models/merged/smolvlm2-merged",
-    },
-    "moondream2": {
-        "config": "../configs/moondream2.yaml",
-        "base_path": "../models/base/moondream2",
-        "adapter_glob": "../models/lora_adapters/moondream2-*",
-        "output": "../models/merged/moondream2-merged",
-    },
-    "qwen3vl": {
-        "config": "../configs/qwen3vl.yaml",
-        "base_path": "../models/base/qwen3-vl-2b",
-        "adapter_glob": "../models/lora_adapters/qwen3vl-*",
-        "output": "../models/merged/qwen3vl-merged",
+    "ocula_lite": {
+        "config": "../configs/qwen25_1_5b_text.yaml",
+        "base_path": "../models/base/qwen2.5-1.5b-instruct",
+        "adapter_glob": "../models/lora_adapters/ocula-lite-qwen25-1_5b-*",
+        "output": "../models/merged/ocula-lite-qwen25-1_5b-merged",
     },
 }
 

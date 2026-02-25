@@ -1,0 +1,53 @@
+# Ocula Pro: Qwen2.5-VL-7B Vision Fine-tuning Config
+
+model:
+  name: "Qwen/Qwen2.5-VL-7B-Instruct"
+  short_name: "ocula-pro-qwen25vl-7b"
+  local_path: "../models/base/qwen2.5-vl-7b-instruct"
+  type: "vlm"
+  params: "7B"
+
+training:
+  method: "qlora"
+  epochs: 1
+  batch_size: 1
+  gradient_accumulation: 16
+  learning_rate: 3.0e-5
+  lr_scheduler: "cosine"
+  warmup_ratio: 0.05
+  weight_decay: 0.01
+  max_seq_length: 4096
+  max_samples: 50000
+  max_steps: 2500
+  fp16: false
+  bf16: true
+  gradient_checkpointing: true
+
+lora:
+  rank: 32
+  alpha: 64
+  dropout: 0.05
+  target_modules:
+    - "q_proj"
+    - "k_proj"
+    - "v_proj"
+    - "o_proj"
+    - "gate_proj"
+    - "up_proj"
+    - "down_proj"
+
+data:
+  train: "../data/vision_qwen25vl7b/qwen25vl_vision_train.jsonl"
+  val: "../data/vision_qwen25vl7b/qwen25vl_vision_val.jsonl"
+  image_dir: "../data/vision_qwen25vl7b/images"
+
+mlx:
+  batch_size: 1
+  lora_layers: 8
+
+quantization:
+  methods:
+    - "Q4_K_M"
+    - "Q3_K_M"
+  output_dir: "../models/gguf"
+  output_name: "Ocula-Pro-Qwen2.5-VL-7B"

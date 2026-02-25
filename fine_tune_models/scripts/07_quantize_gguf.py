@@ -6,19 +6,20 @@ Converts merged HuggingFace models → GGUF format for llama.cpp inference.
 Uses llama.cpp's convert_hf_to_gguf.py + llama-quantize binary.
 
 Usage:
-    # Quantize all merged models
+    # Quantize all active Ocula family models
     python 07_quantize_gguf.py
 
     # Quantize a specific model
-    python 07_quantize_gguf.py --model smolvlm2
-    python 07_quantize_gguf.py --model moondream2
-    python 07_quantize_gguf.py --model qwen3vl
+    python 07_quantize_gguf.py --model ocula_lite
+    python 07_quantize_gguf.py --model ocula_plus
+    python 07_quantize_gguf.py --model ocula_pro
+    python 07_quantize_gguf.py --model qwen3embed
 
     # Custom quantization type
-    python 07_quantize_gguf.py --model smolvlm2 --quant-types Q4_K_M Q8_0
+    python 07_quantize_gguf.py --model ocula_lite --quant-types Q4_K_M Q8_0
 
     # Skip conversion (already have F16 GGUF)
-    python 07_quantize_gguf.py --model smolvlm2 --quantize-only
+    python 07_quantize_gguf.py --model ocula_lite --quantize-only
 """
 
 import argparse
@@ -40,26 +41,32 @@ GGUF_OUTPUT_DIR = Path("../models/gguf")
 
 # ── Model registry ──────────────────────────────────────────────
 MODELS = {
-    "smolvlm2": {
-        "config": "../configs/smolvlm2.yaml",
-        "merged_path": "../models/merged/smolvlm2-merged",
-        "gguf_name": "SmolVLM2-500M-finetuned",
+    "qwen3embed": {
+        "config": "../configs/qwen3embedding.yaml",
+        "merged_path": "../models/base/qwen3-embedding-0.6b-finetuned",
+        "gguf_name": "Qwen3-Embedding-0.6B",
     },
-    "moondream2": {
-        "config": "../configs/moondream2.yaml",
-        "merged_path": "../models/merged/moondream2-merged",
-        "gguf_name": "moondream2-text-model-finetuned",
+    "ocula_lite": {
+        "config": "../configs/qwen25_1_5b_text.yaml",
+        "merged_path": "../models/merged/ocula-lite-qwen25-1_5b-merged",
+        "gguf_name": "Ocula-Lite-Qwen2.5-1.5B",
     },
-    "qwen3vl": {
-        "config": "../configs/qwen3vl.yaml",
-        "merged_path": "../models/merged/qwen3vl-merged",
-        "gguf_name": "Qwen3VL-2B-Thinking-finetuned",
+    "ocula_plus": {
+        "config": "../configs/qwen3vl_vision.yaml",
+        "merged_path": "../models/merged/ocula-plus-qwen3vl-2b-vision-merged",
+        "gguf_name": "Ocula-Plus-Qwen3-VL-2B",
     },
-    "minilm": {
-        "config": "../configs/minilm.yaml",
-        "merged_path": "../models/base/minilm-l6-v2-finetuned",
-        "gguf_name": "minilm-l6-v2-finetuned",
+    "ocula_pro": {
+        "config": "../configs/qwen25vl_7b_vision.yaml",
+        "merged_path": "../models/merged/ocula-pro-qwen25vl-7b-vision-merged",
+        "gguf_name": "Ocula-Pro-Qwen2.5-VL-7B",
     },
+}
+
+MOBILE_PRESETS = {
+    "balanced": ["Q4_K_M", "Q5_K_M"],
+    "aggressive": ["Q3_K_M", "Q4_0"],
+    "extreme": ["Q2_K", "Q3_K_S"],
 }
 
 
@@ -237,17 +244,22 @@ def convert_embedding_to_gguf(model_path, output_name):
 # Entrypoint
 # ─────────────────────────────────────────────────────────────────
 
-def quantize_one(model_name, quant_types=None, quantize_only=False):
+def quantize_one(model_name, quant_types=None, quantize_only=False, mobile_preset=None,
+                 merged_override=None, output_name_override=None, config_override=None):
     """Quantize a single model."""
     info = MODELS[model_name]
-    config = load_config(info["config"])
+    config_path = config_override or info["config"]
+    config = load_config(config_path)
 
-    merged_path = info["merged_path"]
-    output_name = info["gguf_name"]
+    merged_path = merged_override or info["merged_path"]
+    output_name = output_name_override or info["gguf_name"]
 
     # Get quantization types from config or CLI override
     if quant_types is None:
-        quant_types = config.get("quantization", {}).get("methods", ["Q4_K_M"])
+        if mobile_preset:
+            quant_types = MOBILE_PRESETS[mobile_preset]
+        else:
+            quant_types = config.get("quantization", {}).get("methods", ["Q4_K_M"])
 
     if not os.path.isdir(merged_path):
         print(f"[!] Merged model not found: {merged_path}")
@@ -259,6 +271,8 @@ def quantize_one(model_name, quant_types=None, quantize_only=False):
 
     if is_embedding:
         # Embedding models: F32 → Q8_0 only
+        if mobile_preset:
+            print("[*] Ignoring --mobile-preset for embedding model; forcing Q8_0")
         f32_path = convert_embedding_to_gguf(merged_path, output_name)
         if f32_path and "Q8_0" in quant_types:
             q8_path = quantize_gguf(f32_path, output_name, "Q8_0")
@@ -294,6 +308,14 @@ def main():
                         help="Skip HF→F16 conversion, just quantize existing F16 GGUF")
     parser.add_argument("--skip-prerequisites", action="store_true",
                         help="Skip llama.cpp tool checks")
+    parser.add_argument("--mobile-preset", choices=list(MOBILE_PRESETS.keys()), default=None,
+                        help="Mobile compression preset (balanced|aggressive|extreme)")
+    parser.add_argument("--merged-path", type=str, default=None,
+                        help="Override merged/input model path for conversion")
+    parser.add_argument("--output-name", type=str, default=None,
+                        help="Override GGUF output name prefix")
+    parser.add_argument("--config", type=str, default=None,
+                        help="Override model config path")
     args = parser.parse_args()
 
     if not args.skip_prerequisites:
@@ -306,7 +328,15 @@ def main():
         print(f"\n{'─'*60}")
         print(f"  Quantizing: {model_name}")
         print(f"{'─'*60}")
-        results = quantize_one(model_name, args.quant_types, args.quantize_only)
+        results = quantize_one(
+            model_name,
+            args.quant_types,
+            args.quantize_only,
+            args.mobile_preset,
+            merged_override=args.merged_path,
+            output_name_override=args.output_name,
+            config_override=args.config,
+        )
         all_results[model_name] = results
 
     # Summary

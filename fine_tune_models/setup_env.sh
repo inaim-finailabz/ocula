@@ -119,10 +119,10 @@ base_dir = os.path.join('$SCRIPT_DIR', 'models', 'base')
 os.makedirs(base_dir, exist_ok=True)
 
 models = {
-    'smolvlm2-500m': 'HuggingFaceTB/SmolVLM2-500M-Video-Instruct',
-    'moondream2': 'vikhyatk/moondream2',
-    'qwen3-vl-2b': 'Qwen/Qwen3-VL-2B',
-    'minilm-l6-v2': 'sentence-transformers/all-MiniLM-L6-v2',
+    'qwen3-vl-2b': 'Qwen/Qwen3-VL-2B-Instruct',
+    'qwen2.5-1.5b-instruct': 'Qwen/Qwen2.5-1.5B-Instruct',
+    'qwen2.5-vl-7b-instruct': 'Qwen/Qwen2.5-VL-7B-Instruct',
+    'qwen3-embedding-0.6b': 'Qwen/Qwen3-Embedding-0.6B',
 }
 
 for name, repo_id in models.items():

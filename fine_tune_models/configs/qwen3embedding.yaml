@@ -1,0 +1,35 @@
+# Qwen3-Embedding-0.6B Fine-tuning Config
+# 0.6B params — multilingual embedding model for edge RAG.
+
+model:
+  name: "Qwen/Qwen3-Embedding-0.6B"
+  short_name: "qwen3-embedding-0.6b"
+  pipeline_key: "qwen3embed"
+  local_path: "../models/base/qwen3-embedding-0.6b"
+  finetuned_output_dir: "../models/base/qwen3-embedding-0.6b-finetuned"
+  type: "embedding"
+  params: "0.6B"
+  embedding_dim: 1024
+  trust_remote_code: true
+
+training:
+  method: "full"
+  epochs: 3
+  batch_size: 24
+  learning_rate: 1.0e-5
+  lr_scheduler: "warmup_linear"
+  warmup_steps: 500
+  weight_decay: 0.01
+  loss: "MultipleNegativesRankingLoss"
+  evaluator: "InformationRetrievalEvaluator"
+
+data:
+  train: "../data/processed/retrieval_*_train.jsonl"
+  val: "../data/processed/retrieval_*_val.jsonl"
+  max_samples: 300000
+
+quantization:
+  methods:
+    - "Q8_0"
+  output_dir: "../models/gguf"
+  output_name: "Qwen3-Embedding-0.6B"

@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """
-MiniLM-L6-v2 Embedding Fine-tuning Script
-22M params — full fine-tune (tiny model, no LoRA needed)
+Embedding Model Fine-tuning Script
 
-Improves RAG retrieval quality by training on domain-specific data.
+Default config trains MiniLM, but this script also supports larger embedding
+models such as Qwen3-Embedding-0.6B via alternate configs.
 
 Usage:
-    python 05_train_minilm.py
-    python 05_train_minilm.py --config ../configs/minilm.yaml
+    python 05_train_embedding.py
+    python 05_train_embedding.py --config ../configs/qwen3embedding.yaml
 """
 
 import argparse
@@ -19,13 +19,13 @@ from pathlib import Path
 import yaml
 
 
-def load_config(config_path="../configs/minilm.yaml"):
+def load_config(config_path="../configs/qwen3embedding.yaml"):
     with open(config_path) as f:
         return yaml.safe_load(f)
 
 
 def train(config):
-    """Full fine-tune MiniLM-L6-v2 for semantic search."""
+    """Fine-tune an embedding model for semantic search."""
     import torch
     from sentence_transformers import (
         SentenceTransformer,
@@ -35,11 +35,15 @@ def train(config):
     )
     from torch.utils.data import DataLoader
 
-    model_path = config["model"]["local_path"]
+    model_cfg = config["model"]
+    model_path = model_cfg["local_path"]
     train_cfg = config["training"]
+    model_name = model_cfg.get("name", model_path)
+    trust_remote_code = bool(model_cfg.get("trust_remote_code", False))
 
-    print(f"\n[*] Loading MiniLM-L6-v2 from: {model_path}")
-    model = SentenceTransformer(model_path)
+    print(f"\n[*] Loading embedding model from: {model_path}")
+    print(f"  [*] Model: {model_name}")
+    model = SentenceTransformer(model_path, trust_remote_code=trust_remote_code)
     print(f"  [*] Embedding dim: {model.get_sentence_embedding_dimension()}")
     print(f"  [*] Parameters: {sum(p.numel() for p in model.parameters()) / 1e6:.1f}M")
 
@@ -49,7 +53,7 @@ def train(config):
         Path(config["data"]["train"]).name))
 
     if not data_files:
-        print("[!] No training data. Run: python 01_prepare_data.py --download-datasets --model minilm")
+        print("[!] No training data. Run: python 01_prepare_data.py --download-datasets --model qwen3embed")
         sys.exit(1)
 
     train_examples = []
@@ -130,7 +134,10 @@ def train(config):
             print(f"  [*] {len(queries)} eval queries, {len(corpus)} eval docs")
 
     # Training
-    output_dir = "../models/base/minilm-l6-v2-finetuned"
+    output_dir = model_cfg.get(
+        "finetuned_output_dir",
+        f"../models/base/{model_cfg.get('short_name', 'embedding-model')}-finetuned",
+    )
     warmup_steps = train_cfg.get("warmup_steps", 500)
     epochs = train_cfg["epochs"]
 
@@ -151,14 +158,14 @@ def train(config):
         use_amp=True,  # Mixed precision
     )
 
-    print(f"\n[OK] MiniLM fine-tuning complete!")
+    print(f"\n[OK] Embedding fine-tuning complete!")
     print(f"     Model saved to: {output_dir}")
-    print(f"     Next: python 07_quantize_gguf.py --model minilm")
+    print(f"     Next: python 07_quantize_gguf.py --model {model_cfg.get('pipeline_key', 'qwen3embed')}")
 
 
 def main():
-    parser = argparse.ArgumentParser(description="MiniLM-L6-v2 Embedding Fine-tuning")
-    parser.add_argument("--config", default="../configs/minilm.yaml")
+    parser = argparse.ArgumentParser(description="Embedding Model Fine-tuning")
+    parser.add_argument("--config", default="../configs/qwen3embedding.yaml")
     args = parser.parse_args()
 
     config = load_config(args.config)

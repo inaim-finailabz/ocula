@@ -8,7 +8,7 @@ set -euo pipefail
 #   ./09_deploy.sh --target local                # Same as above
 #   ./09_deploy.sh --target ssh://pi@192.168.3.14:/models
 #   ./09_deploy.sh --target http://192.168.3.14:8080
-#   ./09_deploy.sh --model smolvlm2             # Deploy only one model
+#   ./09_deploy.sh --model ocula_lite           # Deploy only one model
 #   ./09_deploy.sh --dry-run                     # Preview without copying
 #
 
@@ -31,17 +31,17 @@ NC='\033[0m'
 
 # ── Model mapping (gguf prefix → deployment filename) ──────────
 declare -A MODEL_MAP
-MODEL_MAP[smolvlm2]="SmolVLM2-500M-finetuned"
-MODEL_MAP[moondream2]="moondream2-text-model-finetuned"
-MODEL_MAP[qwen3vl]="Qwen3VL-2B-Thinking-finetuned"
-MODEL_MAP[minilm]="minilm-l6-v2-finetuned"
+MODEL_MAP[qwen3embed]="Qwen3-Embedding-0.6B"
+MODEL_MAP[ocula_lite]="Ocula-Lite-Qwen2.5-1.5B"
+MODEL_MAP[ocula_plus]="Ocula-Plus-Qwen3-VL-2B"
+MODEL_MAP[ocula_pro]="Ocula-Pro-Qwen2.5-VL-7B"
 
 # ── Deployment filenames (what Ocula app expects) ──────────────
 declare -A DEPLOY_NAMES
-DEPLOY_NAMES[smolvlm2]="SmolVLM2-500M-Video-Instruct-Q4_K_M.gguf"
-DEPLOY_NAMES[moondream2]="moondream2-q4.gguf"
-DEPLOY_NAMES[qwen3vl]="Qwen3VL-2B-Thinking-Q4_K_M.gguf"
-DEPLOY_NAMES[minilm]="minilm-l6-v2-Q8_0.gguf"
+DEPLOY_NAMES[qwen3embed]="Qwen3-Embedding-0.6B-Q8_0.gguf"
+DEPLOY_NAMES[ocula_lite]="Qwen2.5-1.5B-Ocula-Lite-Q4_K_M.gguf"
+DEPLOY_NAMES[ocula_plus]="Qwen3-VL-2B-Ocula-Plus-Q4_K_M.gguf"
+DEPLOY_NAMES[ocula_pro]="Qwen2.5-VL-7B-Ocula-Pro-Q4_K_M.gguf"
 
 usage() {
     echo "Usage: $0 [OPTIONS]"
@@ -51,7 +51,7 @@ usage() {
     echo "                     local          → ../../models/"
     echo "                     ssh://...      → SCP to remote server"
     echo "                     http://...     → Upload via model server API"
-    echo "  --model MODEL      Deploy specific model (smolvlm2|moondream2|qwen3vl|minilm|all)"
+    echo "  --model MODEL      Deploy specific model (ocula_lite|ocula_plus|ocula_pro|qwen3embed|all)"
     echo "  --quant TYPE       Preferred quantization (default: Q4_K_M)"
     echo "  --dry-run          Preview deployment without copying files"
     echo "  -h, --help         Show this help"
@@ -241,7 +241,7 @@ fi
 
 # Build target list
 if [[ "$MODEL" == "all" ]]; then
-    TARGETS=(smolvlm2 moondream2 qwen3vl minilm)
+    TARGETS=(ocula_lite ocula_plus ocula_pro qwen3embed)
 else
     TARGETS=("$MODEL")
 fi

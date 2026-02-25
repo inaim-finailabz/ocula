@@ -3,6 +3,7 @@
 
 model:
   name: "Qwen/Qwen3-VL-2B-Instruct"
+  short_name: "ocula-plus-qwen3vl-2b"
   local_path: "../models/base/qwen3-vl-2b"
   type: "vlm"
   params: "2B"
