@@ -48,8 +48,8 @@ MODELS = {
     },
     "ocula_lite": {
         "config": "../configs/qwen25_1_5b_text.yaml",
-        "merged_path": "../models/merged/ocula-lite-qwen25-1_5b-merged",
-        "gguf_name": "Ocula-Lite-Qwen2.5-1.5B",
+        "merged_path": "../models/merged/ocula-lite-qwen3-1_7b-merged",
+        "gguf_name": "Ocula-Lite-Qwen3-1.7B",
     },
     "ocula_plus": {
         "config": "../configs/qwen3vl_vision.yaml",

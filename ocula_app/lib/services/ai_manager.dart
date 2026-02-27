@@ -77,9 +77,9 @@ class AIManager {
   /// Minimum RAM (MB) required to safely run each tier.
   /// Includes model weight + KV cache + system overhead headroom.
   static const _tierRamRequirementMB = {
-    AITier.free: 2000, // 437 MB model + 25 MB embed + context → ~1.5 GB total
-    AITier.plus: 3500, // 900 MB model + context → ~2.5 GB, 1 GB headroom
-    AITier.pro: 5000, // 1.1 GB model + context → ~3.5 GB, 1.5 GB headroom
+    AITier.free: 2000, // 1.28 GB model + 25 MB embed + context → ~2 GB total
+    AITier.plus: 4000, // 1.1 GB model + 819 MB mmproj + context → ~3.5 GB
+    AITier.pro: 7500,  // 2.5 GB model + 836 MB mmproj + context → needs 8 GB device
     AITier.enterprise: 4000, // variable, conservative default
   };
 
@@ -94,11 +94,14 @@ class AIManager {
   /// Only records it as pending if it's better than what's currently loaded
   /// AND the device has enough RAM to run it.
   void _onTierReady(AITier tier) async {
-    // Enterprise tier is a paid feature — never auto-upgrade to it.
-    // Users must explicitly enable it in Settings.
-    if (tier == AITier.enterprise) {
+    // Enterprise and Pro are never auto-upgraded.
+    // Enterprise: paid feature — must be explicitly enabled in Settings.
+    // Pro: requires 8 GB device; crashes lower-RAM devices if auto-loaded.
+    //      User must explicitly activate it from Settings after download.
+    if (tier == AITier.enterprise || tier == AITier.pro) {
       debugPrint(
-        '[AIManager] ⚠ Enterprise tier ready but auto-upgrade disabled — paid feature',
+        '[AIManager] ⚠ ${tier.name} tier ready — auto-upgrade disabled '
+        '(${tier == AITier.enterprise ? "paid feature" : "on-demand only: requires 8 GB device"})',
       );
       return;
     }
@@ -194,13 +197,47 @@ class AIManager {
             : 6000;
       }
     } else if (Platform.isIOS) {
-      // iOS doesn't expose RAM directly; use model heuristic
+      // iOS doesn't expose RAM directly; derive from model identifier.
+      // Format: iPhone<gen>,<sub> — gen increases with each iPhone generation.
+      //
+      // RAM by generation (as of 2026):
+      //   gen ≥ 17  = iPhone 16 series         → 8 GB
+      //   gen == 16 = iPhone 15 Pro/Max         → 8 GB
+      //   gen == 15 = iPhone 14 Pro/Max + 15/+  → 6 GB
+      //   gen == 14 = iPhone 13/14 mix:
+      //     sub 2,3     = iPhone 13 Pro/Max     → 6 GB
+      //     sub 7,8     = iPhone 14/Plus        → 6 GB
+      //     sub 4,5,6   = iPhone 13/mini/SE3    → 4 GB
+      //   gen == 13 = iPhone 12:
+      //     sub ≥ 3     = 12 Pro/Max            → 6 GB
+      //     sub 1,2     = 12/mini               → 4 GB
+      //   gen ≤ 12    = iPhone 11 and older     → 4 GB
+      //
+      // iPads get 8 GB (conservative — all modern iPads are 8–16 GB).
       final ios = await info.iosInfo;
-      final model = ios.utsname.machine;
-      // iPhones with < 4GB: iPhone SE, iPhone 8 and earlier
-      _deviceRamMB = model.contains('iPhone9') || model.contains('iPhone8')
-          ? 3000
-          : 6000;
+      final machine = ios.utsname.machine;
+      final iPhoneMatch = RegExp(r'^iPhone(\d+),(\d+)$').firstMatch(machine);
+      if (iPhoneMatch != null) {
+        final gen = int.parse(iPhoneMatch.group(1)!);
+        final sub = int.parse(iPhoneMatch.group(2)!);
+        if (gen >= 17) {
+          _deviceRamMB = 8000; // iPhone 16+
+        } else if (gen == 16) {
+          _deviceRamMB = 8000; // iPhone 15 Pro / 15 Pro Max
+        } else if (gen == 15) {
+          _deviceRamMB = 6000; // iPhone 14 Pro/Max, iPhone 15, iPhone 15 Plus
+        } else if (gen == 14) {
+          // sub 2,3 = 13 Pro/Max (6 GB); sub 7,8 = 14/Plus (6 GB); rest = 4 GB
+          _deviceRamMB = (sub == 2 || sub == 3 || sub >= 7) ? 6000 : 4000;
+        } else if (gen == 13) {
+          // sub 3,4 = 12 Pro/Max (6 GB); sub 1,2 = 12/mini (4 GB)
+          _deviceRamMB = (sub >= 3) ? 6000 : 4000;
+        } else {
+          _deviceRamMB = 4000; // iPhone 12 (gen ≤ 12) and older
+        }
+      } else {
+        _deviceRamMB = 8000; // iPad or simulator — assume plenty
+      }
     } else {
       _deviceRamMB = 8000; // Desktop — assume plenty of RAM
     }
@@ -400,9 +437,14 @@ class AIManager {
           .firstOrNull;
       final registryName = modelInfo?.fileName;
       final actualName = p.basename(mainPath);
-      final expectedSize = (registryName != null && registryName == actualName)
-          ? modelInfo?.sizeBytes
-          : null;
+      // For split GGUF models, model.sizeBytes is the TOTAL across all parts.
+      // mainModelPath returns part 1, which is ~1/N of total, so use per-part size.
+      int? expectedSize;
+      if (registryName != null && registryName == actualName && modelInfo != null) {
+        final splitM = RegExp(r'-\d{5}-of-(\d{5})\.gguf$').firstMatch(registryName);
+        final parts = splitM != null ? int.parse(splitM.group(1)!) : 1;
+        expectedSize = modelInfo.sizeBytes ~/ parts;
+      }
 
       // 3. Full GGUF validation: exists + no .partial + size + magic header
       final isValid = await _models.isValidLocalModel(
@@ -431,7 +473,12 @@ class AIManager {
           '[AIManager] ⚠ ${tier.name} rejected — device RAM '
           'too low ($ram MB < $required MB)',
         );
-        throw ModelNotReadyException(tier);
+        throw Exception(
+          '${OculaModelManager.featureLabel(tier)} requires '
+          '${(required / 1024).round()} GB RAM. '
+          'This device has ~${(ram / 1024).round()} GB — '
+          'an iPhone 15 Pro or newer is recommended.',
+        );
       }
 
       // ── ATOMIC SWAP: let native handle cleanup + load in one call ──
@@ -778,9 +825,12 @@ class AIManager {
     // Ocula Pro (pro): 4096 ctx, ~2B params. Good instruction following.
     //   → Richer system prompt, full context, higher token budget.
     final langPrefix = _appLang.promptPrefix;
-    final bool isSmallModel =
-        (_activeTier == null || _activeTier == AITier.free);
-    final bool isProModel = (_activeTier == AITier.pro);
+    // Ocula Lite (free/Qwen2.5-1.5B): capable text model — not "small".
+    // Ocula Plus (plus/Qwen3-VL-2B) and Pro (pro/Qwen2.5-VL-7B): rich prompts + vision.
+    const bool isSmallModel = false;
+    final bool isProModel = (_activeTier == AITier.plus ||
+        _activeTier == AITier.pro ||
+        _activeTier == AITier.enterprise);
 
     // Pre-summarize context for small models: keep only the most relevant lines
     // to avoid overwhelming the tiny context window.
@@ -818,7 +868,7 @@ class AIManager {
             'Answer ONLY from DATA — never invent names, numbers, dates or details. '
             'Check: does DATA answer the QUESTION? '
             'If yes, give the direct factual answer from DATA. '
-            'If no, say exactly: "I don\'t have that in your data."';
+            'If no, name the source you found (file name, contact, etc.) and say what specific detail is missing.';
         userMsg = 'QUESTION: $prompt\n\nDATA:\n$compactContext\n\nANSWER:';
       } else if (isProModel) {
         // Ocula Pro: can handle richer instructions and structured output
@@ -833,7 +883,7 @@ class AIManager {
             '- Use bullet points for lists of items (contacts, events, files).\n'
             '- For calendar events, always include date and time.\n'
             '- For contacts, include phone number or email when available.\n'
-            '- If the data doesn\'t answer the question, say "I don\'t have that information in your phone data."\n'
+            '- If the data doesn\'t directly answer the question, describe what you DID find (source name, date, type) and what specific information is missing.\n'
             '- End with one short follow-up question the user might ask next.';
         userMsg = '$dataLabel:\n$compactContext\n\nQuestion: $prompt';
       } else {
@@ -842,7 +892,7 @@ class AIManager {
             '$rolePrefix'
             'Answer using ONLY the data provided. Never invent or guess. '
             'Include specific values: names, numbers, dates, file names. '
-            'If the data does not contain the answer, say: "I don\'t have that in your data." '
+            'If the data does not contain the answer, name the source you found and say what specific detail is missing. '
             'Use bullet points for lists. Cite the source type (document, contact, calendar, etc). '
             'Be concise — no filler phrases, no repetition.';
         userMsg = '$dataLabel:\n$compactContext\n\nQ: $prompt';
@@ -854,18 +904,18 @@ class AIManager {
       if (isProModel) {
         systemMsg =
             '$rolePrefix'
-            'You currently have no phone data for this query. '
+            'You currently have no indexed data matching this query. '
             'Do NOT invent contacts, events, or files. '
-            'If the user asks about their phone data, tell them you don\'t '
-            'have that information yet and suggest checking Settings > Your Data. '
+            'If the user references a specific file or item by name, acknowledge it by name and explain it hasn\'t been indexed yet — suggest they open Settings > Your Data to index it. '
             'For general knowledge questions answer helpfully, concisely and accurately. '
             'If the user is searching phone info, ask one clarifying question: '
             'which source to search — docs, images, contacts, calendar, or email.';
       } else {
         systemMsg =
             '$rolePrefix'
-            'No phone data available. Do not make up information. Be brief. '
-            'If the user is searching phone info, ask whether to search docs, images, contacts, calendar, or email.';
+            'No indexed data found for this query. Do not make up information. Be brief. '
+            'If the user mentions a specific file or item by name, acknowledge it and suggest indexing it via Settings > Your Data. '
+            'Otherwise ask whether to search docs, images, contacts, calendar, or email.';
       }
       userMsg = prompt;
     }
@@ -1143,6 +1193,24 @@ class AIManager {
         .replaceAll('<|im_start|>', '')
         .trim();
 
+    // Strip Qwen3 chain-of-thought thinking blocks.
+    // Only Ocula Plus/Pro (Qwen3-VL-2B-Thinking, Qwen2.5-VL-7B) output these.
+    // Ocula Lite (Qwen2.5-1.5B-Instruct) does not output <think> blocks.
+    if (isProModel) {
+      text = text.replaceAll(RegExp(r'<think>.*?</think>', dotAll: true), '').trim();
+      // Also strip unclosed <think> blocks (model stopped mid-think)
+      final thinkStart = text.indexOf('<think>');
+      if (thinkStart >= 0) {
+        text = text.substring(0, thinkStart).trim();
+      }
+    }
+
+    // Strip question-first prompt format artifacts that the model may echo back.
+    // e.g. "ANSWER: The answer is..." → "The answer is..."
+    text = text.replaceFirst(RegExp(r'^ANSWER:\s*', caseSensitive: false), '');
+    text = text.replaceFirst(RegExp(r'^Q:\s*', caseSensitive: false), '');
+    text = text.replaceFirst(RegExp(r'^QUESTION:.*\n+DATA:.*\n+', caseSensitive: false, dotAll: true), '');
+
     // Post-process: strip leaked prompt/context.
     // Some models (especially on CPU) echo the user's data/context verbatim.
     text = stripLeakedContext(text);
@@ -1214,9 +1282,11 @@ class AIManager {
     }
 
     // Build the prompt identically to ask()
-    final bool isSmallModel =
-        (_activeTier == null || _activeTier == AITier.free);
-    final bool isProModel = (_activeTier == AITier.pro);
+    // Ocula Lite (free): standard prompts. Plus/Pro: rich prompts + think block stripping.
+    const bool isSmallModel = false;
+    final bool isProModel = (_activeTier == AITier.plus ||
+        _activeTier == AITier.pro ||
+        _activeTier == AITier.enterprise);
     final ragConfig = RagConfig();
     final langPrefix = _appLang.promptPrefix;
     final budgetChars = ragConfig.contextBudgetChars;
@@ -1248,7 +1318,7 @@ class AIManager {
             'Answer ONLY from DATA — never invent names, numbers, dates or details. '
             'Check: does DATA answer the QUESTION? '
             'If yes, give the direct factual answer from DATA. '
-            'If no, say exactly: "I don\'t have that in your data."';
+            'If no, name the source you found (file name, contact, etc.) and say what specific detail is missing.';
         userMsg = 'QUESTION: $prompt\n\nDATA:\n$compactContext\n\nANSWER:';
       } else if (isProModel) {
         systemMsg =
@@ -1262,14 +1332,14 @@ class AIManager {
             '- Use bullet points for lists of items (contacts, events, files).\n'
             '- For calendar events, always include date and time.\n'
             '- For contacts, include phone number or email when available.\n'
-            '- If the data doesn\'t answer the question, say "I don\'t have that information in your phone data."\n'
+            '- If the data doesn\'t directly answer the question, describe what you DID find (source name, date, type) and what specific information is missing.\n'
             '- End with one short follow-up question the user might ask next.';
         userMsg = '$dataLabel:\n$compactContext\n\nQuestion: $prompt';
       } else {
         systemMsg =
             '$rolePrefix'
             'Answer using ONLY the data provided. Do not make up information. '
-            'If the data does not answer the question, say so. '
+            'If the data does not answer the question, name the source you found and say what specific detail is missing. '
             'Be specific and brief. Use bullet points for lists. '
             'Start with where you found the answer.';
         userMsg = '$dataLabel:\n$compactContext\n\nQ: $prompt';
@@ -1360,6 +1430,15 @@ class AIManager {
         .replaceAll('<|im_end|>', '')
         .replaceAll('<|im_start|>', '')
         .trim();
+    // Strip Qwen3 think blocks (only Plus/Pro use Qwen3-Thinking; Lite uses Qwen2.5-Instruct)
+    if (isProModel) {
+      text = text.replaceAll(RegExp(r'<think>.*?</think>', dotAll: true), '').trim();
+      final thinkIdx = text.indexOf('<think>');
+      if (thinkIdx >= 0) text = text.substring(0, thinkIdx).trim();
+    }
+    // Strip question-first prompt format artifacts
+    text = text.replaceFirst(RegExp(r'^ANSWER:\s*', caseSensitive: false), '');
+    text = text.replaceFirst(RegExp(r'^Q:\s*', caseSensitive: false), '');
     text = stripLeakedContext(text);
 
     final int maxChars = isSmallModel ? 320 : (isProModel ? 1200 : 560);
@@ -1454,24 +1533,16 @@ class AIManager {
     }
 
     final kept = <String>[];
-    var droppedFactual = 0;
     for (final p in parts) {
       if (!isFactual(p) || supported(p)) {
         kept.add(p);
-      } else {
-        droppedFactual++;
       }
     }
 
     if (kept.isEmpty) {
       return _fallbackResponse(query, context);
     }
-    var cleaned = kept.join(' ').replaceAll(RegExp(r'\s+'), ' ').trim();
-    if (droppedFactual > 0 && !cleaned.endsWith('?')) {
-      cleaned +=
-          ' (I omitted details not grounded in your indexed phone data.)';
-    }
-    return cleaned;
+    return kept.join(' ').replaceAll(RegExp(r'\s+'), ' ').trim();
   }
 
   /// Truncate rambling output to the first meaningful paragraph or [maxChars].
@@ -1513,10 +1584,17 @@ class AIManager {
   }
 
   String _cleanVisionText(String text) {
-    return text
+    var t = text
         .replaceAll('<|im_end|>', '')
         .replaceAll('<|im_start|>', '')
         .trim();
+    // Qwen3-VL-Thinking models output <think>...</think> reasoning blocks.
+    // Strip them so only the final answer is shown to the user.
+    t = t.replaceAll(RegExp(r'<think>.*?</think>', dotAll: true), '').trim();
+    // Also strip unclosed <think> blocks (model stopped mid-reasoning).
+    final thinkStart = t.indexOf('<think>');
+    if (thinkStart >= 0) t = t.substring(0, thinkStart).trim();
+    return t;
   }
 
   bool _isLowSignalVisionOutput(String text, String userPrompt) {
@@ -1548,6 +1626,25 @@ class AIManager {
 
     final lower = text.toLowerCase();
     final queryLower = query.toLowerCase();
+
+    // ── 0. Whitelist: valid "no data" responses ──
+    // The model correctly says "I don't have that" when the data doesn't
+    // answer the question. These responses have ZERO word overlap with the
+    // query (no names, no numbers) — but that's expected, not hallucination.
+    // Never replace them with a fallback.
+    final isValidNullResponse =
+        lower.contains("don't have") ||
+        lower.contains("do not have") ||
+        lower.contains("not in your data") ||
+        lower.contains("not available") ||
+        lower.contains("couldn't find") ||
+        lower.contains("could not find") ||
+        lower.contains("no information") ||
+        lower.contains("not found") ||
+        lower.contains("i don") || // catches "i don't..."
+        lower.contains("doesn't contain") ||
+        lower.contains("does not contain");
+    if (isValidNullResponse) return text;
 
     // ── 1. Detect repetition loops ──
     // If any 8+ char substring repeats 3+ times, it's a loop.

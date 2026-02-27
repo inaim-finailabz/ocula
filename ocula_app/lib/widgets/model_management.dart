@@ -116,11 +116,19 @@ class _ModelManagementState extends State<ModelManagement> {
     for (final model in OculaModelManager.models) {
       statuses[model.fileName] = await _modelManager.getStatus(model.fileName);
       if (statuses[model.fileName] == ModelStatus.ready) {
-        final path = await _modelManager.modelPath(model.fileName);
-        verified[model.fileName] = await _modelManager.isValidLocalModel(
-          path,
-          expectedSizeBytes: model.sizeBytes,
-        );
+        // For split GGUF models use manifest-based validation (whole-model check).
+        // isValidLocalModel with the total expected size would always fail for
+        // individual parts (~1/N of total), so use isFreeModelReady instead.
+        final isSplit = RegExp(r'-\d{5}-of-\d{5}\.gguf$').hasMatch(model.fileName);
+        if (isSplit) {
+          verified[model.fileName] = await _modelManager.isFreeModelReady;
+        } else {
+          final path = await _modelManager.modelPath(model.fileName);
+          verified[model.fileName] = await _modelManager.isValidLocalModel(
+            path,
+            expectedSizeBytes: model.sizeBytes,
+          );
+        }
       }
     }
     if (mounted) {
@@ -320,8 +328,8 @@ class _ModelManagementState extends State<ModelManagement> {
           const SizedBox(height: 8),
           for (final model in tierModels)
             _buildModelTile(model, colors),
-          // Activate button (non-free tiers that are fully ready but not active)
-          if (!isFree && fullyReady && !isActive) ...[
+          // Activate button (show for any tier if it's ready but not active).
+          if (fullyReady && !isActive) ...[
             const SizedBox(height: 4),
             SizedBox(
               width: double.infinity,
@@ -482,17 +490,37 @@ class _ModelManagementState extends State<ModelManagement> {
           ],
         );
       case ModelStatus.downloading:
-        return Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 12),
-          child: SizedBox(
-            width: 20,
-            height: 20,
-            child: CircularProgressIndicator(
-              value: progress,
-              strokeWidth: 2,
-              color: colors.primary,
+        return Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 8),
+              child: SizedBox(
+                width: 20,
+                height: 20,
+                child: CircularProgressIndicator(
+                  value: progress,
+                  strokeWidth: 2,
+                  color: colors.primary,
+                ),
+              ),
             ),
-          ),
+            IconButton(
+              icon: Icon(Icons.stop_circle_outlined,
+                  size: 20, color: colors.error),
+              tooltip: 'Cancel download',
+              onPressed: () {
+                _modelManager.cancelDownload(model.fileName);
+                setState(() {
+                  _modelStatuses[model.fileName] = ModelStatus.notDownloaded;
+                  _downloadProgress.remove(model.fileName);
+                  _downloadStatusText.remove(model.fileName);
+                  _downloadSpeedMBps.remove(model.fileName);
+                  _downloadStartTime.remove(model.fileName);
+                });
+              },
+            ),
+          ],
         );
       case ModelStatus.notDownloaded:
       case ModelStatus.error:

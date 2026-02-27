@@ -1,17 +1,19 @@
-# Ocula Lite: Qwen2.5-1.5B Text Fine-tuning Config
+# Ocula Lite: Qwen3-1.7B Text Fine-tuning Config
 
 model:
-  name: "Qwen/Qwen2.5-1.5B-Instruct"
-  short_name: "ocula-lite-qwen25-1_5b"
-  local_path: "../models/base/qwen2.5-1.5b-instruct"
+  name: "Qwen/Qwen3-1.7B"
+  short_name: "ocula-lite-qwen3-1_7b"
+  local_path: "../models/base/qwen3-1.7b"
   type: "llm"
-  params: "1.5B"
+  params: "1.7B"
 
 training:
   method: "qlora"
   epochs: 3
   batch_size: 2
   gradient_accumulation: 16
+  save_steps: 100
+  save_total_limit: 5
   learning_rate: 5.0e-5
   lr_scheduler: "cosine"
   warmup_ratio: 0.1
@@ -44,7 +46,7 @@ quantization:
     - "Q4_K_M"
     - "Q3_K_M"
   output_dir: "../models/gguf"
-  output_name: "Ocula-Lite-Qwen2.5-1.5B"
+  output_name: "Ocula-Lite-Qwen3-1.7B"
 
 mlx:
   batch_size: 1

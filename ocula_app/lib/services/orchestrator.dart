@@ -315,7 +315,17 @@ class Orchestrator {
 
     if (lower.contains('search') ||
         lower.contains('google') ||
-        lower.contains('look up')) {
+        lower.contains('look up') ||
+        lower.contains('internet') ||
+        lower.contains('online') ||
+        lower.contains('browse') ||
+        lower.contains('web') ||
+        lower.contains('real-time') ||
+        lower.contains('realtime') ||
+        lower.contains('real time') ||
+        lower.contains('latest') ||
+        lower.contains('current price') ||
+        lower.contains('live ')) {
       state.intent = QueryIntent.web;
     } else if (lower.contains('email') ||
         lower.contains('inbox') ||
@@ -500,44 +510,48 @@ class Orchestrator {
           }
         }
 
-        // Filter asset types to match query intent.
-        // For file/photo queries only show file & photo chips — not phone
-        // numbers/emails that were detected inside file content, since those
-        // are confusing when the user is asking about a document.
+        // Strict intent-based chip gating.
+        // Each chip type is only shown when the user explicitly queried
+        // that category. Chat/web queries never show chips — only explicit
+        // data queries (contact, email, file, photo, calendar) show their
+        // own category's chips. This prevents contact/phone numbers from
+        // bleeding into meeting notes, file lookups, and general chat.
         final allAssets = linkedById.values.toList();
-        // Only show asset chips that are relevant to the query intent.
-        // Contact/phone/email chips only appear for contact, email, or
-        // calendar queries — not for plain chat, notes, or file lookups.
-        final isSocial =
-            state.intent == QueryIntent.contact ||
-            state.intent == QueryIntent.email ||
-            state.intent == QueryIntent.calendar;
-        final isFileOrPhoto =
-            state.intent == QueryIntent.file ||
-            state.intent == QueryIntent.photo;
+        final intent = state.intent;
         state.linkedAssets = allAssets.where((a) {
-          if (a.assetType == 'contact' ||
-              a.assetType == 'phone' ||
-              a.assetType == 'email') {
-            return isSocial;
+          switch (a.assetType) {
+            case 'contact':
+            case 'phone':
+              // Only show for explicit contact queries
+              return intent == QueryIntent.contact;
+            case 'email':
+              // Show for contact AND email queries (email address in contacts)
+              return intent == QueryIntent.contact ||
+                  intent == QueryIntent.email;
+            case 'file':
+              return intent == QueryIntent.file;
+            case 'photo':
+            case 'video':
+              return intent == QueryIntent.photo;
+            case 'calendar':
+              return intent == QueryIntent.calendar;
+            default:
+              // Unknown asset types: never show to avoid clutter
+              return false;
           }
-          if (a.assetType == 'file' || a.assetType == 'photo') {
-            return isFileOrPhoto || isSocial;
-          }
-          return true;
         }).toList();
       } catch (e) {
         if (kDebugMode) print('[Orchestrator] Asset linking skipped: $e');
       }
     }
 
-    // Enrich with knowledge graph context — only for social/calendar intents.
-    // Skipping for file/chat/web intents prevents unrelated contacts from
-    // appearing as linked chips when the user asks about documents or topics.
+    // Enrich with knowledge graph context — only for contact/email intents.
+    // Calendar queries don't need entity enrichment (and adding contacts from
+    // the graph pollutes meeting/schedule answers with irrelevant people).
+    // File/chat/web intents never get graph enrichment.
     final socialIntents = {
       QueryIntent.contact,
       QueryIntent.email,
-      QueryIntent.calendar,
     };
     if (socialIntents.contains(state.intent)) {
       try {

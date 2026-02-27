@@ -19,8 +19,20 @@ Usage:
 import argparse
 import json
 import os
+import shutil
 import sys
 from pathlib import Path
+
+SCRIPT_DIR = Path(__file__).resolve().parent
+PROJECT_DIR = SCRIPT_DIR.parent
+
+
+def resolve_project_path(path_value: str) -> Path:
+    p = Path(path_value)
+    if p.is_absolute():
+        return p
+    # Always resolve relative paths from fine_tune_models root, not shell cwd.
+    return (PROJECT_DIR / p).resolve()
 
 # ─────────────────────────────────────────────────────────────────
 # RECOMMENDED DATASETS
@@ -73,6 +85,7 @@ RECOMMENDED_DATASETS = {
             "size": "~20 GB (subset recommended)",
             "license": "Mixed (mostly permissive)",
             "use_for": ["ocula_plus", "ocula_pro"],
+            "split": "train",
         },
         {
             "name": "lmms-lab/LLaVA-OneVision-Data",
@@ -81,6 +94,8 @@ RECOMMENDED_DATASETS = {
             "size": "~10 GB",
             "license": "Apache 2.0",
             "use_for": ["ocula_plus", "ocula_pro"],
+            "split": "train",
+            "config": "CLEVR-Math(MathV360K)",
         },
         {
             "name": "liuhaotian/LLaVA-Instruct-150K",
@@ -89,6 +104,7 @@ RECOMMENDED_DATASETS = {
             "size": "~200 MB (text only, images from COCO)",
             "license": "CC BY 4.0",
             "use_for": ["ocula_plus", "ocula_pro"],
+            "split": "train",
         },
         {
             "name": "merve/vqav2-small",
@@ -97,6 +113,7 @@ RECOMMENDED_DATASETS = {
             "size": "~500 MB",
             "license": "CC BY 4.0",
             "use_for": ["ocula_plus", "ocula_pro"],
+            "split": "validation",
         },
     ],
     # ── RAG / Retrieval / Search ──
@@ -108,14 +125,17 @@ RECOMMENDED_DATASETS = {
             "size": "~50 MB",
             "license": "Apache 2.0",
             "use_for": ["qwen3embed"],
+            "split": "train",
+            "config": "pair",
         },
         {
-            "name": "sentence-transformers/msmarco-distilbert-base-tas-b",
+            "name": "sentence-transformers/msmarco-co-condenser-margin-mse-sym-mnrl-mean-v1",
             "description": "500K query-passage pairs from MS MARCO. Best for RAG retrieval.",
             "url": "https://huggingface.co/datasets/sentence-transformers/msmarco-co-condenser-margin-mse-sym-mnrl-mean-v1",
             "size": "~200 MB",
             "license": "MIT",
             "use_for": ["qwen3embed"],
+            "split": "train",
         },
         {
             "name": "sentence-transformers/natural-questions",
@@ -124,6 +144,7 @@ RECOMMENDED_DATASETS = {
             "size": "~300 MB",
             "license": "Apache 2.0",
             "use_for": ["qwen3embed"],
+            "split": "train",
         },
         {
             "name": "BeIR/hotpotqa",
@@ -192,7 +213,7 @@ def download_datasets(model_filter=None, output_dir=None):
     """Download recommended datasets from HuggingFace."""
     from datasets import load_dataset
 
-    output_dir = Path(output_dir or "../data/raw")
+    output_dir = resolve_project_path(output_dir or "data/raw")
     output_dir.mkdir(parents=True, exist_ok=True)
 
     for category, datasets in RECOMMENDED_DATASETS.items():
@@ -212,11 +233,26 @@ def download_datasets(model_filter=None, output_dir=None):
             print(f"    → {target_dir}")
 
             try:
-                # Download with streaming for large datasets
-                ds = load_dataset(name, split="train")
+                split = ds_info.get("split", "train")
+                config = ds_info.get("config")
+
+                if config:
+                    ds = load_dataset(name, config, split=split)
+                else:
+                    ds = load_dataset(name, split=split)
                 ds.save_to_disk(str(target_dir))
                 print(f"    [OK] {len(ds)} examples saved")
             except Exception as e:
+                # Fallback: try first available split if default split is missing.
+                try:
+                    ds_all = load_dataset(name, ds_info.get("config")) if ds_info.get("config") else load_dataset(name)
+                    first_split = next(iter(ds_all.keys()))
+                    ds = ds_all[first_split]
+                    ds.save_to_disk(str(target_dir))
+                    print(f"    [OK] {len(ds)} examples saved (fallback split={first_split})")
+                    continue
+                except Exception:
+                    pass
                 print(f"    [WARN] Failed: {e}")
                 print(f"    Try manually: huggingface-cli download {name}")
 
@@ -444,6 +480,96 @@ def convert_custom_data(input_dir, output_dir):
         print(f"    → {len(pairs)} retrieval pairs → {out_file.name}")
 
 
+def _extract_text_pair(row):
+    """Try to extract a user prompt + assistant response from many schema variants."""
+    prompt_keys = ["prompt", "instruction", "question", "query", "input", "user", "context"]
+    response_keys = ["response", "answer", "output", "assistant", "completion", "target", "chosen"]
+
+    prompt = ""
+    response = ""
+
+    for k in prompt_keys:
+        if k in row and isinstance(row[k], str) and row[k].strip():
+            prompt = row[k].strip()
+            break
+    for k in response_keys:
+        if k in row and isinstance(row[k], str) and row[k].strip():
+            response = row[k].strip()
+            break
+
+    # Handle chat-style rows
+    if not prompt and "messages" in row and isinstance(row["messages"], list):
+        msgs = row["messages"]
+        user_msgs = [m.get("content", "") for m in msgs if isinstance(m, dict) and m.get("role") == "user"]
+        asst_msgs = [m.get("content", "") for m in msgs if isinstance(m, dict) and m.get("role") == "assistant"]
+        if user_msgs:
+            prompt = str(user_msgs[-1]).strip()
+        if asst_msgs:
+            response = str(asst_msgs[-1]).strip()
+
+    if prompt and response:
+        return {"messages": [{"role": "user", "content": prompt}, {"role": "assistant", "content": response}]}
+    return None
+
+
+def convert_downloaded_hf_datasets(raw_dir, output_dir):
+    """Convert datasets downloaded via save_to_disk into Ocula training formats."""
+    from datasets import load_from_disk
+
+    raw_dir = Path(raw_dir)
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    for ds_dir in sorted(raw_dir.iterdir()):
+        if not ds_dir.is_dir():
+            continue
+        if "__" not in ds_dir.name:
+            continue
+
+        ds_name = ds_dir.name.replace("__", "/")
+        print(f"  Converting downloaded dataset: {ds_name}")
+
+        try:
+            ds = load_from_disk(str(ds_dir))
+        except Exception as e:
+            print(f"    [WARN] Could not load {ds_dir.name}: {e}")
+            continue
+
+        # Retrieval datasets
+        if "sentence-transformers/" in ds_name or "BeIR/" in ds_name:
+            out_file = output_dir / f"retrieval_{ds_dir.name}.jsonl"
+            convert_retrieval_to_triplets(ds_dir, out_file)
+            continue
+
+        # Vision datasets
+        if any(tag in ds_name for tag in ["LLaVA", "vqav2", "the_cauldron"]):
+            out_file = output_dir / f"vision_{ds_dir.name}.jsonl"
+            convert_vision_to_chatml(ds_dir, out_file)
+            continue
+
+        # OASST2 has specific tree structure
+        if ds_name == "OpenAssistant/oasst2":
+            out_file = output_dir / "chat_oasst2.jsonl"
+            convert_oasst2_to_chat(ds_dir, out_file)
+            continue
+
+        # Generic chat/dataset conversion
+        chat_rows = []
+        for row in ds:
+            chat_ex = _extract_text_pair(row)
+            if chat_ex:
+                chat_rows.append(chat_ex)
+
+        if chat_rows:
+            out_file = output_dir / f"chat_{ds_dir.name}.jsonl"
+            with open(out_file, "w") as f:
+                for ex in chat_rows:
+                    f.write(json.dumps(ex) + "\n")
+            print(f"    [OK] {len(chat_rows)} chat examples → {out_file.name}")
+        else:
+            print(f"    [WARN] No usable examples found in {ds_name}")
+
+
 def create_train_val_split(processed_dir, val_ratio=0.05):
     """Split processed data into train/val sets."""
     processed_dir = Path(processed_dir)
@@ -475,8 +601,8 @@ def create_train_val_split(processed_dir, val_ratio=0.05):
 
 def main():
     parser = argparse.ArgumentParser(description="Ocula Data Preparation Pipeline")
-    parser.add_argument("--input", default="../data/raw", help="Raw data directory")
-    parser.add_argument("--output", default="../data/processed", help="Output directory")
+    parser.add_argument("--input", default="data/raw", help="Raw data directory (relative to fine_tune_models/)")
+    parser.add_argument("--output", default="data/processed", help="Output directory (relative to fine_tune_models/)")
     parser.add_argument("--download-datasets", action="store_true", help="Download recommended HF datasets")
     parser.add_argument("--list-datasets", action="store_true", help="List recommended datasets")
     parser.add_argument("--model", choices=["ocula_lite", "ocula_plus", "ocula_pro", "qwen3embed", "all"],
@@ -493,12 +619,31 @@ def main():
         download_datasets(model_filter=model_filter, output_dir=args.input)
         print("\n[*] Downloaded. Now converting to training format...")
 
-    # Convert downloaded datasets
-    raw_dir = Path(args.input)
-    output_dir = Path(args.output)
+    # Resolve canonical paths (fine_tune_models/data/*)
+    raw_dir = resolve_project_path(args.input)
+    output_dir = resolve_project_path(args.output)
+    legacy_data_root = PROJECT_DIR.parent / "data"
+    legacy_raw_dir = legacy_data_root / "raw"
+    legacy_processed_dir = legacy_data_root / "processed"
+
+    # Auto-reuse legacy raw data location from older script versions.
+    if args.input == "data/raw" and not raw_dir.exists() and legacy_raw_dir.exists():
+        print(f"[*] Using legacy raw data path: {legacy_raw_dir}")
+        raw_dir = legacy_raw_dir
+
+    # Auto-migrate legacy processed files into canonical output location.
+    if args.output == "data/processed" and legacy_processed_dir.exists():
+        output_dir.mkdir(parents=True, exist_ok=True)
+        if not any(output_dir.glob("*.jsonl")) and any(legacy_processed_dir.glob("*.jsonl")):
+            print(f"[*] Importing legacy processed data from: {legacy_processed_dir}")
+            for src in legacy_processed_dir.glob("*.jsonl"):
+                dst = output_dir / src.name
+                if not dst.exists():
+                    shutil.copy2(src, dst)
 
     if raw_dir.exists():
         print("\n[*] Converting raw data to training format...")
+        convert_downloaded_hf_datasets(raw_dir, output_dir)
         convert_custom_data(raw_dir, output_dir)
 
     # Create train/val splits

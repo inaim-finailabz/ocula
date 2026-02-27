@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
@@ -72,83 +73,93 @@ class OculaModelManager {
   String? _cachedModelServerUrl;
 
   // ── Model Registry ── 2026 Ocula Intelligence Stack
-  // Served by serve_models.sh (python3 http.server on port 8080)
   //
-  // Ocula Lite  (free)  – SmolVLM2-500M: fast response, video support, better instruction following
-  // Ocula Plus  (plus)  – Moondream 2:   pointing (x,y) & counting
-  // Ocula Pro   (pro)   – Qwen3-VL-2B:   chain-of-thought reasoning
-  // Ocula Embed          – all-MiniLM-L6-v2: sentence similarity for RAG
+  // Ocula Lite (free)  – Qwen3-1.7B: text RAG — contacts, email, calendar, docs
+  //                      Delivered at install via iOS ODR / Android PAD fast-follow.
+  // Ocula Plus (plus)  – Qwen3-VL-2B-Thinking Q4: vision + multimodal queries
+  //                      Downloaded on-demand when user first needs image analysis.
+  // Ocula Pro  (pro)   – Qwen3-VL-4B-Thinking Q4: higher-quality VL — iPad / ≥6 GB RAM
+  //                      Same architecture as Plus, larger param count, fits mid-range devices.
+  //                      Downloaded from backend on demand.
+  // Embed              – Qwen3-Embedding-0.6B: sentence similarity for RAG (always on)
   static const models = [
-    // ── OCULA LITE: Always-on, fast & capable ──
+    // ── OCULA LITE: Always-on text RAG ────────────────────────────────────
+    // iOS: ODR initial-install tags "ocula-lite-p1/p2/p3" (3×<400MB packs)
+    // Android: PAD fast-follow (monolithic file in models_pack asset pack)
+    // fileName is the first GGUF split part; llama.cpp auto-loads the rest.
     ModelInfo(
-      fileName: 'SmolVLM2-500M-Video-Instruct-finetuned-Q8_0.gguf',
+      fileName: 'qwen3-1.7b-q4_k_m-00001-of-00003.gguf',
       displayName: 'Ocula Lite',
       downloadUrl:
-          'https://backend-ocula.finailabz.com/models/SmolVLM2-500M-Video-Instruct-finetuned-Q8_0.gguf',
-      sizeBytes: 437 * 1024 * 1024, // ~437 MB
+          'https://backend-ocula.finailabz.com/models/qwen3-1.7b-q4_k_m-00001-of-00003.gguf',
+      sizeBytes: 1282 * 1024 * 1024, // ~1.28 GB total (actual: 1,282,439,328 bytes, 3×~450MB parts)
       tier: AITier.free,
     ),
+    // ── OCULA EMBED: Multilingual sentence similarity for RAG ─────────────
+    // Qwen3-Embedding-0.6B: 1024-dim, multilingual — far better than MiniLM
+    // for non-English content. Q8_0 used since embedding quality degrades with Q4.
     ModelInfo(
-      fileName: 'mmproj-SmolVLM2-500M-Video-Instruct-Q8_0.gguf',
-      displayName: 'Ocula Lite Vision',
-      downloadUrl:
-          'https://backend-ocula.finailabz.com/models/mmproj-SmolVLM2-500M-Video-Instruct-Q8_0.gguf',
-      sizeBytes: 109 * 1024 * 1024, // ~109 MB
-      tier: AITier.free,
-      isVisionProjector: true,
-    ),
-    // ── OCULA EMBED: Sentence similarity for RAG search ──
-    ModelInfo(
-      fileName: 'all-MiniLM-L6-v2.Q8_0.gguf',
+      fileName: 'Qwen3-Embedding-0.6B-Q8_0.gguf',
       displayName: 'Ocula Embed',
       downloadUrl:
-          'https://backend-ocula.finailabz.com/models/all-MiniLM-L6-v2.Q8_0.gguf',
-      sizeBytes: 25 * 1024 * 1024, // ~25 MB
+          'https://backend-ocula.finailabz.com/models/Qwen3-Embedding-0.6B-Q8_0.gguf',
+      sizeBytes: 639 * 1024 * 1024, // ~639 MB
       tier: AITier.free,
       isEmbeddingModel: true,
     ),
-    // ── OCULA PLUS: Spatial tasks, pointing & counting ──
-    ModelInfo(
-      fileName: 'moondream2-text-model-Q4_K_M.gguf',
-      displayName: 'Ocula Plus',
-      downloadUrl:
-          'https://backend-ocula.finailabz.com/models/moondream2-text-model-Q4_K_M.gguf',
-      sizeBytes: 900 * 1024 * 1024, // ~900 MB (Q4_K_M quantized)
-      tier: AITier.plus,
-    ),
-    ModelInfo(
-      fileName: 'moondream2-mmproj-f16-20250414.gguf',
-      displayName: 'Ocula Plus Vision',
-      downloadUrl:
-          'https://backend-ocula.finailabz.com/models/moondream2-mmproj-f16-20250414.gguf',
-      sizeBytes: 910 * 1024 * 1024, // ~910 MB
-      tier: AITier.plus,
-      isVisionProjector: true,
-    ),
-    // ── OCULA PRO: Reasoning with chain-of-thought ──
+    // ── OCULA PLUS: Vision + multimodal queries ────────────────────────────
+    // Downloaded on-demand when user sends a photo or image query.
     ModelInfo(
       fileName: 'Qwen3VL-2B-Thinking-Q4_K_M.gguf',
-      displayName: 'Ocula Pro',
+      displayName: 'Ocula Plus',
       downloadUrl:
           'https://backend-ocula.finailabz.com/models/Qwen3VL-2B-Thinking-Q4_K_M.gguf',
-      sizeBytes: 1110 * 1024 * 1024, // ~1.11 GB
-      tier: AITier.pro,
+      sizeBytes: 1110 * 1024 * 1024, // ~1.1 GB
+      tier: AITier.plus,
     ),
     ModelInfo(
       fileName: 'mmproj-Qwen3VL-2B-Thinking-F16.gguf',
-      displayName: 'Ocula Pro Vision',
+      displayName: 'Ocula Plus Vision',
       downloadUrl:
           'https://backend-ocula.finailabz.com/models/mmproj-Qwen3VL-2B-Thinking-F16.gguf',
       sizeBytes: 819 * 1024 * 1024, // ~819 MB
+      tier: AITier.plus,
+      isVisionProjector: true,
+    ),
+    // ── OCULA PRO: Higher-quality VL — iPad / mid-high RAM devices (≥6 GB) ──
+    // Qwen3-VL-4B Q4: ~2.5 GB weights + ~836 MB mmproj ≈ 4–5 GB working set.
+    // Replaces Qwen2.5-VL-7B (was ~8 GB working set, iPad Pro only).
+    // Downloaded from backend on demand.
+    ModelInfo(
+      fileName: 'Qwen3VL-4B-Thinking-Q4_K_M.gguf',
+      displayName: 'Ocula Pro',
+      downloadUrl:
+          'https://backend-ocula.finailabz.com/models/Qwen3VL-4B-Thinking-Q4_K_M.gguf',
+      sizeBytes: 2500 * 1024 * 1024, // ~2.5 GB (HF: 2,500,000,000 bytes)
+      tier: AITier.pro,
+    ),
+    ModelInfo(
+      fileName: 'mmproj-Qwen3VL-4B-Thinking-F16.gguf',
+      displayName: 'Ocula Pro Vision',
+      downloadUrl:
+          'https://backend-ocula.finailabz.com/models/mmproj-Qwen3VL-4B-Thinking-F16.gguf',
+      sizeBytes: 836 * 1024 * 1024, // ~836 MB (HF: 836,000,000 bytes)
       tier: AITier.pro,
       isVisionProjector: true,
     ),
   ];
 
+  // Bump this whenever free model shards change — invalidates old manifest
+  // and forces a clean re-copy on next launch.
+  static const int _freeModelDirVersion = 32;
+
   String? _modelsDir;
   HttpClient? _httpClient;
   List<ModelInfo> _enterpriseModels = [];
   final Map<String, double> _downloadProgress = {};
+
+  /// Filenames for which the user has requested cancellation.
+  final Set<String> _cancelledDownloads = {};
   final StreamController<Map<String, double>>
   _downloadProgressStreamController = StreamController.broadcast();
 
@@ -162,8 +173,22 @@ class OculaModelManager {
   final StreamController<AITier> _tierReadyController =
       StreamController.broadcast();
 
+  /// Emits true when the free model is ready, false when install failed.
+  /// The home screen subscribes to this to auto-load the model and show retry.
+  final StreamController<bool> _freeModelStatusController =
+      StreamController.broadcast();
+
   Stream<Map<String, double>> get downloadProgressStream =>
       _downloadProgressStreamController.stream;
+
+  /// Cancel an in-progress download for [fileName].
+  ///
+  /// Sets a cancellation flag that the download loop checks after each chunk.
+  /// The partial file is deleted and the progress entry is cleared.
+  void cancelDownload(String fileName) {
+    _cancelledDownloads.add(fileName);
+    debugPrint('[ModelManager] cancelDownload requested for $fileName');
+  }
 
   /// Subscribe to this for user-facing "feature X is ready" notifications.
   Stream<String> get featureReadyStream => _featureReadyController.stream;
@@ -171,6 +196,10 @@ class OculaModelManager {
   /// Subscribe to this for programmatic "tier X is ready" signals.
   /// AIManager listens here to set the pending-upgrade flag.
   Stream<AITier> get tierReadyStream => _tierReadyController.stream;
+
+  /// Emits true when free model install succeeds, false when it fails.
+  /// Home screen subscribes to auto-load the model and offer retry.
+  Stream<bool> get freeModelStatusStream => _freeModelStatusController.stream;
 
   /// Human-friendly feature label for each tier (never expose model names).
   static String featureLabel(AITier tier) {
@@ -186,12 +215,61 @@ class OculaModelManager {
     }
   }
 
-  /// Download the free-tier main model only. Returns true when it's ready.
-  /// Intended to run during the splash screen so the user can interact ASAP.
-  /// First tries to copy bundled model, then downloads if needed.
-  /// Vision projector and embedding model are fetched in the background.
+  /// Delete legacy model files no longer in the active registry.
+  /// SmolVLM2 was replaced by Qwen3-VL in build 19.
+  /// Moondream2 (old Plus tier) replaced by Qwen3-VL-2B (Plus) in build 20.
+  /// all-MiniLM-L6-v2 replaced by Qwen3-Embedding-0.6B (build 21).
+  /// Qwen3-VL files are NOT deleted — they are now the Plus/Vision tier.
+  Future<void> _cleanupLegacyModels() async {
+    final dir = await modelsDir;
+    const legacy = [
+      'SmolVLM2-500M-Video-Instruct-finetuned-Q8_0.gguf',
+      'mmproj-SmolVLM2-500M-Video-Instruct-Q8_0.gguf',
+      // Moondream2 was Plus tier in builds 17-19; replaced by Qwen3-VL in build 20
+      'moondream2-text-model-Q4_K_M.gguf',
+      'moondream2-mmproj-f16-20250414.gguf',
+      // all-MiniLM replaced by Qwen3-Embedding-0.6B in build 21 (multilingual)
+      'all-MiniLM-L6-v2.Q8_0.gguf',
+      // Monolithic qwen2.5-1.5b replaced by 3-part split GGUF in build 26
+      // (Apple ODR limit: 512 MB per asset pack; split allows all parts as initial-install tags)
+      'qwen2.5-1.5b-instruct-q4_k_m.gguf',
+      // qwen2.5-1.5b split parts replaced by Qwen3-1.7B in build 34
+      'qwen2.5-1.5b-instruct-q4_k_m-00001-of-00003.gguf',
+      'qwen2.5-1.5b-instruct-q4_k_m-00002-of-00003.gguf',
+      'qwen2.5-1.5b-instruct-q4_k_m-00003-of-00003.gguf',
+      // Qwen2.5-VL-7B replaced by Qwen3-VL-4B as Pro tier (build 32)
+      // 7B was ~8 GB working set (iPad Pro only); 4B is ~4 GB (iPad / ≥6 GB RAM)
+      'Qwen2.5-VL-7B-Instruct-Q4_K_M.gguf',
+      'mmproj-Qwen2.5-VL-7B-Instruct-F16.gguf',
+    ];
+    for (final name in legacy) {
+      final f = File('$dir/$name');
+      if (await f.exists()) {
+        await f.delete();
+        debugPrint('[ModelManager] Deleted legacy model: $name');
+      }
+    }
+  }
+
+  /// Install the free-tier main model and signal readiness.
+  ///
+  /// Install priority:
+  ///   1. iOS ODR / Android PAD — zero-cost, already on device after install
+  ///   2. Backend download — monolithic GGUF from the model server (fallback)
+  ///
+  /// This method can be called without await (fire-and-forget from the splash
+  /// or from a retry button in the home screen). Progress is always emitted on
+  /// [downloadProgressStream] so the home-screen banner reflects it even when
+  /// no caller-supplied [onProgress] is provided.
+  ///
+  /// On success emits true on [freeModelStatusStream] and fires [tierReadyStream]
+  /// so the home screen can auto-load the model.
+  /// On failure emits false on [freeModelStatusStream] so the home screen can
+  /// show a retry button.
   Future<bool> ensureFreeModelReady({DownloadProgress? onProgress}) async {
-    // Only the main model (not the projector or embedding) is required to start
+    _cleanupLegacyModels().catchError((_) {});
+    _purgeOldFreeShardManifests().catchError((_) {});
+
     final mainModel = models
         .where(
           (m) =>
@@ -201,52 +279,77 @@ class OculaModelManager {
         )
         .first;
 
-    // Step 1: Try to copy bundled model first (instant)
-    onProgress?.call(0.1, 'Checking for bundled AI engine...');
-    if (await _ensureBundledModelCopied(mainModel.fileName)) {
-      onProgress?.call(1.0, 'Bundled AI engine ready!');
+    // Wrap the caller's callback to also publish progress to the download stream
+    // so the home-screen banner shows free-model install progress even when we
+    // are not blocking at the splash screen.
+    DownloadProgress combined = (progress, status) {
+      if (progress > 0) {
+        _downloadProgress[mainModel.fileName] = progress;
+        _downloadProgressStreamController.add(Map.from(_downloadProgress));
+      }
+      onProgress?.call(progress, status);
+    };
+
+    // Step 1: iOS ODR / Android PAD (instant on App Store builds).
+    combined(0.05, 'Checking for bundled AI engine...');
+    if (await _ensureBundledModelCopied(mainModel.fileName, onProgress: combined)) {
+      combined(1.0, 'Bundled AI engine ready!');
     } else if (await isDownloaded(mainModel.fileName)) {
-      // Step 2: Already downloaded
-      onProgress?.call(1.0, 'AI engine ready!');
+      // Step 2: Already downloaded from a previous run.
+      combined(1.0, 'AI engine ready!');
     } else {
-      // Step 3: Download as fallback
-      onProgress?.call(0.0, 'Downloading AI engine...');
-      final ok = await download(mainModel, onProgress: onProgress);
-      if (!ok) return false;
+      // Step 3: Fallback — download the monolithic GGUF from the backend.
+      // This is the priority fallback when ODR/PAD is unavailable (TestFlight,
+      // direct installs, developer builds).
+      combined(0.0, 'Downloading AI engine...');
+      final ok = await download(mainModel, onProgress: combined);
+      if (!ok) {
+        _downloadProgress.remove(mainModel.fileName);
+        _downloadProgressStreamController.add(Map.from(_downloadProgress));
+        _freeModelStatusController.add(false);
+        return false;
+      }
     }
 
-    // Try to copy the vision projector too — AWAIT it so vision is ready
-    // immediately. Without this, the first image query after launch fails
-    // because the projector copy is still in progress.
+    // Clear the progress entry — banner disappears.
+    _downloadProgress.remove(mainModel.fileName);
+    _downloadProgressStreamController.add(Map.from(_downloadProgress));
+
+    // Signal that the free model is ready.  Home screen picks this up to
+    // auto-load the model and dismiss any "not ready" state.
+    _freeModelStatusController.add(true);
+    _featureReadyController.add(featureLabel(AITier.free));
+    _tierReadyController.add(AITier.free);
+
+    // Projector and embedding — fire-and-forget (not required for text RAG).
     final projector = models
         .where((m) => m.tier == AITier.free && m.isVisionProjector)
         .firstOrNull;
-    if (projector != null) {
-      onProgress?.call(0.9, 'Preparing vision engine...');
-      final projCopied = await _ensureBundledModelCopied(projector.fileName);
-      if (!projCopied && !await isDownloaded(projector.fileName)) {
-        // Last resort: download projector — don't block splash if it fails
-        download(projector).catchError((_) => false);
-      }
+    if (projector != null && !await isDownloaded(projector.fileName)) {
+      _ensureBundledModelCopied(projector.fileName)
+          .then((copied) {
+            if (!copied) download(projector).catchError((_) => false);
+          })
+          .catchError((_) {});
     }
 
-    // Ensure embedding model is available (bundled at ~25MB, copies instantly)
     final embedModel = models.where((m) => m.isEmbeddingModel).firstOrNull;
     if (embedModel != null && !await isDownloaded(embedModel.fileName)) {
-      // Try bundled copy first (instant), then download as fallback
-      final copied = await _ensureBundledModelCopied(embedModel.fileName);
-      if (!copied) {
-        // Fire-and-forget download fallback — don't block splash
-        download(embedModel)
-            .then((ok) {
-              if (ok) debugPrint('[ModelManager] Embedding model downloaded');
-            })
-            .catchError((e) {
-              debugPrint('[ModelManager] Embedding model download failed: $e');
-            });
-      } else {
-        debugPrint('[ModelManager] Embedding model copied from bundle');
-      }
+      _ensureBundledModelCopied(embedModel.fileName)
+          .then((copied) {
+            if (!copied) {
+              download(embedModel)
+                  .then((ok) {
+                    if (ok) debugPrint('[ModelManager] Embedding model downloaded');
+                  })
+                  .catchError((e) {
+                    debugPrint('[ModelManager] Embedding model download failed: $e');
+                  });
+            } else {
+              debugPrint('[ModelManager] Embedding model copied from bundle');
+            }
+          })
+          .catchError((_) {});
     }
 
     return true;
@@ -398,17 +501,623 @@ class OculaModelManager {
   /// Does NOT check the app bundle — models must be copied to local
   /// storage before use because llama.cpp needs mmap-able files and
   /// the iOS app bundle is code-signed / read-only.
+  ///
+  /// For split GGUF models, ALL parts must be present and ≥1 MB.
+  /// llama.cpp auto-loads sibling parts from the same directory —
+  /// if any part is missing it will fail to load, so we treat
+  /// a partial set as "not downloaded".
   Future<bool> isDownloaded(String fileName) async {
-    final path = await modelPath(fileName);
-    final file = File(path);
-    if (file.existsSync()) {
-      // Validate that it's a proper model file, not corrupted
+    final parts = _allSplitParts(fileName);
+    for (final part in parts) {
+      final path = await modelPath(part);
+      final file = File(path);
+      if (!file.existsSync()) return false;
       final size = await file.length();
-      if (size > 1024 * 1024) {
-        // At least 1MB for valid model
+      if (size < 1024 * 1024) return false;
+    }
+    return parts.isNotEmpty;
+  }
+
+  // ── iOS On-Demand Resources (ODR) ──────────────────────────────
+  static const _odrChannel         = MethodChannel('com.finailabz.ocula/odr');
+  static const _odrProgressChannel = EventChannel('com.finailabz.ocula/odr_progress');
+
+  /// Map a model filename to its iOS ODR tag name.
+  /// Split GGUF parts each get a numbered tag (ocula-lite-p1, p2, p3…).
+  static String _odrTagForFile(String fileName) {
+    if (fileName.contains('qwen3-1.7b') || fileName.contains('qwen2.5-1.5b')) {
+      final m = RegExp(r'-0*(\d+)-of-\d+').firstMatch(fileName);
+      if (m != null) return 'ocula-lite-p${m.group(1)}';
+      return 'ocula-lite-p1';
+    }
+    if (fileName.startsWith('all-MiniLM')) return 'ocula-embed';
+    if (fileName.startsWith('Qwen3VL') || fileName.startsWith('mmproj-Qwen3VL')) {
+      return 'ocula-vision';
+    }
+    return 'ocula-model';
+  }
+
+  /// For a split-GGUF first-part filename, return all part filenames in order.
+  /// Returns [fileName] unchanged for non-split models.
+  /// Example: "model-00001-of-00003.gguf" → ["model-00001-of-00003.gguf",
+  ///           "model-00002-of-00003.gguf", "model-00003-of-00003.gguf"]
+  static List<String> _allSplitParts(String fileName) {
+    final match =
+        RegExp(r'^(.+-)\d{5}-of-(\d{5})\.gguf$').firstMatch(fileName);
+    if (match == null) return [fileName];
+    final base = match.group(1)!;
+    final total = int.parse(match.group(2)!);
+    return List.generate(
+      total,
+      (i) =>
+          '$base${(i + 1).toString().padLeft(5, '0')}-of-${total.toString().padLeft(5, '0')}.gguf',
+    );
+  }
+
+  /// On iOS with App Store / TestFlight install, request the ODR tag and return
+  /// the file path. Returns null if ODR is not configured — caller falls through
+  /// to network download transparently.
+  ///
+  /// For split-GGUF models the single-tag path is still used here (individual
+  /// part request). The multi-part batch path is in [_ensureSplitModelCopied].
+  Future<String?> _findODRPath(String fileName, {DownloadProgress? onProgress}) async {
+    if (!Platform.isIOS) return null;
+    try {
+      final tag = _odrTagForFile(fileName);
+
+      // Subscribe to KVO progress events BEFORE triggering beginAccessingResources.
+      StreamSubscription<dynamic>? progressSub;
+      if (onProgress != null) {
+        progressSub = _odrProgressChannel.receiveBroadcastStream().listen((event) {
+          if (event is Map && event['tag'] == tag) {
+            final pct = ((event['progress'] as num?)?.toDouble() ?? 0.0).clamp(0.0, 1.0);
+            // Keep progress in the 0.05–0.95 band so the caller's surrounding
+            // bookkeeping values (0.1 before, 1.0 after) are never overwritten.
+            final mapped = 0.05 + pct * 0.90;
+            onProgress(mapped, 'Downloading via iOS delivery... ${(pct * 100).toStringAsFixed(0)}%');
+          }
+        });
+      }
+
+      try {
+        final path = await _odrChannel.invokeMethod<String>(
+          'requestODRTag',
+          {'tag': tag, 'fileName': fileName},
+        );
+        if (path != null) {
+          debugPrint('[ModelManager] ODR path for $fileName: $path');
+        }
+        return path;
+      } finally {
+        await progressSub?.cancel();
+      }
+    } catch (e) {
+      debugPrint('[ModelManager] ODR not available for $fileName: $e');
+      return null;
+    }
+  }
+
+  /// Request all split-GGUF ODR tags in one coordinated download session.
+  /// Returns a map of {fileName → bundlePath} for each resolved part,
+  /// or null if ODR is unavailable (dev / TestFlight without App Store processing).
+  Future<Map<String, String>?> _findODRPathBatch(
+    List<String> parts, {
+    DownloadProgress? onProgress,
+  }) async {
+    if (!Platform.isIOS) return null;
+    try {
+      final tags = parts.map(_odrTagForFile).toList();
+      final firstTag = tags.first;
+
+      StreamSubscription<dynamic>? progressSub;
+      if (onProgress != null) {
+        progressSub = _odrProgressChannel.receiveBroadcastStream().listen((event) {
+          if (event is Map && event['tag'] == firstTag) {
+            final pct = ((event['progress'] as num?)?.toDouble() ?? 0.0).clamp(0.0, 1.0);
+            final mapped = 0.05 + pct * 0.90;
+            onProgress(
+              mapped,
+              'Downloading AI model via iOS delivery... ${(pct * 100).toStringAsFixed(0)}%',
+            );
+          }
+        });
+      }
+
+      try {
+        final raw = await _odrChannel.invokeMethod<Map<Object?, Object?>>(
+          'requestODRTagsBatch',
+          {'tags': tags, 'fileNames': parts},
+        );
+        if (raw == null) return null;
+        final result = <String, String>{};
+        for (final entry in raw.entries) {
+          if (entry.key is String && entry.value is String) {
+            result[entry.key as String] = entry.value as String;
+          }
+        }
+        debugPrint('[ModelManager] ODR batch resolved: ${result.keys.join(', ')}');
+        return result.isEmpty ? null : result;
+      } finally {
+        await progressSub?.cancel();
+      }
+    } catch (e) {
+      debugPrint('[ModelManager] ODR batch not available: $e');
+      return null;
+    }
+  }
+
+  // ── Shard manifest helpers ─────────────────────────────────────────────────
+  // The manifest records the exact byte count for each successfully copied shard.
+  // Bumping _freeModelDirVersion changes the manifest filename, which forces a
+  // clean re-copy — old corrupt files in the same path cannot interfere.
+
+  Future<File> get _freeShardManifestFile async {
+    final dir = await modelsDir;
+    return File('$dir/free_shard_manifest_v$_freeModelDirVersion.json');
+  }
+
+  Future<Map<String, dynamic>?> _readFreeShardManifest() async {
+    try {
+      final f = await _freeShardManifestFile;
+      if (!f.existsSync()) return null;
+      return jsonDecode(await f.readAsString()) as Map<String, dynamic>;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<void> _writeFreeShardManifest(
+      List<Map<String, dynamic>> shards) async {
+    final f = await _freeShardManifestFile;
+    await f.writeAsString(
+        jsonEncode({'version': _freeModelDirVersion, 'shards': shards}));
+    debugPrint(
+        '[ModelManager] Wrote shard manifest v$_freeModelDirVersion (${shards.length} shards)');
+  }
+
+  /// Delete manifests from previous versions so stale files don't linger
+  /// on disk between app launches.
+  Future<void> _purgeOldFreeShardManifests() async {
+    try {
+      final dir = await modelsDir;
+      await for (final entity in Directory(dir).list()) {
+        if (entity is File) {
+          final name = p.basename(entity.path);
+          if (name.startsWith('free_shard_manifest_v') &&
+              name !=
+                  'free_shard_manifest_v$_freeModelDirVersion.json') {
+            await entity.delete().catchError((_) {});
+            debugPrint('[ModelManager] Purged old shard manifest: $name');
+          }
+        }
+      }
+    } catch (e) {
+      debugPrint('[ModelManager] _purgeOldFreeShardManifests error: $e');
+    }
+  }
+
+  // ── Low-level file utilities ───────────────────────────────────────────────
+
+  /// Synchronous GGUF magic-header check. Reads only 4 bytes — zero RAM cost.
+  bool _hasGGUFHeaderSync(String path) {
+    try {
+      final raf = File(path).openSync(mode: FileMode.read);
+      try {
+        final bytes = raf.readSync(4);
+        return bytes.length == 4 && String.fromCharCodes(bytes) == 'GGUF';
+      } finally {
+        raf.closeSync();
+      }
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// Extended GGUF structural check for split part 1.
+  ///
+  /// Reads the first 24 bytes and validates:
+  ///   bytes  0- 3: "GGUF" magic
+  ///   bytes  4- 7: version == 2 or 3 (uint32 LE)
+  ///   bytes  8-15: tensor_count > 0  (uint64 LE)
+  ///   bytes 16-23: metadata_kv_count > 0 (uint64 LE)
+  ///
+  /// A truncated or all-zero file after the first 4 bytes would fail on
+  /// the version check. Returns false on any I/O error.
+  bool _isGGUFPart1Valid(String path) {
+    try {
+      final raf = File(path).openSync(mode: FileMode.read);
+      try {
+        final b = raf.readSync(24);
+        if (b.length < 24) return false;
+        // Magic
+        if (String.fromCharCodes(b.sublist(0, 4)) != 'GGUF') return false;
+        // Version (uint32 LE) — must be 2 or 3
+        final version = b[4] | (b[5] << 8) | (b[6] << 16) | (b[7] << 24);
+        if (version < 2 || version > 3) return false;
+        // tensor_count (uint64 LE) — must be > 0
+        int tensorCount = 0;
+        for (int i = 0; i < 8; i++) tensorCount |= b[8 + i] << (i * 8);
+        if (tensorCount <= 0) return false;
+        // metadata_kv_count (uint64 LE) — must be > 0
+        int metaCount = 0;
+        for (int i = 0; i < 8; i++) metaCount |= b[16 + i] << (i * 8);
+        if (metaCount <= 0) return false;
         return true;
+      } finally {
+        raf.closeSync();
+      }
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// Atomic file copy: src → dest.tmp → dest (rename).
+  ///
+  /// Verifies that the written byte count equals the source size before
+  /// renaming. If anything goes wrong the .tmp is deleted — the final
+  /// [destPath] is never left in a partial state.
+  /// Delete all shard dest files and their .tmp counterparts so the next
+  /// retry starts with a completely clean slate.
+  Future<void> _wipeSplitShards(List<String> parts) async {
+    for (final part in parts) {
+      final dest = await modelPath(part);
+      for (final path in [dest, '$dest.tmp']) {
+        final f = File(path);
+        if (f.existsSync()) {
+          await f.delete().catchError((_) {});
+          debugPrint('[ModelManager] wipe_shard: $path');
+        }
       }
     }
+  }
+
+  Future<void> _atomicFileCopy(
+    File src,
+    String destPath, {
+    String label = '',
+    void Function(double progress)? onProgress,
+  }) async {
+    final tmpPath = '$destPath.tmp';
+    final tmpFile = File(tmpPath);
+
+    // Remove any stale .tmp from a previous interrupted copy
+    if (tmpFile.existsSync()) {
+      debugPrint('[ModelManager] Removing stale tmp: $tmpPath');
+      await tmpFile.delete();
+    }
+
+    try {
+      final srcSize = await src.length();
+      debugPrint(
+        '[ModelManager] copy_start: $label'
+        ' src=${src.path} expected=$srcSize bytes',
+      );
+
+      // For large files (>10 MB) use a chunked stream so the caller can
+      // report progress during the copy instead of freezing at one percent.
+      if (onProgress != null && srcSize > 10 * 1024 * 1024) {
+        final sink = tmpFile.openWrite();
+        int written = 0;
+        try {
+          await for (final chunk in src.openRead()) {
+            sink.add(chunk);
+            written += chunk.length;
+            onProgress((written / srcSize).clamp(0.0, 1.0));
+          }
+          await sink.flush();
+        } finally {
+          await sink.close();
+        }
+      } else {
+        await src.copy(tmpPath);
+      }
+
+      final tmpSize = await tmpFile.length();
+      if (tmpSize != srcSize) {
+        throw Exception(
+            'copy_truncated: expected $srcSize bytes, wrote $tmpSize bytes');
+      }
+      // POSIX rename is atomic when src and dst are on the same filesystem
+      await tmpFile.rename(destPath);
+      debugPrint(
+        '[ModelManager] copy_done: $label rename_ok $tmpSize bytes',
+      );
+    } catch (e) {
+      // Clean up tmp — never leave a partial final file
+      if (tmpFile.existsSync()) {
+        await tmpFile.delete().catchError((_) {});
+      }
+      rethrow;
+    }
+  }
+
+  /// Copy all parts of a split GGUF model to local storage.
+  /// On iOS: batch-requests all ODR tags (one download session, shared progress).
+  /// On Android: reads each part from Play Asset Delivery.
+  /// Returns true only when every part is present in local storage.
+  Future<bool> _ensureSplitModelCopied(
+    List<String> parts, {
+    DownloadProgress? onProgress,
+    int? expectedTotalBytes,
+  }) async {
+    // ── Step 1: Check manifest first ────────────────────────────────────────
+    // The manifest records the exact byte count for every shard that was
+    // atomically copied and verified. If it exists and all sizes match we can
+    // skip the copy entirely — no heuristics, no relative-size guessing.
+    final manifest = await _readFreeShardManifest();
+    if (manifest != null) {
+      try {
+        final manifestShards =
+            (manifest['shards'] as List).cast<Map<String, dynamic>>();
+        bool allValid = manifestShards.length == parts.length;
+        for (int si = 0; si < manifestShards.length; si++) {
+          final shard = manifestShards[si];
+          final name = shard['name'] as String;
+          final expectedBytes = shard['bytes'] as int;
+          final path = await modelPath(name);
+          final f = File(path);
+          final exists = f.existsSync();
+          final actualSize = exists ? await f.length() : 0;
+          final headerOk = exists && _hasGGUFHeaderSync(path);
+          // For part 1 (first shard), run the extended structural check so that
+          // corrupt ODR assets written by older builds are caught here too.
+          final structuralOk = (si == 0 && exists)
+              ? _isGGUFPart1Valid(path)
+              : headerOk;
+          debugPrint(
+            '[ModelManager] manifest_check: $name '
+            'exists=$exists size=$actualSize expected=$expectedBytes '
+            'header=$headerOk structural=$structuralOk',
+          );
+          if (!exists || actualSize != expectedBytes || !headerOk || !structuralOk) {
+            allValid = false;
+            break;
+          }
+        }
+        if (allValid) {
+          debugPrint(
+              '[ModelManager] All shards verified via manifest — skipping copy');
+          return true;
+        }
+        // Manifest present but validation failed — delete it and force re-copy
+        debugPrint('[ModelManager] Manifest validation failed — forcing re-copy');
+        final mf = await _freeShardManifestFile;
+        await mf.delete().catchError((_) {});
+      } catch (e) {
+        debugPrint('[ModelManager] Manifest parse error: $e — forcing re-copy');
+      }
+    }
+
+    // ── Step 2: Copy shards (iOS ODR) ───────────────────────────────────────
+    if (Platform.isIOS) {
+      final pathMap = await _findODRPathBatch(parts, onProgress: onProgress);
+      if (pathMap != null) {
+        final copiedShards = <Map<String, dynamic>>[];
+        for (int i = 0; i < parts.length; i++) {
+          final part = parts[i];
+          final src = pathMap[part];
+          if (src == null) {
+            debugPrint('[ModelManager] copy_failed: ODR pathMap missing $part');
+            await _wipeSplitShards(parts);
+            return false;
+          }
+          final srcFile = File(src);
+          final srcSize = await srcFile.length();
+          final dest = await modelPath(part);
+          await Directory(File(dest).parent.path).create(recursive: true);
+
+          // Force overwrite if dest exists but size or header is wrong
+          final destFile = File(dest);
+          if (destFile.existsSync()) {
+            final destSize = await destFile.length();
+            final headerOk = _hasGGUFHeaderSync(dest);
+            if (destSize == srcSize && headerOk) {
+              debugPrint(
+                  '[ModelManager] Shard $part already correct ($destSize bytes), skipping');
+              copiedShards.add({'name': part, 'bytes': destSize});
+              onProgress?.call(
+                0.95 + ((i + 1) / parts.length) * 0.05,
+                'Verified AI model part ${i + 1} of ${parts.length}...',
+              );
+              continue;
+            }
+            debugPrint(
+              '[ModelManager] Shard $part mismatch '
+              '(size=$destSize expected=$srcSize header=$headerOk) — deleting',
+            );
+            await destFile.delete().catchError((_) {});
+          }
+
+          // Up to 3 attempts per shard before failing the whole copy
+          bool shardOk = false;
+          for (int attempt = 0; attempt < 3 && !shardOk; attempt++) {
+            if (attempt > 0) {
+              debugPrint(
+                  '[ModelManager] copy_retry: $part attempt ${attempt + 1}');
+              await File('$dest.tmp').delete().catchError((_) {});
+              await Future<void>.delayed(const Duration(milliseconds: 500));
+            }
+            onProgress?.call(
+              0.95 + (i / parts.length) * 0.05,
+              'Installing AI model part ${i + 1} of ${parts.length}...',
+            );
+            try {
+              await _atomicFileCopy(
+                srcFile,
+                dest,
+                label: 'part ${i + 1}/${parts.length}: $part',
+                onProgress: (p) => onProgress?.call(
+                  0.95 + ((i + p) / parts.length) * 0.05,
+                  'Installing AI model part ${i + 1} of ${parts.length}...',
+                ),
+              );
+              final finalSize = await File(dest).length();
+              if (!_hasGGUFHeaderSync(dest)) {
+                debugPrint(
+                    '[ModelManager] copy_failed: $part invalid GGUF header after copy');
+                await File(dest).delete().catchError((_) {});
+                continue;
+              }
+              copiedShards.add({'name': part, 'bytes': finalSize});
+              debugPrint(
+                  '[ModelManager] ✓ Shard installed: $part ($finalSize bytes)');
+              shardOk = true;
+            } catch (e) {
+              debugPrint(
+                  '[ModelManager] copy_error attempt ${attempt + 1}: $part → $e');
+            }
+          }
+
+          if (!shardOk) {
+            debugPrint('[ModelManager] copy_failed after 3 attempts: $part — wiping all shards');
+            await _wipeSplitShards(parts);
+            return false;
+          }
+        }
+        // ── Deep validation before committing the manifest ──────────────────
+        // A 4-byte GGUF magic check is not enough — corrupt ODR assets can
+        // pass the header check but have garbage tensor data.  Validate:
+        //   1. Part 1 structural integrity (version + tensor_count + meta_count)
+        //   2. Total shard size ≥ 90% of the declared model size
+        final part1DestPath = await modelPath(parts.first);
+        if (!_isGGUFPart1Valid(part1DestPath)) {
+          debugPrint(
+            '[ModelManager] ODR part-1 failed structural GGUF check — '
+            'corrupt ODR asset, falling back to backend download',
+          );
+          await _wipeSplitShards(parts);
+          return false;
+        }
+        if (expectedTotalBytes != null && expectedTotalBytes > 0) {
+          final totalCopied =
+              copiedShards.fold<int>(0, (s, e) => s + (e['bytes'] as int));
+          final minExpected = (expectedTotalBytes * 0.90).toInt();
+          if (totalCopied < minExpected) {
+            debugPrint(
+              '[ModelManager] ODR total shard size $totalCopied < 90% of '
+              'expected $expectedTotalBytes — falling back to backend download',
+            );
+            await _wipeSplitShards(parts);
+            return false;
+          }
+        }
+        // All shards verified — commit the manifest
+        await _writeFreeShardManifest(copiedShards);
+        return true;
+      }
+      return false;
+    }
+
+    // ── Step 2: Copy shards (Android PAD) ───────────────────────────────────
+    if (Platform.isAndroid) {
+      final copiedShards = <Map<String, dynamic>>[];
+      for (int i = 0; i < parts.length; i++) {
+        final part = parts[i];
+        final src = await _findAssetPackPath(part);
+        if (src == null) {
+          debugPrint('[ModelManager] copy_failed: PAD path missing for $part');
+          await _wipeSplitShards(parts);
+          return false;
+        }
+        final srcFile = File(src);
+        final srcSize = await srcFile.length();
+        final dest = await modelPath(part);
+        await Directory(File(dest).parent.path).create(recursive: true);
+
+        // Force overwrite if dest exists but size or header is wrong
+        final destFile = File(dest);
+        if (destFile.existsSync()) {
+          final destSize = await destFile.length();
+          final headerOk = _hasGGUFHeaderSync(dest);
+          if (destSize == srcSize && headerOk) {
+            debugPrint(
+                '[ModelManager] Shard $part already correct ($destSize bytes), skipping');
+            copiedShards.add({'name': part, 'bytes': destSize});
+            onProgress?.call(
+              0.95 + ((i + 1) / parts.length) * 0.05,
+              'Verified AI model part ${i + 1} of ${parts.length}...',
+            );
+            continue;
+          }
+          debugPrint(
+            '[ModelManager] Shard $part mismatch '
+            '(size=$destSize expected=$srcSize header=$headerOk) — deleting',
+          );
+          await destFile.delete().catchError((_) {});
+        }
+
+        // Up to 3 attempts per shard before failing the whole copy
+        bool shardOk = false;
+        for (int attempt = 0; attempt < 3 && !shardOk; attempt++) {
+          if (attempt > 0) {
+            debugPrint(
+                '[ModelManager] copy_retry: $part attempt ${attempt + 1}');
+            await File('$dest.tmp').delete().catchError((_) {});
+            await Future<void>.delayed(const Duration(milliseconds: 500));
+          }
+          onProgress?.call(
+            0.95 + (i / parts.length) * 0.05,
+            'Installing AI model part ${i + 1} of ${parts.length}...',
+          );
+          try {
+            await _atomicFileCopy(
+              srcFile,
+              dest,
+              label: 'part ${i + 1}/${parts.length}: $part',
+              onProgress: (p) => onProgress?.call(
+                0.95 + ((i + p) / parts.length) * 0.05,
+                'Installing AI model part ${i + 1} of ${parts.length}...',
+              ),
+            );
+            final finalSize = await File(dest).length();
+            if (!_hasGGUFHeaderSync(dest)) {
+              debugPrint(
+                  '[ModelManager] copy_failed: $part invalid GGUF header after copy');
+              await File(dest).delete().catchError((_) {});
+              continue;
+            }
+            copiedShards.add({'name': part, 'bytes': finalSize});
+            debugPrint(
+                '[ModelManager] ✓ Shard installed: $part ($finalSize bytes)');
+            shardOk = true;
+          } catch (e) {
+            debugPrint(
+                '[ModelManager] copy_error attempt ${attempt + 1}: $part → $e');
+          }
+        }
+
+        if (!shardOk) {
+          debugPrint('[ModelManager] copy_failed after 3 attempts: $part — wiping all shards');
+          await _wipeSplitShards(parts);
+          return false;
+        }
+      }
+      // Deep validation — same checks as the iOS ODR path above.
+      final part1DestPath = await modelPath(parts.first);
+      if (!_isGGUFPart1Valid(part1DestPath)) {
+        debugPrint(
+          '[ModelManager] PAD part-1 failed structural GGUF check — wiping',
+        );
+        await _wipeSplitShards(parts);
+        return false;
+      }
+      if (expectedTotalBytes != null && expectedTotalBytes > 0) {
+        final totalCopied =
+            copiedShards.fold<int>(0, (s, e) => s + (e['bytes'] as int));
+        final minExpected = (expectedTotalBytes * 0.90).toInt();
+        if (totalCopied < minExpected) {
+          debugPrint(
+            '[ModelManager] PAD total shard size $totalCopied < 90% of '
+            'expected $expectedTotalBytes — wiping',
+          );
+          await _wipeSplitShards(parts);
+          return false;
+        }
+      }
+      await _writeFreeShardManifest(copiedShards);
+      return true;
+    }
+
     return false;
   }
 
@@ -436,29 +1145,33 @@ class OculaModelManager {
     }
   }
 
-  /// Resolve the physical file path of a Flutter asset on disk.
+  /// Resolve the physical file path of a model asset on disk.
   /// Avoids rootBundle.load() which loads the entire file into RAM.
-  /// Returns null if the asset can't be found on disk.
+  /// Returns null if the asset can't be found — caller falls through to network download.
   ///
-  /// iOS/macOS: assets live as real files inside the .app bundle
-  /// Android:   checks Play Asset Delivery first, then returns null (rootBundle fallback)
-  Future<String?> _findBundledAssetPath(String assetKey) async {
+  /// Android: checks Play Asset Delivery (fast-follow pack)
+  /// iOS:     checks On-Demand Resources (ODR) — silently returns null in dev/TestFlight
+  /// macOS:   checks physical Flutter asset path inside the app bundle
+  Future<String?> _findBundledAssetPath(String assetKey, {DownloadProgress? onProgress}) async {
     // Android: try Play Asset Delivery pack first (Play Store installs)
     if (Platform.isAndroid) {
       final fileName = assetKey.split('/').last;
       return await _findAssetPackPath(fileName);
     }
 
+    // iOS: try On-Demand Resources first (App Store installs with ODR configured)
+    if (Platform.isIOS) {
+      final fileName = assetKey.split('/').last;
+      return await _findODRPath(fileName, onProgress: onProgress);
+    }
+
     try {
-      // On iOS & macOS, Flutter assets are physically on disk inside the app bundle.
-      // iOS:   <bundle>/Frameworks/App.framework/flutter_assets/<assetKey>
+      // macOS: Flutter assets are physically on disk inside the app bundle.
       // macOS: <bundle>/Contents/Frameworks/App.framework/Resources/flutter_assets/<assetKey>
       final exe = Platform.resolvedExecutable;
       final bundleDir = File(exe).parent.path;
 
       final candidates = [
-        // iOS
-        '$bundleDir/Frameworks/App.framework/flutter_assets/$assetKey',
         // macOS
         '$bundleDir/Contents/Frameworks/App.framework/Resources/flutter_assets/$assetKey',
         // macOS alternate
@@ -536,7 +1249,23 @@ class OculaModelManager {
   /// Uses streamed file copy from the physical asset path to avoid OOM.
   /// Falls back to rootBundle.load() only on platforms where physical path
   /// is unavailable (should not happen on iOS/macOS/Android).
-  Future<bool> _ensureBundledModelCopied(String fileName) async {
+  ///
+  /// [onProgress] is forwarded to _findBundledAssetPath → _findODRPath so the
+  /// splash screen shows live download progress during ODR delivery.
+  Future<bool> _ensureBundledModelCopied(String fileName, {DownloadProgress? onProgress}) async {
+    // Handle split GGUF models (multiple ODR/PAD asset packs on iOS/Android).
+    final allParts = _allSplitParts(fileName);
+    if (allParts.length > 1) {
+      // Look up declared model size so _ensureSplitModelCopied can validate
+      // that total shard bytes are within 90% of what we expect.
+      final modelInfo = models.where((m) => m.fileName == fileName).firstOrNull;
+      return _ensureSplitModelCopied(
+        allParts,
+        onProgress: onProgress,
+        expectedTotalBytes: modelInfo?.sizeBytes,
+      );
+    }
+
     final localPath = await modelPath(fileName);
     final localFile = File(localPath);
 
@@ -553,6 +1282,7 @@ class OculaModelManager {
       // This avoids loading the entire model (100MB+) into RAM.
       final physicalPath = await _findBundledAssetPath(
         'assets/models/$fileName',
+        onProgress: onProgress,
       );
 
       if (physicalPath != null) {
@@ -653,9 +1383,108 @@ class OculaModelManager {
   }
 
   /// Check if the free model is ready (needed for first launch).
+  ///
+  /// Primary path: validate every shard against the manifest written after the
+  /// last successful atomic copy — exact byte counts, no relative heuristics.
+  ///
+  /// Fallback: monolithic network-download case (full model stored under the
+  /// part-1 filename, ≥ 80% of declared size + valid GGUF header).
+  /// Split shards WITHOUT a manifest are NOT trusted — they may be partial.
   Future<bool> get isFreeModelReady async {
-    final freeModel = models.firstWhere((m) => m.tier == AITier.free);
-    return isDownloaded(freeModel.fileName);
+    // ── Primary: manifest-based validation ──────────────────────────────────
+    final manifest = await _readFreeShardManifest();
+    if (manifest != null) {
+      try {
+        final shards =
+            (manifest['shards'] as List).cast<Map<String, dynamic>>();
+        for (final shard in shards) {
+          final name = shard['name'] as String;
+          final expectedBytes = shard['bytes'] as int;
+          final path = await modelPath(name);
+          final f = File(path);
+          if (!f.existsSync()) {
+            debugPrint('[ModelManager] isFreeModelReady: missing shard $name');
+            return false;
+          }
+          final actualSize = await f.length();
+          if (actualSize != expectedBytes) {
+            debugPrint(
+              '[ModelManager] isFreeModelReady: shard $name size mismatch '
+              '(expected=$expectedBytes actual=$actualSize)',
+            );
+            return false;
+          }
+          if (!_hasGGUFHeaderSync(path)) {
+            debugPrint(
+                '[ModelManager] isFreeModelReady: shard $name invalid GGUF header');
+            return false;
+          }
+        }
+        debugPrint(
+            '[ModelManager] isFreeModelReady: all ${shards.length} shards verified ✓');
+        return true;
+      } catch (e) {
+        debugPrint('[ModelManager] isFreeModelReady: manifest parse error — $e');
+        // Fall through to monolithic check
+      }
+    }
+
+    // ── Fallback A: split network-download (no manifest) ────────────────────
+    // The direct HTTP path downloads all split parts but does not write
+    // the ODR/PAD manifest. Accept this path if all parts exist, pass
+    // GGUF header checks, and each part is plausibly sized.
+    final freeModel = models.firstWhere(
+      (m) =>
+          m.tier == AITier.free &&
+          !m.isVisionProjector &&
+          !m.isEmbeddingModel,
+    );
+    final splitParts = _allSplitParts(freeModel.fileName);
+    if (splitParts.length > 1) {
+      final perPartExpected = freeModel.sizeBytes ~/ splitParts.length;
+      var allGood = true;
+      for (final part in splitParts) {
+        final partPath = await modelPath(part);
+        final ok = await isValidLocalModel(
+          partPath,
+          expectedSizeBytes: perPartExpected,
+        );
+        if (!ok) {
+          allGood = false;
+          break;
+        }
+      }
+      if (allGood) {
+        debugPrint(
+          '[ModelManager] isFreeModelReady: split fallback verified ${splitParts.length} parts ✓',
+        );
+        return true;
+      }
+    }
+
+    // ── Fallback B: monolithic network-download ──────────────────────────────
+    // The network download path saves the full model under the part-1 filename.
+    // Accept it only if it is ≥ 80% of declared size AND has a valid GGUF header.
+    // Split shards without a manifest are explicitly rejected — they could be
+    // partial copies from a previous interrupted ODR/PAD session.
+    final part1Path = await modelPath(freeModel.fileName);
+    final part1 = File(part1Path);
+    if (!part1.existsSync()) return false;
+    final part1Size = await part1.length();
+
+    if (part1Size >= (freeModel.sizeBytes * 0.8).toInt()) {
+      final ok = _hasGGUFHeaderSync(part1Path);
+      debugPrint(
+          '[ModelManager] isFreeModelReady: monolithic fallback header=$ok size=$part1Size');
+      return ok;
+    }
+
+    // Not manifest-verified, split-verified, or monolithic-valid.
+    debugPrint(
+      '[ModelManager] isFreeModelReady: no manifest, part-1 size=$part1Size '
+      '(< 80% of ${freeModel.sizeBytes}) — not ready',
+    );
+    return false;
   }
 
   /// Get all models needed for a tier.
@@ -777,21 +1606,30 @@ class OculaModelManager {
         final n = p.basename(f.path).toLowerCase();
         if (isVisionProjector) {
           if (tier == AITier.free)
-            return n.contains('mmproj') && n.contains('smolvlm');
+            return n.contains('mmproj') &&
+                (n.contains('smolvlm') || n.contains('qwen'));
           if (tier == AITier.plus)
-            return n.contains('mmproj') && n.contains('moondream');
+            return n.contains('mmproj') &&
+                (n.contains('moondream') || (n.contains('qwen') && n.contains('2b')));
           if (tier == AITier.pro)
-            return n.contains('mmproj') && n.contains('qwen');
+            return n.contains('mmproj') && n.contains('qwen') && (n.contains('4b') || n.contains('7b'));
           return false;
         }
         if (tier == AITier.free)
-          return n.contains('smolvlm') && !n.contains('mmproj');
+          return (n.contains('smolvlm') ||
+                  n.contains('qwen3-1.7b') ||
+                  n.contains('qwen2.5-1.5b') ||
+                  (n.contains('qwen') && n.contains('1.7b'))) &&
+              !n.contains('mmproj');
         if (tier == AITier.plus)
-          return n.contains('moondream') && !n.contains('mmproj');
+          return (n.contains('moondream') ||
+                  (n.contains('qwen') && n.contains('2b')) ||
+                  n.contains('qwen3vl-2b')) &&
+              !n.contains('mmproj');
         if (tier == AITier.pro) {
           return n.contains('qwen') &&
               !n.contains('mmproj') &&
-              (n.contains('2b') || n.contains('vl'));
+              (n.contains('4b') || n.contains('2b') || n.contains('vl'));
         }
         return false;
       }
@@ -908,8 +1746,15 @@ class OculaModelManager {
 
     // Already downloaded — but validate it's actually a good GGUF file.
     // A previous interrupted download or CDN error could have left a bad file.
+    // For split GGUF models, model.sizeBytes is the TOTAL across all parts;
+    // each individual part is ~1/N of that, so use per-part expected size.
+    final _splitPartsCount = () {
+      final m = RegExp(r'-\d{5}-of-(\d{5})\.gguf$').firstMatch(model.fileName);
+      return m != null ? int.parse(m.group(1)!) : 1;
+    }();
+    final _perPartExpected = model.sizeBytes ~/ _splitPartsCount;
     if (await file.exists()) {
-      if (await isValidLocalModel(path, expectedSizeBytes: model.sizeBytes)) {
+      if (await isValidLocalModel(path, expectedSizeBytes: _perPartExpected)) {
         onProgress?.call(1.0, 'Ready');
         return true;
       }
@@ -917,7 +1762,7 @@ class OculaModelManager {
       debugPrint(
         '[ModelManager] ${model.fileName} exists but failed validation — re-downloading',
       );
-      await file.delete().catchError((_) {});
+      try { await file.delete(); } catch (_) {}
     }
 
     final prefs = await SharedPreferences.getInstance();
@@ -960,8 +1805,13 @@ class OculaModelManager {
 
       int received = existingBytes;
       final total = model.sizeBytes;
+      bool cancelled = false;
 
       await for (final chunk in response) {
+        if (_cancelledDownloads.contains(model.fileName)) {
+          cancelled = true;
+          break;
+        }
         sink.add(chunk);
         received += chunk.length;
         final progress = (received / total).clamp(0.0, 1.0);
@@ -974,26 +1824,82 @@ class OculaModelManager {
       await sink.flush();
       await sink.close();
 
+      if (cancelled) {
+        _cancelledDownloads.remove(model.fileName);
+        _downloadProgress.remove(model.fileName);
+        _downloadProgressStreamController.add(Map.from(_downloadProgress));
+        try { await partialFile.delete(); } catch (_) {}
+        await prefs.setBool('downloading_${model.fileName}', false);
+        debugPrint('[ModelManager] Download cancelled: ${model.fileName}');
+        return false;
+      }
+
       // Move partial → final
       await partialFile.rename(path);
 
       // Post-download GGUF validation — catch corrupt / truncated files
       // before signalling "ready" to the rest of the system.
+      // _perPartExpected already accounts for split models (see above).
       final valid = await isValidLocalModel(
         path,
-        expectedSizeBytes: model.sizeBytes,
+        expectedSizeBytes: _perPartExpected,
       );
       if (!valid) {
         debugPrint(
           '[ModelManager] ✗ ${model.fileName} failed GGUF validation after download — deleting',
         );
-        await File(path).delete().catchError((_) {});
+        try { await File(path).delete(); } catch (_) {}
         await prefs.setBool('downloading_${model.fileName}', false);
         onProgress?.call(
           0.0,
           'Error: downloaded file is not a valid GGUF model',
         );
         return false;
+      }
+
+      // For part 1 of a split-GGUF: auto-download remaining parts.
+      // Sibling URLs are derived by substituting the part number in downloadUrl.
+      // The guard (group(1) == 1) prevents infinite recursion when parts 2/3
+      // call download() — they skip this block entirely.
+      final splitMatch =
+          RegExp(r'-(\d{5})-of-(\d{5})\.gguf$').firstMatch(model.fileName);
+      if (splitMatch != null &&
+          int.parse(splitMatch.group(1)!) == 1 &&
+          int.parse(splitMatch.group(2)!) > 1) {
+        final allParts = _allSplitParts(model.fileName);
+        final partSizeBytes = model.sizeBytes ~/ allParts.length;
+        final urlPartPattern = RegExp(r'-\d{5}-of-\d{5}\.gguf$');
+        for (int i = 1; i < allParts.length; i++) {
+          final partNum = (i + 1).toString().padLeft(5, '0');
+          final totalNum = allParts.length.toString().padLeft(5, '0');
+          final partUrl = model.downloadUrl
+              .replaceFirst(urlPartPattern, '-$partNum-of-$totalNum.gguf');
+          final partModel = ModelInfo(
+            fileName: allParts[i],
+            displayName: model.displayName,
+            downloadUrl: partUrl,
+            sizeBytes: partSizeBytes,
+            tier: model.tier,
+          );
+          debugPrint(
+            '[ModelManager] Downloading split part ${i + 1}/${allParts.length}: ${allParts[i]}',
+          );
+          // Offset progress so sibling parts continue from where part 1 left off
+          // instead of resetting to 0. Part 1 already consumed 0→(1/N), so
+          // part i starts at i/N and spans 1/N of the total bar.
+          final partOffset = i / allParts.length;
+          final partScale = 1.0 / allParts.length;
+          final partOk = await download(
+            partModel,
+            onProgress: onProgress == null
+                ? null
+                : (p, s) => onProgress((partOffset + p * partScale).clamp(0.0, 1.0), s),
+          );
+          if (!partOk) {
+            await prefs.setBool('downloading_${model.fileName}', false);
+            return false;
+          }
+        }
       }
 
       await prefs.setBool('downloading_${model.fileName}', false);

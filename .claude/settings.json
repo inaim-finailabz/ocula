@@ -1,7 +1,39 @@
 {
   "permissions": {
     "allow": [
-      "Bash(/Volumes/ExternalDisk/projects/Ocula/fine_tune_models/ocula_env/bin/python3:*)"
+      "Bash(/Volumes/ExternalDisk/projects/Ocula/fine_tune_models/ocula_env/bin/python3:*)",
+      "Bash(plutil -extract Name xml1 -o - -)",
+      "Read(//Volumes/ExternalDisk/projects/Ocula/ocula_app/**)",
+      "Bash(plutil -extract application-identifier xml1 -o - -)",
+      "Bash(plutil -extract UUID xml1 -o - -)",
+      "Bash(plutil -convert xml1 -o - -)",
+      "Bash(plutil -p /Volumes/ExternalDisk/projects/Ocula/ocula_app/build/ios/archive/Ocula.xcarchive/Info.plist)",
+      "Bash(TMPDIR=/Volumes/ExternalDisk/projects/tmp xcodebuild -exportArchive -archivePath build/ios/archive/Ocula.xcarchive -exportOptionsPlist ios/ExportOptions.plist -exportPath build/ios/ipa31)",
+      "Bash(plutil -convert xml1 -o - ~/Library/Preferences/com.apple.dt.Xcode.plist)",
+      "Bash(# Also check keychain for bloomlocal credentials security find-generic-password -s \"\"Xcode\"\" -a \"\"issam@bloomlocal.ai\"\")",
+      "Bash(PATH=\"/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin:$PATH\" xcodebuild -exportArchive -archivePath build/ios/archive/Ocula.xcarchive -exportOptionsPlist ios/ExportOptions.plist -exportPath build/ios/ipa32)",
+      "Read(//private/var/folders/**)",
+      "Bash(PATH=\"/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin:$PATH\" xcodebuild -exportArchive -archivePath /Volumes/ExternalDisk/projects/Ocula/ocula_app/build/ios/archive/Ocula.xcarchive -exportOptionsPlist /Volumes/ExternalDisk/projects/Ocula/ocula_app/ios/ExportOptions.plist -exportPath /Volumes/ExternalDisk/projects/Ocula/ocula_app/build/ios/ipa33)",
+      "Bash(fastlane supply --version)",
+      "Bash(dart analyze /Volumes/ExternalDisk/projects/Ocula/ocula_app/lib/services/model_manager.dart /Volumes/ExternalDisk/projects/Ocula/ocula_app/lib/widgets/model_management.dart)",
+      "Bash(sudo xcodebuild -license accept)",
+      "Bash(sudo xcodebuild -runFirstLaunch)",
+      "Bash(xcrun xcodebuild -list)",
+      "Bash(PATH=\"/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin:$PATH\" xcodebuild -exportArchive -archivePath build/ios/archive/Ocula.xcarchive -exportOptionsPlist ios/ExportOptions.plist -exportPath build/ios/ipa34)",
+      "Bash(PATH=\"/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin:$PATH\" xcodebuild -exportArchive -archivePath build/ios/archive/Ocula.xcarchive -exportOptionsPlist ios/ExportOptions.plist -exportPath build/ios/ipa35)",
+      "Bash(PATH=\"/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin:$PATH\" xcodebuild -exportArchive -archivePath build/ios/archive/Ocula.xcarchive -exportOptionsPlist ios/ExportOptions.plist -exportPath build/ios/ipa36)",
+      "Bash(# Check sizes of cleanable items echo \"\"=== Old iOS ipa dirs ===\"\" du -sh /Volumes/ExternalDisk/projects/Ocula/ocula_app/build/ios/ipa31 /Volumes/ExternalDisk/projects/Ocula/ocula_app/build/ios/ipa33 echo \"\"=== Xcode dist logs ===\"\" du -sh /var/folders/fr/mzvycyr57xq7b9_mw5pgv38m0000gn/T/Runner_*.xcdistributionlogs)",
+      "Bash(tail -3 echo \"=== DerivedData ===\" du -sh ~/Library/Developer/Xcode/DerivedData echo \"=== Flutter build cache on system ===\" du -sh ~/Library/Caches/dart-pub-cache du -sh ~/Library/Caches/flutter*)",
+      "Bash(# Delete DerivedData \\(safe - rebuilt on next compile\\) rm -rf ~/Library/Developer/Xcode/DerivedData/ModuleCache.noindex rm -rf ~/Library/Developer/Xcode/DerivedData/Runner-hdhdaoabhrijtidapizlrwdzoane # Delete old Xcode distribution logs rm -rf /var/folders/fr/mzvycyr57xq7b9_mw5pgv38m0000gn/T/Runner_2026-02-2*.xcdistributionlogs # Check free space now df -h /System/Volumes/Data)",
+      "Bash(pkill -f \"flutter build ipa\")",
+      "Bash(PATH=\"/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin:$PATH\" xcodebuild -exportArchive -archivePath build/ios/archive/Ocula.xcarchive -exportOptionsPlist ios/ExportOptions.plist -exportPath build/ios/ipa40)",
+      "Read(//Volumes/ExternalDisk/projects/Ocula/**)",
+      "Bash(PATH=\"/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin:$PATH\" xcodebuild -exportArchive -archivePath build/ios/archive/Ocula.xcarchive -exportOptionsPlist ios/ExportOptions.plist -exportPath build/ios/ipa41)"
+    ],
+    "additionalDirectories": [
+      "/Volumes/ExternalDisk",
+      "/Volumes/ExternalDisk/projects/Ocula/ocula_app/$TMPBASE",
+      "/var/folders/fr/mzvycyr57xq7b9_mw5pgv38m0000gn/T"
     ]
   }
 }

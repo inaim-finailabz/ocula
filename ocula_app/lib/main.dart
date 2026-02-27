@@ -101,12 +101,17 @@ class _AssistantScreenState extends State<AssistantScreen>
   StreamSubscription? _downloadProgressSubscription;
   StreamSubscription? _featureReadySubscription;
   StreamSubscription? _tierChangeSubscription;
+  StreamSubscription? _freeModelStatusSubscription;
+
+  bool _freeModelFailed = false;
 
   // ── Help Tour ──
   static final _orbKey = GlobalKey();
-  static final _inputBarKey = GlobalKey();
-  static final _cameraButtonKey = GlobalKey();
+  static final _chatListKey = GlobalKey();
   static final _scopeChipsKey = GlobalKey();
+  static final _cameraButtonKey = GlobalKey();
+  static final _fileButtonKey = GlobalKey();
+  static final _inputBarKey = GlobalKey();
   bool _showingHelpTour = false;
   String _sessionId = const Uuid().v4();
 
@@ -129,6 +134,36 @@ class _AssistantScreenState extends State<AssistantScreen>
       ),
       builder: (_) => SessionsScreen(onStartNewChat: _startNewSession),
     );
+  }
+
+  /// Called when the free model finishes installing in the background.
+  /// Loads it into memory and shows a brief snackbar.
+  Future<void> _autoLoadFreeModel() async {
+    try {
+      if (!await _modelManager.isFreeModelReady) return;
+      await _ai.switchEngine(AITier.free);
+      if (mounted) _showSnackbar('AI engine ready');
+    } catch (e) {
+      debugPrint('[Home] Free model auto-load failed: $e');
+    }
+  }
+
+  /// Ensure Lite is activated if files are already installed and verified.
+  /// Keeps existing startup flow intact and only repairs late activation races.
+  Future<void> _ensureLiteActivatedIfReady() async {
+    if (_ai.isModelLoaded) return;
+    if (!await _modelManager.isFreeModelReady) return;
+    await _autoLoadFreeModel();
+  }
+
+  /// Retry a failed free-model install from the home screen download banner.
+  void _retryFreeModelInstall() {
+    if (!mounted) return;
+    setState(() => _freeModelFailed = false);
+    _modelManager.ensureFreeModelReady().catchError((e) {
+      debugPrint('[Home] Retry install error: $e');
+      return false;
+    });
   }
 
   void _startHelpTour() {
@@ -157,7 +192,21 @@ class _AssistantScreenState extends State<AssistantScreen>
     super.initState();
     _speech = SpeechService(aiManager: _ai);
     _speech.init();
-    // Free-tier model already loaded during splash — no need to call switchEngine here.
+    // If the splash navigated before the model was ready (background install
+    // path), auto-load when ensureFreeModelReady signals success.
+    _freeModelStatusSubscription = _modelManager.freeModelStatusStream.listen((ok) {
+      if (!mounted) return;
+      if (ok) {
+        setState(() => _freeModelFailed = false);
+        _ensureLiteActivatedIfReady();
+      } else {
+        setState(() => _freeModelFailed = true);
+      }
+    });
+    // Handle race: model may have finished installing before home screen opened.
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      await _ensureLiteActivatedIfReady();
+    });
 
     _orchestrator.onAskInternet = _showInternetDialog;
     _orchestrator.onAskEnableConnectivity = _showConnectivityDialog;
@@ -218,8 +267,44 @@ class _AssistantScreenState extends State<AssistantScreen>
     });
   }
 
-  /// Thin banner shown below the top bar when models are downloading in background.
+  /// Thin banner below the top bar for background model downloads and failures.
   Widget _buildDownloadBanner(ColorScheme colors) {
+    // ── Failure state: free model install failed — show retry ──
+    if (_freeModelFailed && _activeDownloads.isEmpty) {
+      return Container(
+        padding: const EdgeInsets.fromLTRB(16, 6, 12, 8),
+        decoration: BoxDecoration(
+          color: colors.errorContainer.withAlpha(50),
+          border: Border(
+            bottom: BorderSide(color: colors.error.withAlpha(40), width: 0.5),
+          ),
+        ),
+        child: Row(
+          children: [
+            Icon(Icons.warning_amber_rounded, size: 14, color: colors.error),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                'AI engine failed to install',
+                style: TextStyle(fontSize: 11, color: colors.error),
+              ),
+            ),
+            TextButton(
+              onPressed: _retryFreeModelInstall,
+              style: TextButton.styleFrom(
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                minimumSize: Size.zero,
+                tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                foregroundColor: colors.error,
+              ),
+              child: const Text('Retry', style: TextStyle(fontSize: 11)),
+            ),
+          ],
+        ),
+      );
+    }
+
+    // ── Normal download progress ──
     // Show the main model being downloaded (skip vision projectors & embed for label)
     final primary =
         _activeDownloads.entries.where((e) {
@@ -264,7 +349,7 @@ class _AssistantScreenState extends State<AssistantScreen>
               mainAxisSize: MainAxisSize.min,
               children: [
                 Text(
-                  'Downloading $label ($pct%)',
+                  'Installing $label ($pct%)',
                   style: TextStyle(
                     fontSize: 11,
                     fontWeight: FontWeight.w500,
@@ -482,20 +567,12 @@ class _AssistantScreenState extends State<AssistantScreen>
       final result = await FilePicker.platform.pickFiles(
         type: FileType.custom,
         allowedExtensions: [
-          'txt',
-          'md',
-          'csv',
-          'json',
-          'xml',
-          'html',
-          'pdf',
-          'py',
-          'js',
-          'ts',
-          'dart',
-          'java',
-          'swift',
-          'yaml',
+          // Office documents
+          'pdf', 'docx', 'pptx', 'xlsx',
+          // Plain text / markup
+          'txt', 'md', 'csv', 'json', 'xml', 'html', 'htm',
+          // Code
+          'py', 'js', 'ts', 'dart', 'java', 'swift', 'yaml',
         ],
       );
       if (result != null && result.files.single.path != null) {
@@ -665,6 +742,8 @@ class _AssistantScreenState extends State<AssistantScreen>
     String? displayTextOverride,
     AITier? forcedTier,
   }) async {
+    await _ensureLiteActivatedIfReady();
+
     final image = _attachedImage;
     final doc = _attachedDocument;
     final docName = _attachedDocName;
@@ -922,6 +1001,7 @@ class _AssistantScreenState extends State<AssistantScreen>
     _downloadProgressSubscription?.cancel();
     _featureReadySubscription?.cancel();
     _tierChangeSubscription?.cancel();
+    _freeModelStatusSubscription?.cancel();
     super.dispose();
   }
 
@@ -1024,24 +1104,12 @@ class _AssistantScreenState extends State<AssistantScreen>
                           tooltip: 'New chat',
                           onPressed: _startNewSession,
                         ),
-                        Builder(
-                          builder: (ctx) => IconButton(
-                            icon: const Icon(Icons.history_outlined, size: 20),
-                            tooltip: 'Chat history',
-                            onPressed: () => _openSessionHistory(ctx),
-                          ),
-                        ),
                         IconButton(
                           icon: const Icon(Icons.mic_none_rounded, size: 20),
                           tooltip: 'Record meeting / lecture',
                           onPressed: () {
                             Navigator.of(context).pushNamed('/recorder');
                           },
-                        ),
-                        IconButton(
-                          icon: const Icon(Icons.help_outline, size: 20),
-                          tooltip: 'Help tour',
-                          onPressed: _startHelpTour,
                         ),
                         IconButton(
                           icon: const Icon(Icons.settings_outlined, size: 20),
@@ -1057,15 +1125,57 @@ class _AssistantScreenState extends State<AssistantScreen>
                             );
                           },
                         ),
+                        // Overflow menu: history + help
+                        Builder(
+                          builder: (ctx) => PopupMenuButton<String>(
+                            icon: const Icon(Icons.more_vert, size: 20),
+                            tooltip: 'More',
+                            onSelected: (value) {
+                              if (value == 'history') {
+                                _openSessionHistory(ctx);
+                              } else if (value == 'help') {
+                                _startHelpTour();
+                              }
+                            },
+                            itemBuilder: (_) => const [
+                              PopupMenuItem(
+                                value: 'history',
+                                child: Row(
+                                  children: [
+                                    Icon(Icons.history_outlined, size: 18),
+                                    SizedBox(width: 10),
+                                    Text('Chat history'),
+                                  ],
+                                ),
+                              ),
+                              PopupMenuItem(
+                                value: 'help',
+                                child: Row(
+                                  children: [
+                                    Icon(Icons.help_outline, size: 18),
+                                    SizedBox(width: 10),
+                                    Text('Help tour'),
+                                  ],
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
                       ],
                     ),
                   ),
 
-                  // Background download progress banner
-                  if (_activeDownloads.isNotEmpty) _buildDownloadBanner(colors),
+                  // Show failure banner always (needs user action).
+                  // Show download progress only if no model is active yet
+                  // (first-time install). Once a model is running, progress
+                  // stays in Settings — not here — to avoid confusion.
+                  if (_freeModelFailed ||
+                      (_activeDownloads.isNotEmpty && _ai.activeTier == null))
+                    _buildDownloadBanner(colors),
 
                   // Chat messages
                   Expanded(
+                    key: _chatListKey,
                     child: hasMessages
                         ? ListView.builder(
                             controller: _scrollController,
@@ -1082,10 +1192,19 @@ class _AssistantScreenState extends State<AssistantScreen>
                               if (_isThinking && index == _messages.length) {
                                 return const _ThinkingBubble();
                               }
+                              final msg = _messages[index];
+                              // Find the user query that preceded this AI response
+                              final precedingQuery = (!msg.isUser && index > 0)
+                                  ? _messages[index - 1].text
+                                  : null;
                               return _MessageBubble(
-                                message: _messages[index],
-                                onCopy: () =>
-                                    _copyToClipboard(_messages[index].text),
+                                message: msg,
+                                onCopy: () => _copyToClipboard(msg.text),
+                                onSearchWeb: (!msg.isUser && precedingQuery != null)
+                                    ? () => _send(
+                                          'search online for: $precedingQuery',
+                                        )
+                                    : null,
                               );
                             },
                           )
@@ -1269,10 +1388,13 @@ class _AssistantScreenState extends State<AssistantScreen>
                             ),
                           ),
                           // Document attach button
-                          _InputAction(
-                            icon: Icons.attach_file,
-                            label: 'File',
-                            onTap: _pickDocument,
+                          SizedBox(
+                            key: _fileButtonKey,
+                            child: _InputAction(
+                              icon: Icons.attach_file,
+                              label: 'File',
+                              onTap: _pickDocument,
+                            ),
                           ),
                           // Text input
                           Expanded(
@@ -1434,22 +1556,34 @@ class _AssistantScreenState extends State<AssistantScreen>
                           'Tap the orb to start speaking. Ocula listens and responds aloud.',
                     ),
                     HelpStep(
-                      targetKey: _inputBarKey,
-                      title: 'Type a Question',
+                      targetKey: _chatListKey,
+                      title: 'Chat Window',
                       description:
-                          'Type anything here, or attach a photo or document.',
-                    ),
-                    HelpStep(
-                      targetKey: _cameraButtonKey,
-                      title: 'Analyze Images',
-                      description:
-                          'Take or pick a photo — Ocula analyzes it entirely on-device.',
+                          'Your conversation appears here. Ocula runs fully on-device — no cloud.',
                     ),
                     HelpStep(
                       targetKey: _scopeChipsKey,
                       title: 'Focus Your Search',
                       description:
-                          'Use All / Docs / Images / Location to narrow what Ocula looks through.',
+                          'Filter by All / Docs / Images / Location to narrow what Ocula searches.',
+                    ),
+                    HelpStep(
+                      targetKey: _inputBarKey,
+                      title: 'Type a Question',
+                      description:
+                          'Type anything here. Use the buttons below to attach files or photos.',
+                    ),
+                    HelpStep(
+                      targetKey: _cameraButtonKey,
+                      title: 'Analyze Images',
+                      description:
+                          'Take or pick a photo — Ocula describes and analyzes it on-device.',
+                    ),
+                    HelpStep(
+                      targetKey: _fileButtonKey,
+                      title: 'Attach Documents',
+                      description:
+                          'Attach PDF, Word, Excel, PowerPoint or text files. Ocula reads and answers questions about them.',
                     ),
                   ],
                   onComplete: () {
@@ -1486,8 +1620,10 @@ class _Message {
 class _MessageBubble extends StatelessWidget {
   final _Message message;
   final VoidCallback? onCopy;
+  /// Called when the user taps "Search Web" on a no-data response.
+  final VoidCallback? onSearchWeb;
 
-  const _MessageBubble({required this.message, this.onCopy});
+  const _MessageBubble({required this.message, this.onCopy, this.onSearchWeb});
 
   @override
   Widget build(BuildContext context) {
@@ -1568,12 +1704,58 @@ class _MessageBubble extends StatelessWidget {
                   ],
                 ),
               ],
+              // "Search Web" offer — shown when local data was insufficient
+              if (!isUser && onSearchWeb != null && _isNoDataResponse(message.text)) ...[
+                const SizedBox(height: 10),
+                GestureDetector(
+                  onTap: onSearchWeb,
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                    decoration: BoxDecoration(
+                      color: colors.primaryContainer.withAlpha(180),
+                      borderRadius: BorderRadius.circular(20),
+                      border: Border.all(color: colors.primary.withAlpha(60)),
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(Icons.language_outlined, size: 14, color: colors.primary),
+                        const SizedBox(width: 6),
+                        Text(
+                          'Search the web for more info',
+                          style: TextStyle(
+                            fontSize: 12,
+                            color: colors.primary,
+                            fontWeight: FontWeight.w500,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ],
             ],
           ),
         ),
       ),
     );
   }
+}
+
+/// Returns true if the AI response indicates it couldn't find the answer
+/// in local data — used to decide whether to offer a web search.
+bool _isNoDataResponse(String text) {
+  final lower = text.toLowerCase();
+  return lower.contains("don't have that") ||
+      lower.contains("don't have that in your data") ||
+      lower.contains("not in your data") ||
+      lower.contains("couldn't find") ||
+      lower.contains("could not find") ||
+      lower.contains("no information") ||
+      lower.contains("not available in your") ||
+      lower.contains("i don't have") ||
+      lower.contains("i do not have") ||
+      lower.contains("not found in your");
 }
 
 class _OverflowChip extends StatelessWidget {

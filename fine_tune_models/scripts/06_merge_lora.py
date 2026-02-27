@@ -14,9 +14,9 @@ Usage:
 
     # Custom paths
     python 06_merge_lora.py --model ocula_lite \
-        --base-path ../models/base/qwen2.5-1.5b-instruct \
-        --adapter-path ../models/lora_adapters/ocula-lite-qwen25-1_5b-qlora \
-        --output-path ../models/merged/ocula-lite-qwen25-1_5b-merged
+        --base-path ../models/base/qwen3-1.7b \
+        --adapter-path ../models/lora_adapters/ocula-lite-qwen3-1_7b-qlora \
+        --output-path ../models/merged/ocula-lite-qwen3-1_7b-merged
 
     # MLX merge
     python 06_merge_lora.py --model ocula_lite --backend mlx
@@ -36,9 +36,9 @@ import yaml
 MODELS = {
     "ocula_lite": {
         "config": "../configs/qwen25_1_5b_text.yaml",
-        "base_path": "../models/base/qwen2.5-1.5b-instruct",
-        "adapter_glob": "../models/lora_adapters/ocula-lite-qwen25-1_5b-*",
-        "output": "../models/merged/ocula-lite-qwen25-1_5b-merged",
+        "base_path": "../models/base/qwen3-1.7b",
+        "adapter_glob": "../models/lora_adapters/ocula-lite-qwen3-1_7b-*",
+        "output": "../models/merged/ocula-lite-qwen3-1_7b-merged",
     },
 }
 

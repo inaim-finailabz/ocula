@@ -39,4 +39,38 @@ post_install do |installer|
   installer.pods_project.targets.each do |target|
     flutter_additional_ios_build_settings(target)
   end
+
+  # Patch flutter_contacts to work with UIScene lifecycle.
+  # The plugin force-unwraps UIApplication.shared.delegate!.window!! which is nil
+  # when UIApplicationSceneManifest is present. Replace with UIScene-compatible lookup.
+  contacts_plugin_path = File.join(
+    installer.sandbox.root,
+    'flutter_contacts',
+    'ios',
+    'Classes',
+    'SwiftFlutterContactsPlugin.swift'
+  )
+  if File.exist?(contacts_plugin_path)
+    content = File.read(contacts_plugin_path)
+    old_line = 'let rootViewController = UIApplication.shared.delegate!.window!!.rootViewController!'
+    new_line = <<~SWIFT
+      let rootViewController: UIViewController
+              let keyWindow = UIApplication.shared.connectedScenes
+                .compactMap { $0 as? UIWindowScene }
+                .flatMap { $0.windows }
+                .first(where: { $0.isKeyWindow })
+              if let rvc = keyWindow?.rootViewController {
+                rootViewController = rvc
+              } else if let rvc = UIApplication.shared.delegate?.window??.rootViewController {
+                rootViewController = rvc
+              } else {
+                rootViewController = UIViewController()
+              }
+    SWIFT
+    if content.include?(old_line)
+      patched = content.gsub(old_line, new_line.strip)
+      File.write(contacts_plugin_path, patched)
+      puts "✅ Patched flutter_contacts for UIScene compatibility"
+    end
+  end
 end

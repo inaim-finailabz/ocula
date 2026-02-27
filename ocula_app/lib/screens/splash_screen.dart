@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:io';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:lottie/lottie.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -59,8 +60,9 @@ class _OculaSplashScreenState extends State<OculaSplashScreen>
     final elapsed = _stepWatch.elapsedMilliseconds;
     final msg = '[Splash] [$step] ${elapsed}ms${detail != null ? ' — $detail' : ''}';
     debugPrint(msg);
-    // Also show on-screen while debugging
-    if (mounted) {
+    // Only show internal step names on-screen in debug builds.
+    // In release builds the progress callbacks handle the status text.
+    if (kDebugMode && mounted) {
       setState(() => _statusText = '$step${detail != null ? '\n$detail' : ''}');
     }
   }
@@ -79,20 +81,22 @@ class _OculaSplashScreenState extends State<OculaSplashScreen>
       debugPrint('[Splash] Dart version: ${Platform.version}');
       debugPrint('[Splash] ═══════════════════════════════════════');
 
-      // Network connectivity test to model server
-      final serverHost = Platform.isAndroid ? '10.0.2.2' : 'localhost';
-      _logStep('NET-CHECK', 'Testing connection to $serverHost:8080...');
-      try {
-        final httpClient = HttpClient();
-        httpClient.connectionTimeout = const Duration(seconds: 5);
-        final req = await httpClient.getUrl(Uri.parse('http://$serverHost:8080/'));
-        final resp = await req.close();
-        await resp.drain();
-        _logStep('NET-CHECK', '$serverHost:8080 reachable — HTTP ${resp.statusCode}');
-        httpClient.close();
-      } catch (netErr) {
-        _logStep('NET-CHECK', '$serverHost:8080 UNREACHABLE — $netErr');
-        debugPrint('[Splash] Model server not reachable — bundled model will be used.');
+      // Local dev server check — only in debug builds to avoid a 5 s timeout
+      // on every production/TestFlight launch where localhost:8080 is never up.
+      if (kDebugMode) {
+        final serverHost = Platform.isAndroid ? '10.0.2.2' : 'localhost';
+        _logStep('NET-CHECK', 'Testing connection to $serverHost:8080...');
+        try {
+          final httpClient = HttpClient();
+          httpClient.connectionTimeout = const Duration(seconds: 5);
+          final req = await httpClient.getUrl(Uri.parse('http://$serverHost:8080/'));
+          final resp = await req.close();
+          await resp.drain();
+          _logStep('NET-CHECK', '$serverHost:8080 reachable — HTTP ${resp.statusCode}');
+          httpClient.close();
+        } catch (netErr) {
+          _logStep('NET-CHECK', '$serverHost:8080 UNREACHABLE — $netErr');
+        }
       }
 
       _logStep('PREFS', 'Loading SharedPreferences...');
@@ -123,6 +127,7 @@ class _OculaSplashScreenState extends State<OculaSplashScreen>
 
       if (alreadyReady) {
         _logStep('MODEL-LOAD', 'Model already on disk — loading into memory...');
+        if (mounted) setState(() => _statusText = 'Loading AI engine...');
         final path = await modelManager.mainModelPath(AITier.free);
         _logStep('MODEL-LOAD', 'mainModelPath = $path');
         if (path != null) {
@@ -142,95 +147,16 @@ class _OculaSplashScreenState extends State<OculaSplashScreen>
         return;
       }
 
-      // ── Step 3: Ensure AI model ready (bundled or download) ──
-      _logStep('ENSURE-MODEL', 'ensureFreeModelReady starting...');
-
-      final freeReady = await modelManager.ensureFreeModelReady(
-        onProgress: (progress, status) {
-          final pct = (progress * 100).toStringAsFixed(0);
-          debugPrint('[Splash] [DOWNLOAD] $pct% — $status');
-          if (mounted) {
-            String statusMessage;
-            if (status.contains('Bundled')) {
-              statusMessage = status;
-            } else if (status.contains('Downloading')) {
-              final estimatedTotal = progress > 0.1
-                  ? (DateTime.now().difference(_startTime!).inSeconds / progress).round()
-                  : null;
-
-              statusMessage = 'Downloading AI engine... $pct%';
-              if (estimatedTotal != null && estimatedTotal > 0) {
-                final remaining = estimatedTotal - DateTime.now().difference(_startTime!).inSeconds;
-                if (remaining > 0) {
-                  final remainingMin = remaining ~/ 60;
-                  final remainingSec = remaining % 60;
-                  if (remainingMin > 0) {
-                    statusMessage += '\n~${remainingMin}m ${remainingSec}s remaining';
-                  } else {
-                    statusMessage += '\n~${remainingSec}s remaining';
-                  }
-                }
-              }
-            } else if (progress < 1.0) {
-              statusMessage = '$status $pct%';
-            } else {
-              statusMessage = status;
-            }
-
-            setState(() {
-              _downloadProgress = progress;
-              _statusText = statusMessage;
-            });
-          }
-        },
-      ).timeout(
-        const Duration(minutes: 5),
-        onTimeout: () {
-          throw Exception('Setup timed out. If downloading, please check your internet connection.');
-        },
-      );
-
-      _logStep('ENSURE-MODEL', 'ensureFreeModelReady returned: $freeReady');
-
-      if (!freeReady) {
-        _logStep('ENSURE-MODEL', 'Model NOT ready — showing retry');
-        setState(() {
-          _errorText = 'Could not prepare the AI engine. '
-              'Please check your internet connection and try again.';
-          _showRetry = true;
-        });
-        timer.cancel();
-        return;
-      }
-
-      // ── Step 4: Load the free model into memory ──
-      _logStep('MODEL-LOAD', 'Loading model into memory...');
-      setState(() {
-        _statusText = 'Loading AI engine into memory...';
-        _downloadProgress = 1.0;
+      // ── Step 3: Start model install in background — do NOT block navigation ──
+      // ODR/PAD delivers the model at install on App Store builds; TestFlight and
+      // direct installs fall back to a backend download.  Either way the home
+      // screen handles progress via its download banner and auto-loads the model
+      // when [freeModelStatusStream] emits true.  If install fails the home
+      // screen shows a retry button.
+      _logStep('ENSURE-MODEL', 'Firing ensureFreeModelReady in background...');
+      modelManager.ensureFreeModelReady().catchError((e) {
+        debugPrint('[Splash] Background model install error: $e');
       });
-
-      final modelPath = await modelManager.mainModelPath(AITier.free);
-      _logStep('MODEL-LOAD', 'mainModelPath = $modelPath');
-
-      if (modelPath != null) {
-        final fileSize = await File(modelPath).length();
-        _logStep('MODEL-LOAD', 'File size: ${(fileSize / (1024 * 1024)).toStringAsFixed(1)} MB');
-      }
-
-      try {
-        await AIManager().switchEngine(AITier.free).timeout(
-          const Duration(minutes: 2),
-          onTimeout: () {
-            throw Exception('AI engine loading timed out after 2 minutes.');
-          },
-        );
-        _logStep('MODEL-LOAD', 'switchEngine(free) succeeded ✓');
-      } catch (loadErr, loadStack) {
-        _logStep('MODEL-LOAD', 'switchEngine FAILED: $loadErr');
-        debugPrint('[Splash] Load stack: $loadStack');
-        rethrow;
-      }
 
       _completeInitialization(prefs, modelManager);
       timer.cancel();

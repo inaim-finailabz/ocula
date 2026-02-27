@@ -9,6 +9,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ENV_NAME="ocula-finetune"
 PYTHON_VERSION="3.11"
+USE_CONDA=false
+VENV_DIR="$SCRIPT_DIR/ocula_env"
 
 echo "╔═══════════════════════════════════════════════╗"
 echo "║   Ocula Fine-Tuning Environment Setup         ║"
@@ -27,18 +29,24 @@ else
     echo "[!] No GPU detected — training will be slow. Consider using a cloud GPU."
 fi
 
-# ── Create conda environment ──
-if ! command -v conda &>/dev/null; then
-    echo "[!] conda not found. Install Miniforge first:"
-    echo "    brew install miniforge   # macOS"
-    echo "    wget https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-Linux-x86_64.sh  # Linux"
-    exit 1
+# ── Create environment (prefer conda, fallback to venv) ──
+if command -v conda &>/dev/null; then
+    USE_CONDA=true
+    echo "[*] Using conda environment: $ENV_NAME (Python $PYTHON_VERSION)"
+    conda create -n "$ENV_NAME" python="$PYTHON_VERSION" -y 2>/dev/null || true
+    eval "$(conda shell.bash hook)"
+    conda activate "$ENV_NAME"
+else
+    echo "[!] conda not found. Falling back to Python venv at: $VENV_DIR"
+    if ! command -v python3 &>/dev/null; then
+        echo "[!] python3 not found. Install Python 3.11+ first."
+        exit 1
+    fi
+    python3 -m venv "$VENV_DIR"
+    # shellcheck disable=SC1091
+    source "$VENV_DIR/bin/activate"
+    python -m pip install --upgrade pip setuptools wheel
 fi
-
-echo "[*] Creating conda environment: $ENV_NAME (Python $PYTHON_VERSION)"
-conda create -n "$ENV_NAME" python="$PYTHON_VERSION" -y 2>/dev/null || true
-eval "$(conda shell.bash hook)"
-conda activate "$ENV_NAME"
 
 # ── Install PyTorch ──
 echo "[*] Installing PyTorch..."
@@ -67,6 +75,12 @@ pip install \
     tensorboard \
     evaluate \
     scikit-learn
+
+# ── Unsloth (CUDA speedups) ──
+if [[ "$PLATFORM" == "cuda" ]]; then
+    echo "[*] Installing Unsloth..."
+    pip install unsloth 2>/dev/null || echo "[WARN] Unsloth install failed; pipeline will fallback automatically."
+fi
 
 # ── Sentence-transformers for MiniLM ──
 echo "[*] Installing sentence-transformers..."
@@ -120,7 +134,7 @@ os.makedirs(base_dir, exist_ok=True)
 
 models = {
     'qwen3-vl-2b': 'Qwen/Qwen3-VL-2B-Instruct',
-    'qwen2.5-1.5b-instruct': 'Qwen/Qwen2.5-1.5B-Instruct',
+    'qwen3-1.7b': 'Qwen/Qwen3-1.7B',
     'qwen2.5-vl-7b-instruct': 'Qwen/Qwen2.5-VL-7B-Instruct',
     'qwen3-embedding-0.6b': 'Qwen/Qwen3-Embedding-0.6B',
 }
@@ -149,7 +163,10 @@ print(f'PyTorch: {torch.__version__}')
 print(f'CUDA available: {torch.cuda.is_available()}')
 if torch.cuda.is_available():
     print(f'CUDA device: {torch.cuda.get_device_name(0)}')
-    print(f'VRAM: {torch.cuda.get_device_properties(0).total_mem / 1024**3:.1f} GB')
+    props = torch.cuda.get_device_properties(0)
+    vram_bytes = getattr(props, 'total_memory', getattr(props, 'total_mem', 0))
+    if vram_bytes:
+        print(f'VRAM: {vram_bytes / 1024**3:.1f} GB')
 if hasattr(torch.backends, 'mps'):
     print(f'MPS available: {torch.backends.mps.is_available()}')
 
@@ -170,6 +187,10 @@ print(f'Sentence-Transformers: {sentence_transformers.__version__}')
 "
 
 echo ""
-echo "[OK] Environment ready. Activate with: conda activate $ENV_NAME"
+if [[ "$USE_CONDA" == true ]]; then
+    echo "[OK] Environment ready. Activate with: conda activate $ENV_NAME"
+else
+    echo "[OK] Environment ready. Activate with: source $VENV_DIR/bin/activate"
+fi
 echo "[OK] Next: prepare your data in data/raw/, then run:"
 echo "     python scripts/01_prepare_data.py"

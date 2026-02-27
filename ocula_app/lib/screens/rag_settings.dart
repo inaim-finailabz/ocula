@@ -49,9 +49,14 @@ class _RagSettingsState extends State<RagSettings> {
         .firstOrNull;
     final registryName = modelInfo?.fileName;
     final actualName = p.basename(path);
-    final expectedSize = (registryName != null && registryName == actualName)
-        ? modelInfo?.sizeBytes
-        : null;
+    // For split GGUF models, model.sizeBytes is total across all parts;
+    // mainModelPath returns part 1, so use per-part expected size.
+    int? expectedSize;
+    if (registryName != null && registryName == actualName && modelInfo != null) {
+      final splitM = RegExp(r'-\d{5}-of-(\d{5})\.gguf$').firstMatch(registryName);
+      final parts = splitM != null ? int.parse(splitM.group(1)!) : 1;
+      expectedSize = modelInfo.sizeBytes ~/ parts;
+    }
 
     // Full GGUF validation with expected size check (catches truncated downloads)
     final valid = await _models.isValidLocalModel(

@@ -66,10 +66,13 @@ class RecorderService {
   Future<RecorderStartResult> start() async {
     if (_isRecording) return RecorderStartResult.ok;
 
-    // ── 1. Explicitly request microphone permission ──
-    // speech_to_text.initialize() also requests permission, but calling
-    // it first lets us show a targeted "open settings" prompt if denied.
-    final micStatus = await Permission.microphone.request();
+    // ── 1. Microphone permission ──
+    // Check status first — calling .request() on iOS when already granted
+    // can still trigger a system dialog on some iOS versions.
+    var micStatus = await Permission.microphone.status;
+    if (!micStatus.isGranted) {
+      micStatus = await Permission.microphone.request();
+    }
     if (micStatus.isPermanentlyDenied) {
       return RecorderStartResult.permissionPermanentlyDenied;
     }

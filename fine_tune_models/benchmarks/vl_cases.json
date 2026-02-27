@@ -1,0 +1,17 @@
+[
+  {
+    "prompt": "Describe what is in this image in one concise paragraph.",
+    "image": "../data/vision_qwen3vl/images/sample_01.jpg",
+    "expected_keywords": ["image", "object", "scene"]
+  },
+  {
+    "prompt": "Extract key text from this image and summarize it.",
+    "image": "../data/vision_qwen3vl/images/sample_02.jpg",
+    "expected_keywords": ["text", "summary"]
+  },
+  {
+    "prompt": "What trend is shown in this chart?",
+    "image": "../data/vision_qwen3vl/images/sample_03.jpg",
+    "expected_keywords": ["trend", "increase", "decrease"]
+  }
+]

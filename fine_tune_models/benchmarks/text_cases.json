@@ -1,0 +1,22 @@
+[
+  {
+    "prompt": "Summarize this in 3 bullets: Ocula is private, on-device, and fast.",
+    "expected_keywords": ["private", "on-device", "fast"]
+  },
+  {
+    "prompt": "Write a short email asking to move tomorrow's meeting to 3 PM.",
+    "expected_keywords": ["meeting", "3 pm", "tomorrow"]
+  },
+  {
+    "prompt": "Explain retrieval-augmented generation for mobile users.",
+    "expected_keywords": ["retrieval", "context", "generation"]
+  },
+  {
+    "prompt": "Translate to Spanish: The report is ready for review.",
+    "expected_keywords": ["informe", "revision"]
+  },
+  {
+    "prompt": "Give one clarifying question before answering: I need help with my file.",
+    "expected_keywords": ["question"]
+  }
+]

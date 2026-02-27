@@ -2,7 +2,7 @@
 
 This folder is now organized around the active Ocula family only:
 
-- `Ocula Lite`  → `Qwen2.5-1.5B-Instruct` (text)
+- `Ocula Lite`  → `Qwen3-1.7B` (text)
 - `Ocula Plus`  → `Qwen3-VL-2B-Instruct` (vision)
 - `Ocula Pro`   → `Qwen2.5-VL-7B-Instruct` (vision reasoning)
 - `Embed`       → `Qwen3-Embedding-0.6B` (RAG embeddings)
@@ -56,3 +56,20 @@ This does:
 Promotion state/history is saved to:
 
 - `logs/mlops/state.json`
+- `logs/mlops/reports/cycle_###.json` (includes benchmark results + recommendation)
+
+## Benchmark Suites
+
+Predefined benchmark cases used automatically by continuous MLOps:
+
+- `benchmarks/text_cases.json`
+- `benchmarks/vl_cases.json`
+
+If VL images are missing, the pipeline falls back to validation-derived VL cases from:
+
+- `data/vision_qwen3vl/qwen3vl_vision_val.jsonl`
+
+Cycle recommendation output:
+
+- `DEPLOY_NEW_FAMILY`
+- `CONTINUE_FINE_TUNING`

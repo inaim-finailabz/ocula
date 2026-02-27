@@ -32,14 +32,14 @@ NC='\033[0m'
 # ── Model mapping (gguf prefix → deployment filename) ──────────
 declare -A MODEL_MAP
 MODEL_MAP[qwen3embed]="Qwen3-Embedding-0.6B"
-MODEL_MAP[ocula_lite]="Ocula-Lite-Qwen2.5-1.5B"
+MODEL_MAP[ocula_lite]="Ocula-Lite-Qwen3-1.7B"
 MODEL_MAP[ocula_plus]="Ocula-Plus-Qwen3-VL-2B"
 MODEL_MAP[ocula_pro]="Ocula-Pro-Qwen2.5-VL-7B"
 
 # ── Deployment filenames (what Ocula app expects) ──────────────
 declare -A DEPLOY_NAMES
 DEPLOY_NAMES[qwen3embed]="Qwen3-Embedding-0.6B-Q8_0.gguf"
-DEPLOY_NAMES[ocula_lite]="Qwen2.5-1.5B-Ocula-Lite-Q4_K_M.gguf"
+DEPLOY_NAMES[ocula_lite]="Qwen3-1.7B-Ocula-Lite-Q4_K_M.gguf"
 DEPLOY_NAMES[ocula_plus]="Qwen3-VL-2B-Ocula-Plus-Q4_K_M.gguf"
 DEPLOY_NAMES[ocula_pro]="Qwen2.5-VL-7B-Ocula-Pro-Q4_K_M.gguf"
 

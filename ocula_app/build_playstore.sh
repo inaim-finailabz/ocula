@@ -71,7 +71,12 @@ restore_models() {
 }
 trap restore_models EXIT
 
-flutter build appbundle --release || echo -e "${CYAN}(debug symbol stripping warning is non-fatal, continuing...)${NC}"
+# Note: "failed to strip debug symbols from native libraries" is a non-fatal
+# Flutter post-processing warning when the NDK llvm-strip path isn't resolved.
+# The AAB and Dart symbols are still correctly produced — we suppress the exit.
+flutter build appbundle --release \
+    --split-debug-info=build/android-symbols \
+    --obfuscate || true
 
 # Step 3: Restore models
 # (handled by trap, but let's be explicit)
@@ -94,3 +99,12 @@ echo -e "  https://play.google.com/console"
 echo ""
 cp "$AAB" ~/Desktop/Ocula-playstore.aab
 echo -e "  Copied to: ${CYAN}~/Desktop/Ocula-playstore.aab${NC}"
+
+# Zip debug symbols for Play Console upload
+SYMBOLS_DIR="$SCRIPT_DIR/build/android-symbols"
+if [[ -d "$SYMBOLS_DIR" ]]; then
+    SYMBOLS_ZIP=~/Desktop/Ocula-symbols.zip
+    (cd "$SYMBOLS_DIR" && zip -r "$SYMBOLS_ZIP" . -x "*.DS_Store")
+    echo -e "  Symbols: ${CYAN}~/Desktop/Ocula-symbols.zip${NC}"
+    echo -e "  Upload symbols via Play Console → Release → Edit release → Native debug symbols"
+fi

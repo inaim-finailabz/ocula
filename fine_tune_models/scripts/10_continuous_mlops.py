@@ -21,7 +21,6 @@ import argparse
 import json
 import os
 import re
-import shutil
 import subprocess
 import sys
 import time
@@ -35,6 +34,8 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 ROOT_DIR = SCRIPT_DIR.parent
 LOGS_DIR = ROOT_DIR / "logs" / "mlops"
 TMP_DIR = LOGS_DIR / "tmp"
+REPORTS_DIR = LOGS_DIR / "reports"
+BENCH_DIR = ROOT_DIR / "benchmarks"
 STATE_PATH = LOGS_DIR / "state.json"
 LLAMA_CLI = ROOT_DIR.parent / "llama.cpp" / "build" / "bin" / "llama-cli"
 GGUF_DIR = ROOT_DIR / "models" / "gguf"
@@ -43,13 +44,25 @@ TEXT_CONFIG = ROOT_DIR / "configs" / "qwen25_1_5b_text.yaml"
 VL_CONFIG = ROOT_DIR / "configs" / "qwen3vl_vision.yaml"
 
 
-DEFAULT_PROMPTS = [
-    "Summarize this note in 3 bullets: Ocula is private, on-device, and fast.",
-    "Draft a concise professional email asking for a meeting reschedule.",
-    "Explain RAG in simple terms for a mobile app user.",
-    "I forgot my context. Ask me one clarifying question before answering.",
-    "Translate this to Spanish: The meeting starts at 9 AM tomorrow.",
+DEFAULT_TEXT_CASES = [
+    {"prompt": "Summarize this note in 3 bullets: Ocula is private, on-device, and fast.",
+     "expected_keywords": ["private", "on-device", "fast"]},
+    {"prompt": "Draft a concise professional email asking for a meeting reschedule.",
+     "expected_keywords": ["meeting", "reschedule"]},
+    {"prompt": "Explain RAG in simple terms for a mobile app user.",
+     "expected_keywords": ["retrieval", "context"]},
+    {"prompt": "I forgot my context. Ask me one clarifying question before answering.",
+     "expected_keywords": ["question"]},
+    {"prompt": "Translate this to Spanish: The meeting starts at 9 AM tomorrow.",
+     "expected_keywords": ["reunion", "manana", "9"]},
 ]
+
+STOPWORDS = {
+    "the", "and", "that", "this", "with", "from", "have", "will", "your", "about",
+    "there", "their", "they", "what", "when", "where", "which", "while", "into",
+    "were", "been", "being", "also", "then", "than", "them", "some", "more", "most",
+    "very", "just", "such", "only", "over", "under", "between", "through", "because",
+}
 
 
 def run(cmd: List[str], cwd: Path = SCRIPT_DIR) -> None:
@@ -116,58 +129,148 @@ def repetition_ratio(text: str) -> float:
     return 1.0 - (unique / len(words))
 
 
-def benchmark_model(gguf_path: Path, ctx: int = 2048, n_predict: int = 96) -> Dict[str, Any]:
+def normalize(text: str) -> str:
+    return re.sub(r"[^a-z0-9 ]+", " ", text.lower())
+
+
+def extract_keywords(text: str, k: int = 5) -> List[str]:
+    tokens = normalize(text).split()
+    out: List[str] = []
+    for t in tokens:
+        if len(t) < 4 or t in STOPWORDS or t.isdigit():
+            continue
+        if t not in out:
+            out.append(t)
+        if len(out) >= k:
+            break
+    return out
+
+
+def load_text_cases() -> List[Dict[str, Any]]:
+    path = BENCH_DIR / "text_cases.json"
+    if path.exists():
+        with open(path) as f:
+            data = json.load(f)
+            if isinstance(data, list) and data:
+                return data
+    return DEFAULT_TEXT_CASES
+
+
+def load_vl_cases(max_cases: int = 6) -> List[Dict[str, Any]]:
+    # Prefer explicit benchmark file if user created one.
+    file_path = BENCH_DIR / "vl_cases.json"
+    if file_path.exists():
+        with open(file_path) as f:
+            data = json.load(f)
+            if isinstance(data, list) and data:
+                return data[:max_cases]
+
+    # Fallback: sample from validation set already used for fine-tuning.
+    val_path = ROOT_DIR / "data" / "vision_qwen3vl" / "qwen3vl_vision_val.jsonl"
+    if not val_path.exists():
+        return []
+
+    cases: List[Dict[str, Any]] = []
+    with open(val_path) as f:
+        for line in f:
+            if len(cases) >= max_cases:
+                break
+            row = json.loads(line)
+            messages = row.get("messages", [])
+            images = row.get("images", [])
+            if not messages:
+                continue
+            user_text = ""
+            assistant_text = ""
+            for m in messages:
+                if m.get("role") == "user" and isinstance(m.get("content"), str):
+                    user_text = m["content"]
+                if m.get("role") == "assistant" and isinstance(m.get("content"), str):
+                    assistant_text = m["content"]
+            if not user_text:
+                continue
+            exp = extract_keywords(assistant_text)
+            cases.append({
+                "prompt": user_text,
+                "image": images[0] if images else None,
+                "expected_keywords": exp,
+            })
+    return cases
+
+
+def score_keywords(output: str, expected_keywords: List[str]) -> float:
+    if not expected_keywords:
+        return 0.5
+    norm = normalize(output)
+    hits = 0
+    for kw in expected_keywords:
+        if normalize(kw).strip() and normalize(kw).strip() in norm:
+            hits += 1
+    return hits / len(expected_keywords)
+
+
+def run_case(gguf_path: Path, case: Dict[str, Any], ctx: int, n_predict: int) -> Dict[str, Any]:
+    prompt = case.get("prompt", "").strip()
+    expected = case.get("expected_keywords", []) or []
+    image = case.get("image")
+    cmd = [
+        str(LLAMA_CLI),
+        "--model", str(gguf_path),
+        "--prompt", f"<|im_start|>user\n{prompt}<|im_end|>\n<|im_start|>assistant\n",
+        "--ctx-size", str(ctx),
+        "--n-predict", str(n_predict),
+        "--temp", "0.2",
+        "--threads", str(min(os.cpu_count() or 4, 8)),
+        "--no-display-prompt",
+    ]
+    # If image path exists, pass it for multimodal runs.
+    if image and Path(image).exists():
+        cmd.extend(["--image", str(image)])
+
+    proc = run_capture(cmd, timeout=300)
+    out = proc.stdout.strip() if proc.returncode == 0 else ""
+    tps = parse_tps(proc.stderr + "\n" + proc.stdout) or 0.0
+    rep = repetition_ratio(out)
+    kw = score_keywords(out, expected)
+    len_ok = 1.0 if len(out.split()) >= 8 else 0.0
+    quality = max(0.0, min(1.0, 0.55 * kw + 0.30 * len_ok + 0.15 * (1.0 - rep)))
+    return {
+        "prompt": prompt,
+        "image": image,
+        "expected_keywords": expected,
+        "output_preview": out[:240],
+        "returncode": proc.returncode,
+        "tokens_per_second": round(tps, 4),
+        "keyword_score": round(kw, 4),
+        "quality": round(quality, 4),
+        "word_count": len(out.split()),
+    }
+
+
+def benchmark_model(gguf_path: Path, stage: str, ctx: int = 2048, n_predict: int = 96) -> Dict[str, Any]:
     if not LLAMA_CLI.exists():
         raise RuntimeError(f"llama-cli not found at {LLAMA_CLI}")
     if not gguf_path.exists():
         raise RuntimeError(f"GGUF missing: {gguf_path}")
 
-    success = 0
-    tps_vals: List[float] = []
-    quality_vals: List[float] = []
+    cases = load_text_cases() if stage == "text" else load_vl_cases()
+    if not cases:
+        raise RuntimeError(f"No benchmark cases found for stage={stage}")
 
-    for prompt in DEFAULT_PROMPTS:
-        chat_prompt = (
-            f"<|im_start|>user\n{prompt}<|im_end|>\n"
-            f"<|im_start|>assistant\n"
-        )
-        cmd = [
-            str(LLAMA_CLI),
-            "--model", str(gguf_path),
-            "--prompt", chat_prompt,
-            "--ctx-size", str(ctx),
-            "--n-predict", str(n_predict),
-            "--temp", "0.2",
-            "--threads", str(min(os.cpu_count() or 4, 8)),
-            "--no-display-prompt",
-        ]
-        proc = run_capture(cmd, timeout=240)
-        if proc.returncode != 0:
-            continue
-
-        text = proc.stdout.strip()
-        if len(text.split()) >= 6:
-            success += 1
-
-        tps = parse_tps(proc.stderr + "\n" + proc.stdout)
-        if tps:
-            tps_vals.append(tps)
-
-        rep = repetition_ratio(text)
-        # quality heuristic: longer coherent output and low repetition
-        q = max(0.0, min(1.0, (len(text.split()) / 80.0))) * (1.0 - rep)
-        quality_vals.append(q)
-
-    n = len(DEFAULT_PROMPTS)
-    success_rate = success / n if n else 0.0
-    avg_tps = sum(tps_vals) / len(tps_vals) if tps_vals else 0.0
-    avg_quality = sum(quality_vals) / len(quality_vals) if quality_vals else 0.0
+    results = [run_case(gguf_path, c, ctx=ctx, n_predict=n_predict) for c in cases]
+    ok = [r for r in results if r["returncode"] == 0]
+    success_rate = (len(ok) / len(results)) if results else 0.0
+    avg_tps = (sum(r["tokens_per_second"] for r in ok) / len(ok)) if ok else 0.0
+    avg_quality = (sum(r["quality"] for r in ok) / len(ok)) if ok else 0.0
+    avg_keyword_score = (sum(r["keyword_score"] for r in ok) / len(ok)) if ok else 0.0
 
     return {
         "success_rate": round(success_rate, 4),
         "avg_tps": round(avg_tps, 4),
         "avg_quality": round(avg_quality, 4),
-        "n_prompts": n,
+        "avg_keyword_score": round(avg_keyword_score, 4),
+        "n_cases": len(results),
+        "cases": results,
     }
 
 
@@ -180,6 +283,8 @@ def should_promote(candidate: Dict[str, Any], champion: Optional[Dict[str, Any]]
     if champion["avg_tps"] > 0 and candidate["avg_tps"] < champion["avg_tps"] * 0.85:
         return False
     if candidate["avg_quality"] + 0.02 < champion["avg_quality"]:
+        return False
+    if candidate.get("avg_keyword_score", 0.0) + 0.01 < champion.get("avg_keyword_score", 0.0):
         return False
     return True
 
@@ -303,11 +408,19 @@ def cycle_stage(
 
     candidate_hf = out["merged_hf"]
     candidate_gguf = out["candidate_gguf"]
-    cand_metrics = benchmark_model(Path(candidate_gguf), ctx=4096 if stage == "vl" else 2048)
+    cand_metrics = benchmark_model(
+        Path(candidate_gguf),
+        stage=stage,
+        ctx=4096 if stage == "vl" else 2048,
+    )
 
     champ_metrics = None
     if node.get("champion_gguf"):
-        champ_metrics = benchmark_model(Path(node["champion_gguf"]), ctx=4096 if stage == "vl" else 2048)
+        champ_metrics = benchmark_model(
+            Path(node["champion_gguf"]),
+            stage=stage,
+            ctx=4096 if stage == "vl" else 2048,
+        )
 
     promote = should_promote(cand_metrics, champ_metrics)
     record = {
@@ -333,6 +446,43 @@ def cycle_stage(
         print(f"[KEEP] {stage} cycle {cycle} candidate rejected; champion retained.")
 
 
+def cycle_recommendation(state: Dict[str, Any], cycle: int) -> Dict[str, Any]:
+    def latest(stage: str) -> Optional[Dict[str, Any]]:
+        hist = state.get(stage, {}).get("history", [])
+        for item in reversed(hist):
+            if item.get("cycle") == cycle:
+                return item
+        return None
+
+    text_latest = latest("text")
+    vl_latest = latest("vl")
+    if not text_latest and not vl_latest:
+        return {"decision": "CONTINUE_FINE_TUNING", "reason": "No cycle records found.", "cycle": cycle}
+
+    promoted_all = all(
+        x and x.get("promoted")
+        for x in (text_latest, vl_latest)
+        if x is not None
+    )
+    quality_ok = True
+    for x in (text_latest, vl_latest):
+        if not x:
+            continue
+        m = x.get("candidate_metrics", {})
+        if m.get("success_rate", 0) < 0.8 or m.get("avg_quality", 0) < 0.45:
+            quality_ok = False
+            break
+
+    if promoted_all and quality_ok:
+        decision = "DEPLOY_NEW_FAMILY"
+        reason = "All active stages promoted and benchmark gates passed."
+    else:
+        decision = "CONTINUE_FINE_TUNING"
+        reason = "One or more stages failed promotion or benchmark quality gates."
+
+    return {"decision": decision, "reason": reason, "cycle": cycle}
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Continuous Ocula MLOps with benchmark gates")
     parser.add_argument("--cycles", type=int, default=2, help="Number of iterative cycles")
@@ -345,6 +495,7 @@ def main() -> None:
 
     LOGS_DIR.mkdir(parents=True, exist_ok=True)
     TMP_DIR.mkdir(parents=True, exist_ok=True)
+    REPORTS_DIR.mkdir(parents=True, exist_ok=True)
 
     state = load_state()
 
@@ -362,6 +513,22 @@ def main() -> None:
                 max_samples=args.max_samples,
             )
             save_state(state)
+
+        rec = cycle_recommendation(state, cycle)
+        cycle_report = {
+            "cycle": cycle,
+            "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "recommendation": rec,
+            "text_last": next((x for x in reversed(state["text"]["history"]) if x["cycle"] == cycle), None),
+            "vl_last": next((x for x in reversed(state["vl"]["history"]) if x["cycle"] == cycle), None),
+        }
+        report_path = REPORTS_DIR / f"cycle_{cycle:03d}.json"
+        with open(report_path, "w") as f:
+            json.dump(cycle_report, f, indent=2)
+
+        print(f"\n[RECOMMENDATION] Cycle {cycle}: {rec['decision']}")
+        print(f"[REASON] {rec['reason']}")
+        print(f"[REPORT] {report_path}")
 
     save_state(state)
     print(f"\n[OK] Completed {args.cycles} cycle(s). State: {STATE_PATH}")
