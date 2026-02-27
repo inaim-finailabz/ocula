@@ -11,17 +11,11 @@ Usage:
 """
 
 import argparse
+import importlib.util
 import json
 import os
 import sys
 from pathlib import Path
-
-# Import Unsloth as early as possible (before transformers/peft) when available.
-# This avoids partial patching warnings and inconsistent fast-forward hooks.
-try:
-    import unsloth  # noqa: F401
-except Exception:
-    pass
 
 import yaml
 
@@ -66,11 +60,10 @@ def detect_backend():
 
 def detect_acceleration_stack():
     stack = {"unsloth": False, "flash_attn": False}
-    try:
-        import unsloth  # noqa: F401
-        stack["unsloth"] = True
-    except Exception:
-        pass
+    # IMPORTANT: do not import unsloth here.
+    # Importing unsloth monkey-patches Trainer globally, which can break
+    # Qwen3 HF training paths (e.g. missing apply_qkv on some versions).
+    stack["unsloth"] = importlib.util.find_spec("unsloth") is not None
     try:
         import flash_attn  # noqa: F401
         stack["flash_attn"] = True
