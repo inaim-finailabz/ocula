@@ -16,6 +16,13 @@ import os
 import sys
 from pathlib import Path
 
+# Import Unsloth as early as possible (before transformers/peft) when available.
+# This avoids partial patching warnings and inconsistent fast-forward hooks.
+try:
+    import unsloth  # noqa: F401
+except Exception:
+    pass
+
 import yaml
 
 
@@ -71,6 +78,39 @@ def detect_acceleration_stack():
         pass
     print(f"[*] Acceleration: unsloth={stack['unsloth']} flash_attn={stack['flash_attn']}")
     return stack
+
+
+def should_use_unsloth(config: dict, accel: dict) -> bool:
+    """Decide whether to use Unsloth for this run.
+
+    training.use_unsloth:
+      - true  => force Unsloth path
+      - false => force Transformers Trainer path
+      - auto  => choose safe default by model family
+    """
+    if not accel.get("unsloth", False):
+        return False
+
+    train_cfg = config.get("training", {})
+    pref = str(train_cfg.get("use_unsloth", "auto")).strip().lower()
+    if pref in ("true", "1", "yes", "on"):
+        return True
+    if pref in ("false", "0", "no", "off"):
+        return False
+
+    # Auto mode: Qwen3 text currently has known Unsloth compatibility breakages
+    # in some version combos (missing Qwen3Attention.apply_qkv).
+    model_name = str(config.get("model", {}).get("name", "")).lower()
+    model_short = str(config.get("model", {}).get("short_name", "")).lower()
+    model_path = str(config.get("model", {}).get("local_path", "")).lower()
+    if "qwen3" in model_name or "qwen3" in model_short or "qwen3" in model_path:
+        print(
+            "[*] Unsloth auto-mode: disabled for Qwen3 model "
+            "(known apply_qkv compatibility issue); using Transformers Trainer."
+        )
+        return False
+
+    return True
 
 
 def find_latest_checkpoint(output_dir: str) -> str | None:
@@ -250,11 +290,17 @@ def train_cuda(config, config_dir: Path, resume: str | None = None):
     lora_cfg = config["lora"]
     accel = detect_acceleration_stack()
 
-    if accel["unsloth"]:
+    if should_use_unsloth(config, accel):
         try:
             return train_cuda_unsloth(config, config_dir, resume=resume)
         except Exception as e:
-            print(f"[WARN] Unsloth path failed, falling back to Transformers Trainer: {e}")
+            if "apply_qkv" in str(e):
+                print(
+                    "[WARN] Unsloth Qwen3 patch failed (missing apply_qkv). "
+                    "Falling back to Transformers Trainer automatically."
+                )
+            else:
+                print(f"[WARN] Unsloth path failed, falling back to Transformers Trainer: {e}")
 
     from transformers import (
         AutoModelForCausalLM,

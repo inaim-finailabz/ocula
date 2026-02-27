@@ -9,6 +9,9 @@ model:
 
 training:
   method: "qlora"
+  # Qwen3 text currently runs more reliably on the standard HF Trainer path.
+  # Set true to force Unsloth, false to disable, auto for script heuristics.
+  use_unsloth: false
   epochs: 3
   batch_size: 2
   gradient_accumulation: 16

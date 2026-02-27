@@ -1,5 +1,6 @@
 import 'dart:math';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 /// The Ocula assistant orb — fully dynamic, procedural animation.
 /// No static image. The orb is a living, breathing sphere with
@@ -24,10 +25,16 @@ class _OculaOrbState extends State<OculaOrb> with TickerProviderStateMixin {
   late final AnimationController _waveController;
   late final AnimationController _pulseController;
   late final AnimationController _glowController;
+  late final FocusNode _focusNode;
+
+  // Default to a slight side angle so the orb does not look perfectly frontal.
+  double _yaw = 0.55;
+  double _pitch = -0.15;
 
   @override
   void initState() {
     super.initState();
+    _focusNode = FocusNode(debugLabel: 'ocula_orb_focus');
 
     _waveController = AnimationController(
       vsync: this,
@@ -122,7 +129,42 @@ class _OculaOrbState extends State<OculaOrb> with TickerProviderStateMixin {
     _waveController.dispose();
     _pulseController.dispose();
     _glowController.dispose();
+    _focusNode.dispose();
     super.dispose();
+  }
+
+  void _updateOrbit({
+    double yawDelta = 0,
+    double pitchDelta = 0,
+  }) {
+    setState(() {
+      _yaw += yawDelta;
+      // Keep yaw continuous while avoiding runaway values.
+      if (_yaw > pi) _yaw -= 2 * pi;
+      if (_yaw < -pi) _yaw += 2 * pi;
+
+      _pitch = (_pitch + pitchDelta).clamp(-pi / 3, pi / 3);
+    });
+  }
+
+  KeyEventResult _onKeyEvent(FocusNode node, KeyEvent event) {
+    if (event is! KeyDownEvent) return KeyEventResult.ignored;
+    switch (event.logicalKey) {
+      case LogicalKeyboardKey.arrowLeft:
+        _updateOrbit(yawDelta: -0.10);
+        return KeyEventResult.handled;
+      case LogicalKeyboardKey.arrowRight:
+        _updateOrbit(yawDelta: 0.10);
+        return KeyEventResult.handled;
+      case LogicalKeyboardKey.arrowUp:
+        _updateOrbit(pitchDelta: -0.08);
+        return KeyEventResult.handled;
+      case LogicalKeyboardKey.arrowDown:
+        _updateOrbit(pitchDelta: 0.08);
+        return KeyEventResult.handled;
+      default:
+        return KeyEventResult.ignored;
+    }
   }
 
   @override
@@ -135,78 +177,95 @@ class _OculaOrbState extends State<OculaOrb> with TickerProviderStateMixin {
         final primary = _primaryColor();
         final secondary = _secondaryColor();
 
-        return SizedBox(
-          width: widget.size * 1.5,
-          height: widget.size * 1.5,
-          child: Stack(
-            alignment: Alignment.center,
-            children: [
-              // Outer glow
-              Container(
-                width: widget.size * 1.35,
-                height: widget.size * 1.35,
-                decoration: BoxDecoration(
-                  shape: BoxShape.circle,
-                  boxShadow: [
-                    BoxShadow(
-                      color: primary.withAlpha((glowIntensity * 100).toInt()),
-                      blurRadius: 50 + (_glowController.value * 30),
-                      spreadRadius: 8 + (_glowController.value * 15),
+        return Focus(
+          focusNode: _focusNode,
+          autofocus: true,
+          onKeyEvent: _onKeyEvent,
+          child: GestureDetector(
+            onPanStart: (_) => _focusNode.requestFocus(),
+            onPanUpdate: (details) {
+              // Mouse/touch drag orbit control (full 360 yaw).
+              _updateOrbit(
+                yawDelta: details.delta.dx * 0.01,
+                pitchDelta: details.delta.dy * 0.008,
+              );
+            },
+            child: SizedBox(
+              width: widget.size * 1.5,
+              height: widget.size * 1.5,
+              child: Stack(
+                alignment: Alignment.center,
+                children: [
+                  // Outer glow
+                  Container(
+                    width: widget.size * 1.35,
+                    height: widget.size * 1.35,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      boxShadow: [
+                        BoxShadow(
+                          color: primary.withAlpha((glowIntensity * 100).toInt()),
+                          blurRadius: 50 + (_glowController.value * 30),
+                          spreadRadius: 8 + (_glowController.value * 15),
+                        ),
+                        BoxShadow(
+                          color: secondary.withAlpha((glowIntensity * 50).toInt()),
+                          blurRadius: 30 + (_glowController.value * 20),
+                          spreadRadius: 4,
+                        ),
+                      ],
                     ),
-                    BoxShadow(
-                      color: secondary.withAlpha((glowIntensity * 50).toInt()),
-                      blurRadius: 30 + (_glowController.value * 20),
-                      spreadRadius: 4,
-                    ),
-                  ],
-                ),
-              ),
-
-              // The dynamic orb sphere
-              Transform.scale(
-                scale: pulseScale,
-                child: CustomPaint(
-                  size: Size(widget.size, widget.size),
-                  painter: _OrbPainter(
-                    wavePhase: _waveController.value * 2 * pi,
-                    waveIntensity: _waveIntensity(),
-                    primaryColor: primary,
-                    secondaryColor: secondary,
-                    glowValue: _glowController.value,
                   ),
-                ),
-              ),
 
-              // State label
-              Positioned(
-                bottom: 4,
-                child: AnimatedSwitcher(
-                  duration: const Duration(milliseconds: 300),
-                  child: widget.state != OrbState.idle
-                      ? Container(
-                          key: ValueKey(widget.state),
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 12,
-                            vertical: 4,
-                          ),
-                          decoration: BoxDecoration(
-                            color: primary.withAlpha(200),
-                            borderRadius: BorderRadius.circular(12),
-                          ),
-                          child: Text(
-                            _stateLabel(),
-                            style: const TextStyle(
-                              color: Colors.white,
-                              fontSize: 10,
-                              fontWeight: FontWeight.w600,
-                              letterSpacing: 1.5,
-                            ),
-                          ),
-                        )
-                      : const SizedBox.shrink(),
-                ),
+                  // The dynamic orb sphere
+                  Transform.scale(
+                    scale: pulseScale,
+                    child: CustomPaint(
+                      size: Size(widget.size, widget.size),
+                      painter: _OrbPainter(
+                        wavePhase: _waveController.value * 2 * pi,
+                        waveIntensity: _waveIntensity(),
+                        primaryColor: primary,
+                        secondaryColor: secondary,
+                        glowValue: _glowController.value,
+                        yaw: _yaw,
+                        pitch: _pitch,
+                      ),
+                    ),
+                  ),
+
+                  // State label
+                  Positioned(
+                    bottom: 4,
+                    child: AnimatedSwitcher(
+                      duration: const Duration(milliseconds: 300),
+                      child: widget.state != OrbState.idle
+                          ? Container(
+                              key: ValueKey(widget.state),
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 12,
+                                vertical: 4,
+                              ),
+                              decoration: BoxDecoration(
+                                color: primary.withAlpha(200),
+                                borderRadius: BorderRadius.circular(12),
+                              ),
+                              child: Text(
+                                _stateLabel(),
+                                style: const TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 10,
+                                  fontWeight: FontWeight.w600,
+                                  letterSpacing: 1.5,
+                                ),
+                              ),
+                            )
+                          : const SizedBox.shrink(),
+                    ),
+                  ),
+                ],
               ),
-            ],
+            ),
           ),
         );
       },
@@ -236,6 +295,8 @@ class _OrbPainter extends CustomPainter {
   final Color primaryColor;
   final Color secondaryColor;
   final double glowValue;
+  final double yaw;
+  final double pitch;
 
   _OrbPainter({
     required this.wavePhase,
@@ -243,17 +304,21 @@ class _OrbPainter extends CustomPainter {
     required this.primaryColor,
     required this.secondaryColor,
     required this.glowValue,
+    required this.yaw,
+    required this.pitch,
   });
 
   @override
   void paint(Canvas canvas, Size size) {
     final center = Offset(size.width / 2, size.height / 2);
     final radius = size.width / 2;
+    final lightX = (-0.30 + sin(yaw) * 0.35).clamp(-0.65, 0.65);
+    final lightY = (-0.30 - sin(pitch) * 0.35).clamp(-0.65, 0.65);
 
     // ── Background sphere gradient ──
     final bgPaint = Paint()
       ..shader = RadialGradient(
-        center: const Alignment(-0.3, -0.3),
+        center: Alignment(lightX, lightY),
         radius: 1.0,
         colors: [
           primaryColor.withAlpha(220),
@@ -283,8 +348,19 @@ class _OrbPainter extends CustomPainter {
         final displacement = wave1 + wave2 + wave3;
 
         final r = ringRadius + displacement;
-        final x = center.dx + r * cos(angle);
-        final y = center.dy + r * sin(angle);
+        final x0 = r * cos(angle);
+        final y0 = r * sin(angle);
+
+        // Pseudo-3D orbit projection: rotate around Y (yaw) then X (pitch),
+        // then apply a light perspective scale using Z-depth.
+        final x1 = x0 * cos(yaw);
+        final z1 = -x0 * sin(yaw);
+        final y1 = y0 * cos(pitch) - z1 * sin(pitch);
+        final z2 = y0 * sin(pitch) + z1 * cos(pitch);
+        final perspective = 1.0 + (z2 / (radius * 3.5));
+
+        final x = center.dx + x1 * perspective;
+        final y = center.dy + y1 * perspective;
 
         if (j == 0) {
           path.moveTo(x, y);
