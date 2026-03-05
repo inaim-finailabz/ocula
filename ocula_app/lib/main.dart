@@ -26,10 +26,14 @@ import 'widgets/ocula_orb.dart';
 import 'widgets/help_tour.dart';
 import 'services/env_config.dart';
 import 'services/notification_service.dart';
+import 'services/tray_service.dart';
 
-void main() {
+void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   debugPrint('[Ocula] ENV=${EnvConfig.env} SERVER=${EnvConfig.modelServerUrl}');
+  if (Platform.isMacOS || Platform.isWindows) {
+    await TrayService.instance.init();
+  }
   runApp(const OculaApp());
 }
 
@@ -199,6 +203,10 @@ class _AssistantScreenState extends State<AssistantScreen>
       if (ok) {
         setState(() => _freeModelFailed = false);
         _ensureLiteActivatedIfReady();
+        // Plus/Pro download is strictly on-demand from Settings.
+        // Auto-downloading here causes iOS to terminate the app when it
+        // goes to background mid-download (HttpClient has no background
+        // download privileges on iOS).
       } else {
         setState(() => _freeModelFailed = true);
       }
@@ -305,15 +313,17 @@ class _AssistantScreenState extends State<AssistantScreen>
     }
 
     // ── Normal download progress ──
-    // Show the main model being downloaded (skip vision projectors & embed for label)
-    final primary =
-        _activeDownloads.entries.where((e) {
-          final m = OculaModelManager.models
-              .where((m) => m.fileName == e.key)
-              .firstOrNull;
-          return m != null && !m.isVisionProjector && !m.isEmbeddingModel;
-        }).firstOrNull ??
-        _activeDownloads.entries.firstOrNull;
+    // Show only the free-tier main model in the chat banner.
+    // Plus/Pro progress is shown in Settings, not here.
+    final primary = _activeDownloads.entries.where((e) {
+      final m = OculaModelManager.models
+          .where((m) => m.fileName == e.key)
+          .firstOrNull;
+      return m != null &&
+          m.tier == AITier.free &&
+          !m.isVisionProjector &&
+          !m.isEmbeddingModel;
+    }).firstOrNull;
 
     if (primary == null) return const SizedBox.shrink();
 
@@ -1166,18 +1176,27 @@ class _AssistantScreenState extends State<AssistantScreen>
                   ),
 
                   // Show failure banner always (needs user action).
-                  // Show download progress only if no model is active yet
-                  // (first-time install). Once a model is running, progress
-                  // stays in Settings — not here — to avoid confusion.
+                  // Show download progress only for free-tier install and only
+                  // while no model is active (first-time install). Plus/Pro
+                  // progress stays in Settings — not here — to avoid confusion.
                   if (_freeModelFailed ||
-                      (_activeDownloads.isNotEmpty && _ai.activeTier == null))
+                      (_activeDownloads.keys.any((k) =>
+                              OculaModelManager.models.any(
+                                (m) => m.fileName == k && m.tier == AITier.free,
+                              )) &&
+                          _ai.activeTier == null))
                     _buildDownloadBanner(colors),
 
                   // Chat messages
                   Expanded(
-                    key: _chatListKey,
-                    child: hasMessages
-                        ? ListView.builder(
+                    child: Container(
+                      // Key used by HelpTour to find the correct bounds of the
+                      // chat area. Must be on a widget that always renders with
+                      // the correct dimensions (Container fills Expanded space
+                      // even when the ListView is absent).
+                      key: _chatListKey,
+                      child: hasMessages
+                          ? ListView.builder(
                             controller: _scrollController,
                             padding: EdgeInsets.only(
                               left: 16,
@@ -1209,6 +1228,7 @@ class _AssistantScreenState extends State<AssistantScreen>
                             },
                           )
                         : const SizedBox.shrink(),
+                    ),
                   ),
 
                   // ── Attached image preview ──

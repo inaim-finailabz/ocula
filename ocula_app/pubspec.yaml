@@ -1,7 +1,7 @@
 name: ocula_app
 description: "Multi-agent on-device AI app with vision, reasoning, and voice."
 publish_to: 'none'
-version: 1.0.3+42
+version: 1.1.0+50
 
 environment:
   sdk: '>=3.10.0 <4.0.0'
@@ -54,6 +54,10 @@ dependencies:
   workmanager: ^0.9.0+3                 # Background task scheduling
   timezone: ^0.9.4                      # Timezone-aware notification scheduling
   flutter_native_splash: ^2.4.7
+
+  # Desktop — menu bar (macOS) / system tray (Windows)
+  tray_manager: ^0.2.3
+  window_manager: ^0.4.3
 
 dev_dependencies:
   flutter_test:
