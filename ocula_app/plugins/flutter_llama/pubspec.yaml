@@ -56,6 +56,9 @@ flutter:
         pluginClass: FlutterLlamaPlugin
       macos:
         pluginClass: FlutterLlamaPlugin
+      windows:
+        pluginClass: FlutterLlamaPlugin
+        fileName: flutter_llama_plugin_c_api.h
 
   # Assets for multimodal models (commented out - will be downloaded via Hugging Face)
   # assets:
