@@ -21,9 +21,9 @@
 		97C146FC1CF9000F007C117D /* Main.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = 97C146FA1CF9000F007C117D /* Main.storyboard */; };
 		97C146FE1CF9000F007C117D /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 97C146FD1CF9000F007C117D /* Assets.xcassets */; };
 		97C147011CF9000F007C117D /* LaunchScreen.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = 97C146FF1CF9000F007C117D /* LaunchScreen.storyboard */; };
-		E5F6A7B8C9D0E1F2A3B4C501 /* qwen2.5-1.5b-instruct-q4_k_m-00001-of-00003.gguf in Resources */ = {isa = PBXBuildFile; fileRef = D4E5F6A7B8C9D0E1F2A3B401 /* qwen2.5-1.5b-instruct-q4_k_m-00001-of-00003.gguf */; settings = {ASSET_TAGS = ("ocula-lite-p1"); }; };
-		E5F6A7B8C9D0E1F2A3B4C502 /* qwen2.5-1.5b-instruct-q4_k_m-00002-of-00003.gguf in Resources */ = {isa = PBXBuildFile; fileRef = D4E5F6A7B8C9D0E1F2A3B402 /* qwen2.5-1.5b-instruct-q4_k_m-00002-of-00003.gguf */; settings = {ASSET_TAGS = ("ocula-lite-p2"); }; };
-		E5F6A7B8C9D0E1F2A3B4C503 /* qwen2.5-1.5b-instruct-q4_k_m-00003-of-00003.gguf in Resources */ = {isa = PBXBuildFile; fileRef = D4E5F6A7B8C9D0E1F2A3B403 /* qwen2.5-1.5b-instruct-q4_k_m-00003-of-00003.gguf */; settings = {ASSET_TAGS = ("ocula-lite-p3"); }; };
+		E5F6A7B8C9D0E1F2A3B4C501 /* qwen3-1.7b-q4_k_m-00001-of-00003.gguf in Resources */ = {isa = PBXBuildFile; fileRef = D4E5F6A7B8C9D0E1F2A3B401 /* qwen3-1.7b-q4_k_m-00001-of-00003.gguf */; settings = {ASSET_TAGS = ("ocula-lite-p1"); }; };
+		E5F6A7B8C9D0E1F2A3B4C502 /* qwen3-1.7b-q4_k_m-00002-of-00003.gguf in Resources */ = {isa = PBXBuildFile; fileRef = D4E5F6A7B8C9D0E1F2A3B402 /* qwen3-1.7b-q4_k_m-00002-of-00003.gguf */; settings = {ASSET_TAGS = ("ocula-lite-p2"); }; };
+		E5F6A7B8C9D0E1F2A3B4C503 /* qwen3-1.7b-q4_k_m-00003-of-00003.gguf in Resources */ = {isa = PBXBuildFile; fileRef = D4E5F6A7B8C9D0E1F2A3B403 /* qwen3-1.7b-q4_k_m-00003-of-00003.gguf */; settings = {ASSET_TAGS = ("ocula-lite-p3"); }; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -101,9 +101,9 @@
 		C1D6F1F80FB20BC3475B1C32 /* Pods-Runner.profile.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-Runner.profile.xcconfig"; path = "Target Support Files/Pods-Runner/Pods-Runner.profile.xcconfig"; sourceTree = "<group>"; };
 		CC9EB168655226FA15439C97 /* ShareViewController.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ShareViewController.swift; sourceTree = "<group>"; };
 		E05C94B400728295B794BB9C /* Pods_Runner.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = Pods_Runner.framework; sourceTree = BUILT_PRODUCTS_DIR; };
-		D4E5F6A7B8C9D0E1F2A3B401 /* qwen2.5-1.5b-instruct-q4_k_m-00001-of-00003.gguf */ = {isa = PBXFileReference; lastKnownFileType = file; name = "qwen2.5-1.5b-instruct-q4_k_m-00001-of-00003.gguf"; path = "Models/qwen2.5-1.5b-instruct-q4_k_m-00001-of-00003.gguf"; sourceTree = "<group>"; };
-		D4E5F6A7B8C9D0E1F2A3B402 /* qwen2.5-1.5b-instruct-q4_k_m-00002-of-00003.gguf */ = {isa = PBXFileReference; lastKnownFileType = file; name = "qwen2.5-1.5b-instruct-q4_k_m-00002-of-00003.gguf"; path = "Models/qwen2.5-1.5b-instruct-q4_k_m-00002-of-00003.gguf"; sourceTree = "<group>"; };
-		D4E5F6A7B8C9D0E1F2A3B403 /* qwen2.5-1.5b-instruct-q4_k_m-00003-of-00003.gguf */ = {isa = PBXFileReference; lastKnownFileType = file; name = "qwen2.5-1.5b-instruct-q4_k_m-00003-of-00003.gguf"; path = "Models/qwen2.5-1.5b-instruct-q4_k_m-00003-of-00003.gguf"; sourceTree = "<group>"; };
+		D4E5F6A7B8C9D0E1F2A3B401 /* qwen3-1.7b-q4_k_m-00001-of-00003.gguf */ = {isa = PBXFileReference; lastKnownFileType = file; name = "qwen3-1.7b-q4_k_m-00001-of-00003.gguf"; path = "Models/qwen3-1.7b-q4_k_m-00001-of-00003.gguf"; sourceTree = "<group>"; };
+		D4E5F6A7B8C9D0E1F2A3B402 /* qwen3-1.7b-q4_k_m-00002-of-00003.gguf */ = {isa = PBXFileReference; lastKnownFileType = file; name = "qwen3-1.7b-q4_k_m-00002-of-00003.gguf"; path = "Models/qwen3-1.7b-q4_k_m-00002-of-00003.gguf"; sourceTree = "<group>"; };
+		D4E5F6A7B8C9D0E1F2A3B403 /* qwen3-1.7b-q4_k_m-00003-of-00003.gguf */ = {isa = PBXFileReference; lastKnownFileType = file; name = "qwen3-1.7b-q4_k_m-00003-of-00003.gguf"; path = "Models/qwen3-1.7b-q4_k_m-00003-of-00003.gguf"; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -213,9 +213,9 @@
 				F1A2B3C4D5E6F7A8B9C0D1E2 /* SceneDelegate.swift */,
 				C3D4E5F6A7B8C9D0E1F2A3B4 /* OculaODRChannel.swift */,
 				74858FAD1ED2DC5600515810 /* Runner-Bridging-Header.h */,
-			D4E5F6A7B8C9D0E1F2A3B401 /* qwen2.5-1.5b-instruct-q4_k_m-00001-of-00003.gguf */,
-			D4E5F6A7B8C9D0E1F2A3B402 /* qwen2.5-1.5b-instruct-q4_k_m-00002-of-00003.gguf */,
-			D4E5F6A7B8C9D0E1F2A3B403 /* qwen2.5-1.5b-instruct-q4_k_m-00003-of-00003.gguf */,
+			D4E5F6A7B8C9D0E1F2A3B401 /* qwen3-1.7b-q4_k_m-00001-of-00003.gguf */,
+			D4E5F6A7B8C9D0E1F2A3B402 /* qwen3-1.7b-q4_k_m-00002-of-00003.gguf */,
+			D4E5F6A7B8C9D0E1F2A3B403 /* qwen3-1.7b-q4_k_m-00003-of-00003.gguf */,
 			);
 			path = Runner;
 			sourceTree = "<group>";
@@ -367,9 +367,9 @@
 				3B3967161E833CAA004F5970 /* AppFrameworkInfo.plist in Resources */,
 				97C146FE1CF9000F007C117D /* Assets.xcassets in Resources */,
 				97C146FC1CF9000F007C117D /* Main.storyboard in Resources */,
-				E5F6A7B8C9D0E1F2A3B4C501 /* qwen2.5-1.5b-instruct-q4_k_m-00001-of-00003.gguf in Resources */,
-			E5F6A7B8C9D0E1F2A3B4C502 /* qwen2.5-1.5b-instruct-q4_k_m-00002-of-00003.gguf in Resources */,
-			E5F6A7B8C9D0E1F2A3B4C503 /* qwen2.5-1.5b-instruct-q4_k_m-00003-of-00003.gguf in Resources */,
+				E5F6A7B8C9D0E1F2A3B4C501 /* qwen3-1.7b-q4_k_m-00001-of-00003.gguf in Resources */,
+			E5F6A7B8C9D0E1F2A3B4C502 /* qwen3-1.7b-q4_k_m-00002-of-00003.gguf in Resources */,
+			E5F6A7B8C9D0E1F2A3B4C503 /* qwen3-1.7b-q4_k_m-00003-of-00003.gguf in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

@@ -105,6 +105,11 @@ class _OculaSplashScreenState extends State<OculaSplashScreen>
 
       final modelManager = OculaModelManager();
 
+      // ── Step 0.5: Clear stale "downloading_*" flags from crashed sessions ──
+      // In-memory download state doesn't survive restarts; without this,
+      // the model management screen shows "downloading" for models not downloading.
+      await modelManager.clearStaleDownloadFlags();
+
       // ── Step 1: Resolve models directory ──
       _logStep('MODELS-DIR', 'Resolving models directory...');
       final dir = await modelManager.modelsDir;
@@ -191,10 +196,9 @@ class _OculaSplashScreenState extends State<OculaSplashScreen>
     setState(() => _statusText = 'Finalizing setup...');
     Indexer().runFullIndex();
 
-    // ── Step 5: Kick off background downloads for Plus/Pro ──
-    modelManager.downloadRemainingInBackground();
-
-    // ── Step 6: Navigate ──
+    // ── Step 5: Navigate ──
+    // Plus/Pro are downloaded on-demand from Settings, not auto-downloaded here.
+    // Free-tier projector and embedding are handled inside ensureFreeModelReady().
     await Future.delayed(const Duration(milliseconds: 800)); // Brief pause
     
     final isFirstLaunch = !(prefs.getBool('onboarding_complete') ?? false);

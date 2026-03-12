@@ -93,27 +93,27 @@ class _RecorderScreenState extends State<RecorderScreen> {
     showDialog<void>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text('Microphone Access Required'),
+        title: const Text('Recording Access Required'),
         content: Text(
           permanent
-              ? 'Microphone permission was denied. '
-                'Please open Settings and enable it for Ocula to record.'
-              : 'Ocula needs microphone access to record. '
-                'Please allow it when prompted.',
+              ? 'Microphone or speech recognition was permanently denied. '
+                'Go to Settings \u2192 Privacy & Security and enable both '
+                'Microphone and Speech Recognition for Ocula.'
+              : 'Ocula needs microphone and speech recognition access to '
+                'record. Please allow both when prompted.',
         ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(ctx),
             child: const Text('Cancel'),
           ),
-          if (permanent)
-            FilledButton(
-              onPressed: () {
-                Navigator.pop(ctx);
-                openAppSettings();
-              },
-              child: const Text('Open Settings'),
-            ),
+          FilledButton(
+            onPressed: () {
+              Navigator.pop(ctx);
+              if (permanent) openAppSettings();
+            },
+            child: Text(permanent ? 'Open Settings' : 'OK'),
+          ),
         ],
       ),
     );
@@ -232,36 +232,48 @@ class _RecorderScreenState extends State<RecorderScreen> {
             // ── Mode selector (hidden while recording) ──
             if (!_isRecording)
               Padding(
-                padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
-                child: SegmentedButton<RecorderMode>(
-                  segments: const [
-                    ButtonSegment(
-                      value: RecorderMode.meeting,
-                      icon: Icon(Icons.groups_outlined, size: 18),
-                      label: Text('Meeting'),
+                padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
+                child: GridView.count(
+                  crossAxisCount: 2,
+                  shrinkWrap: true,
+                  crossAxisSpacing: 10,
+                  mainAxisSpacing: 10,
+                  childAspectRatio: 2.6,
+                  physics: const NeverScrollableScrollPhysics(),
+                  children: [
+                    _ModeCard(
+                      mode: RecorderMode.meeting,
+                      icon: Icons.groups_outlined,
+                      label: 'Meeting',
+                      description: 'Recap & action items',
+                      selected: _mode == RecorderMode.meeting,
+                      onTap: () => setState(() => _mode = RecorderMode.meeting),
                     ),
-                    ButtonSegment(
-                      value: RecorderMode.lecture,
-                      icon: Icon(Icons.school_outlined, size: 18),
-                      label: Text('Lecture'),
+                    _ModeCard(
+                      mode: RecorderMode.lecture,
+                      icon: Icons.school_outlined,
+                      label: 'Lecture',
+                      description: 'Study notes & concepts',
+                      selected: _mode == RecorderMode.lecture,
+                      onTap: () => setState(() => _mode = RecorderMode.lecture),
                     ),
-                    ButtonSegment(
-                      value: RecorderMode.notes,
-                      icon: Icon(Icons.mic_none_rounded, size: 18),
-                      label: Text('Notes'),
+                    _ModeCard(
+                      mode: RecorderMode.notes,
+                      icon: Icons.mic_none_rounded,
+                      label: 'Voice Notes',
+                      description: 'Quick capture & to-dos',
+                      selected: _mode == RecorderMode.notes,
+                      onTap: () => setState(() => _mode = RecorderMode.notes),
                     ),
-                    ButtonSegment(
-                      value: RecorderMode.journalist,
-                      icon: Icon(Icons.article_outlined, size: 18),
-                      label: Text('Journalist'),
+                    _ModeCard(
+                      mode: RecorderMode.journalist,
+                      icon: Icons.article_outlined,
+                      label: 'Journalist',
+                      description: 'Quotes & story angles',
+                      selected: _mode == RecorderMode.journalist,
+                      onTap: () => setState(() => _mode = RecorderMode.journalist),
                     ),
                   ],
-                  selected: {_mode},
-                  onSelectionChanged: (s) =>
-                      setState(() => _mode = s.first),
-                  style: ButtonStyle(
-                    visualDensity: VisualDensity.compact,
-                  ),
                 ),
               ),
 
@@ -563,6 +575,85 @@ class _TierBadge extends StatelessWidget {
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+/// Tappable mode selection card used in the 2×2 mode grid.
+class _ModeCard extends StatelessWidget {
+  final RecorderMode mode;
+  final IconData icon;
+  final String label;
+  final String description;
+  final bool selected;
+  final VoidCallback onTap;
+
+  const _ModeCard({
+    required this.mode,
+    required this.icon,
+    required this.label,
+    required this.description,
+    required this.selected,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    return GestureDetector(
+      onTap: onTap,
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 180),
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+        decoration: BoxDecoration(
+          color: selected
+              ? colors.primaryContainer.withAlpha(80)
+              : colors.surfaceContainerHighest.withAlpha(60),
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(
+            color: selected
+                ? colors.primary.withAlpha(160)
+                : colors.outline.withAlpha(50),
+            width: selected ? 1.5 : 1.0,
+          ),
+        ),
+        child: Row(
+          children: [
+            Icon(
+              icon,
+              size: 22,
+              color: selected ? colors.primary : colors.onSurface.withAlpha(140),
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Text(
+                    label,
+                    style: TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w600,
+                      color: selected ? colors.primary : colors.onSurface,
+                    ),
+                  ),
+                  Text(
+                    description,
+                    style: TextStyle(
+                      fontSize: 11,
+                      color: colors.onSurface.withAlpha(110),
+                      height: 1.3,
+                    ),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }

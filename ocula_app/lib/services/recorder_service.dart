@@ -66,18 +66,17 @@ class RecorderService {
   Future<RecorderStartResult> start() async {
     if (_isRecording) return RecorderStartResult.ok;
 
-    // ── 1. Microphone permission ──
-    // Check status first — calling .request() on iOS when already granted
-    // can still trigger a system dialog on some iOS versions.
-    var micStatus = await Permission.microphone.status;
-    if (!micStatus.isGranted) {
-      micStatus = await Permission.microphone.request();
-    }
+    // ── 1. Check microphone permission ──
+    // speech_to_text.initialize() handles speech recognition permission
+    // internally.  Only check microphone explicitly here.
+    final micStatus = await Permission.microphone.status;
     if (micStatus.isPermanentlyDenied) {
       return RecorderStartResult.permissionPermanentlyDenied;
     }
     if (!micStatus.isGranted) {
-      return RecorderStartResult.permissionDenied;
+      final r = await Permission.microphone.request();
+      if (r.isPermanentlyDenied) return RecorderStartResult.permissionPermanentlyDenied;
+      if (!r.isGranted) return RecorderStartResult.permissionDenied;
     }
 
     // ── 2. Initialise STT engine ──
@@ -97,7 +96,13 @@ class RecorderService {
           }
         },
       );
-      if (!available) return RecorderStartResult.unavailable;
+      if (!available) {
+        final mic = await Permission.microphone.status;
+        if (mic.isPermanentlyDenied) {
+          return RecorderStartResult.permissionPermanentlyDenied;
+        }
+        return RecorderStartResult.unavailable;
+      }
       _sttInitialized = true;
     }
 
@@ -163,6 +168,7 @@ class RecorderService {
       listenOptions: stt.SpeechListenOptions(
         cancelOnError: false,
         partialResults: true,
+        onDevice: true,
       ),
     );
   }

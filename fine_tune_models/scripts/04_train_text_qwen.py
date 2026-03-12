@@ -21,7 +21,24 @@ import yaml
 
 
 def load_config(config_path="../configs/qwen25_1_5b_text.yaml"):
-    config_file = Path(config_path).resolve()
+    script_dir = Path(__file__).resolve().parent
+    repo_dir = script_dir.parent
+
+    raw = Path(config_path)
+    candidates = []
+    if raw.is_absolute():
+        candidates.append(raw)
+    else:
+        # 1) caller cwd-relative
+        candidates.append((Path.cwd() / raw).resolve())
+        # 2) script-relative (scripts/...)
+        candidates.append((script_dir / raw).resolve())
+        # 3) repo-relative (fine_tune_models/...)
+        candidates.append((repo_dir / raw).resolve())
+        # 4) common fallback: configs/<basename>
+        candidates.append((repo_dir / "configs" / raw.name).resolve())
+
+    config_file = next((p for p in candidates if p.exists()), candidates[0].resolve())
     with open(config_file) as f:
         return yaml.safe_load(f), config_file.parent
 
@@ -279,9 +296,38 @@ def train_cuda(config, config_dir: Path, resume: str | None = None):
     from datasets import load_dataset
 
     model_path = resolve_path(config_dir, config["model"]["local_path"])
-    train_cfg = config["training"]
+    train_cfg = dict(config["training"])
     lora_cfg = config["lora"]
     accel = detect_acceleration_stack()
+
+    # Reduce allocator fragmentation on long-running 4-bit QLoRA jobs.
+    os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+
+    # Auto-safety profile for 16 GB-class GPUs to prevent immediate OOM.
+    if torch.cuda.is_available():
+        total_gb = torch.cuda.get_device_properties(0).total_memory / (1024 ** 3)
+        if total_gb <= 16.5:
+            original_bs = int(train_cfg.get("batch_size", 1))
+            original_accum = int(train_cfg.get("gradient_accumulation", 1))
+            original_seq = int(train_cfg.get("max_seq_length", 2048))
+
+            adjusted = False
+            if original_bs > 1:
+                train_cfg["batch_size"] = 1
+                train_cfg["gradient_accumulation"] = max(1, original_accum * original_bs)
+                adjusted = True
+            if original_seq > 2048:
+                train_cfg["max_seq_length"] = 2048
+                adjusted = True
+
+            if adjusted:
+                print(
+                    "[*] Low-VRAM safety profile enabled "
+                    f"(GPU {total_gb:.1f} GB): "
+                    f"batch {original_bs}->{train_cfg['batch_size']}, "
+                    f"grad_accum {original_accum}->{train_cfg['gradient_accumulation']}, "
+                    f"seq {original_seq}->{train_cfg['max_seq_length']}"
+                )
 
     if should_use_unsloth(config, accel):
         try:
@@ -326,6 +372,7 @@ def train_cuda(config, config_dir: Path, resume: str | None = None):
         device_map="auto",
         attn_implementation=attn_impl,
     )
+    model.config.use_cache = False
     model = prepare_model_for_kbit_training(model)
 
     # Apply LoRA

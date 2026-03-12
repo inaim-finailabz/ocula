@@ -41,7 +41,12 @@ class TrayService with TrayListener, WindowListener {
 
   @override
   void onTrayIconMouseDown() {
-    if (Platform.isWindows) _toggleWindow();
+    // macOS: left-click shows the menu. Windows: left-click toggles window.
+    if (Platform.isMacOS) {
+      trayManager.popUpContextMenu();
+    } else if (Platform.isWindows) {
+      _toggleWindow();
+    }
   }
 
   @override
@@ -52,6 +57,8 @@ class TrayService with TrayListener, WindowListener {
   @override
   void onTrayMenuItemClick(MenuItem item) {
     switch (item.key) {
+      case 'open':
+        _showWindow();
       case 'show':
         _showWindow();
       case 'hide':
@@ -65,7 +72,11 @@ class TrayService with TrayListener, WindowListener {
 
   @override
   void onWindowClose() {
-    // Hide to tray instead of quitting.
+    _hideWindow();
+  }
+
+  @override
+  void onWindowMinimize() {
     _hideWindow();
   }
 
@@ -109,9 +120,11 @@ class TrayService with TrayListener, WindowListener {
     final visible = await windowManager.isVisible();
     await trayManager.setContextMenu(Menu(
       items: [
+        MenuItem(key: 'open', label: 'Open Ocula'),
+        MenuItem.separator(),
         MenuItem(
           key: visible ? 'hide' : 'show',
-          label: visible ? 'Hide Ocula' : 'Show Ocula',
+          label: visible ? 'Hide' : 'Show',
         ),
         MenuItem.separator(),
         MenuItem(key: 'quit', label: 'Quit Ocula'),

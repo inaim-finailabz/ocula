@@ -40,6 +40,45 @@ post_install do |installer|
     flutter_additional_ios_build_settings(target)
   end
 
+  # Patch speech_to_text: add locale fallback so SFSpeechRecognizer never returns nil.
+  # On iOS 26 beta the locale identifier format changed, causing SFSpeechRecognizer(locale:)
+  # to return nil for the current locale, making initialize() return false.
+  # speech_to_text uses source.path = "." pointing to the pub-cache.
+  stt_plugin_path = File.expand_path(
+    File.join(ENV['HOME'], '.pub-cache', 'hosted', 'pub.dev',
+              'speech_to_text-7.3.0', 'darwin', 'speech_to_text',
+              'Sources', 'speech_to_text', 'SpeechToTextPlugin.swift')
+  )
+  if File.exist?(stt_plugin_path)
+    content = File.read(stt_plugin_path)
+    old_recognizer = '    recognizer = SFSpeechRecognizer(locale: locale)'
+    new_recognizer = <<~SWIFT
+          recognizer = SFSpeechRecognizer(locale: locale)
+              // Fallback: if locale is unsupported (iOS 26 beta locale format changes),
+              // try common en-US fallbacks so initialize() does not silently return false.
+              if recognizer == nil {
+                let fallbacks: [Locale] = [
+                  Locale(identifier: "en-US"),
+                  Locale(identifier: "en_US"),
+                  Locale(identifier: "en"),
+                ]
+                for fb in fallbacks {
+                  recognizer = SFSpeechRecognizer(locale: fb)
+                  if recognizer != nil { break }
+                }
+              }
+    SWIFT
+    if content.include?(old_recognizer) && !content.include?('Fallback: if locale is unsupported')
+      patched = content.gsub(old_recognizer, new_recognizer.rstrip)
+      File.write(stt_plugin_path, patched)
+      puts "✅ Patched speech_to_text: locale fallback for iOS 26 compatibility"
+    else
+      puts "ℹ️  speech_to_text patch already applied or pattern not found"
+    end
+  else
+    puts "⚠️  speech_to_text plugin not found at #{stt_plugin_path}"
+  end
+
   # Patch flutter_contacts to work with UIScene lifecycle.
   # The plugin force-unwraps UIApplication.shared.delegate!.window!! which is nil
   # when UIApplicationSceneManifest is present. Replace with UIScene-compatible lookup.

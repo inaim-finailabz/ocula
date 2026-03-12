@@ -1193,16 +1193,12 @@ class AIManager {
         .replaceAll('<|im_start|>', '')
         .trim();
 
-    // Strip Qwen3 chain-of-thought thinking blocks.
-    // Only Ocula Plus/Pro (Qwen3-VL-2B-Thinking, Qwen2.5-VL-7B) output these.
-    // Ocula Lite (Qwen2.5-1.5B-Instruct) does not output <think> blocks.
-    if (isProModel) {
-      text = text.replaceAll(RegExp(r'<think>.*?</think>', dotAll: true), '').trim();
-      // Also strip unclosed <think> blocks (model stopped mid-think)
-      final thinkStart = text.indexOf('<think>');
-      if (thinkStart >= 0) {
-        text = text.substring(0, thinkStart).trim();
-      }
+    // Strip <think>...</think> blocks — all Qwen3 models output them (Lite, Plus, Pro).
+    text = text.replaceAll(RegExp(r'<think>.*?</think>', dotAll: true), '').trim();
+    // Also strip unclosed <think> blocks (model stopped mid-think).
+    final thinkStart = text.indexOf('<think>');
+    if (thinkStart >= 0) {
+      text = text.substring(0, thinkStart).trim();
     }
 
     // Strip question-first prompt format artifacts that the model may echo back.
@@ -1415,12 +1411,16 @@ class AIManager {
       ),
     )) {
       buffer.write(token);
-      // Yield partial text (cleaned of ChatML artifacts)
-      final partial = buffer
+      // Yield partial text (cleaned of ChatML artifacts and think blocks).
+      var partial = buffer
           .toString()
           .replaceAll('<|im_end|>', '')
           .replaceAll('<|im_start|>', '')
           .trimLeft();
+      // Strip complete <think>...</think> blocks, then hide any in-progress thinking.
+      partial = partial.replaceAll(RegExp(r'<think>.*?</think>', dotAll: true), '').trimLeft();
+      final thinkOpen = partial.indexOf('<think>');
+      if (thinkOpen >= 0) partial = partial.substring(0, thinkOpen).trimRight();
       yield partial;
     }
 
@@ -1430,12 +1430,10 @@ class AIManager {
         .replaceAll('<|im_end|>', '')
         .replaceAll('<|im_start|>', '')
         .trim();
-    // Strip Qwen3 think blocks (only Plus/Pro use Qwen3-Thinking; Lite uses Qwen2.5-Instruct)
-    if (isProModel) {
-      text = text.replaceAll(RegExp(r'<think>.*?</think>', dotAll: true), '').trim();
-      final thinkIdx = text.indexOf('<think>');
-      if (thinkIdx >= 0) text = text.substring(0, thinkIdx).trim();
-    }
+    // Strip <think>...</think> blocks — all Qwen3 models output them (Lite, Plus, Pro).
+    text = text.replaceAll(RegExp(r'<think>.*?</think>', dotAll: true), '').trim();
+    final thinkIdx = text.indexOf('<think>');
+    if (thinkIdx >= 0) text = text.substring(0, thinkIdx).trim();
     // Strip question-first prompt format artifacts
     text = text.replaceFirst(RegExp(r'^ANSWER:\s*', caseSensitive: false), '');
     text = text.replaceFirst(RegExp(r'^Q:\s*', caseSensitive: false), '');

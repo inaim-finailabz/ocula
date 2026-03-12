@@ -92,7 +92,7 @@ class OculaModelManager {
       displayName: 'Ocula Lite',
       downloadUrl:
           'https://backend-ocula.finailabz.com/models/qwen3-1.7b-q4_k_m-00001-of-00003.gguf',
-      sizeBytes: 1282 * 1024 * 1024, // ~1.28 GB total (actual: 1,282,439,328 bytes, 3×~450MB parts)
+      sizeBytes: 1282439616, // actual total: 454,174,656 + 447,652,416 + 380,612,544 bytes (parts unequal — last part is smaller)
       tier: AITier.free,
     ),
     // ── OCULA EMBED: Multilingual sentence similarity for RAG ─────────────
@@ -355,40 +355,19 @@ class OculaModelManager {
     return true;
   }
 
-  /// Download remaining models in the background.
-  /// Includes: free-tier projector (not required for splash) + all plus/pro models.
-  /// Emits feature-ready notifications as each tier completes.
+  /// Download Plus tier models silently in the background after Lite is active.
+  ///
+  /// Pro stays strictly on-demand (user must explicitly download from Settings).
+  /// Progress is emitted on [downloadProgressStream] and visible in Settings.
+  /// The chat banner filters for free-tier only, so Plus progress never appears
+  /// on the main screen.
+  ///
+  /// Called from the home screen once [freeModelStatusStream] emits true.
   /// Each download has a 10-minute timeout so one failure doesn't block the rest.
   Future<void> downloadRemainingInBackground() async {
-    debugPrint(
-      '[ModelManager] Starting background download of remaining models...',
-    );
+    debugPrint('[ModelManager] Background: downloading Plus tier...');
 
-    // First, ensure the free-tier projector is copied/downloaded
-    final freeProjector = models
-        .where((m) => m.tier == AITier.free && m.isVisionProjector)
-        .firstOrNull;
-    if (freeProjector != null && !await isDownloaded(freeProjector.fileName)) {
-      // Try bundled copy first, then download
-      final copied = await _ensureBundledModelCopied(freeProjector.fileName);
-      if (!copied) {
-        try {
-          await download(
-            freeProjector,
-            onProgress: (progress, status) {
-              _downloadProgress[freeProjector.fileName] = progress;
-              _downloadProgressStreamController.add(_downloadProgress);
-            },
-          ).timeout(const Duration(minutes: 10));
-          debugPrint('[ModelManager] ✓ Free projector downloaded');
-        } catch (e) {
-          debugPrint('[ModelManager] ✗ Free projector download failed: $e');
-        }
-      }
-    }
-
-    // Then copy/download plus/pro tier models
-    for (final tier in [AITier.plus, AITier.pro]) {
+    for (final tier in [AITier.plus]) {
       final tierModels = modelsForTier(tier);
       bool allReady = true;
 
@@ -416,6 +395,8 @@ class OculaModelManager {
           ).timeout(const Duration(minutes: 10));
           if (!ok) {
             allReady = false;
+            _downloadProgress.remove(model.fileName);
+            _downloadProgressStreamController.add(Map.from(_downloadProgress));
             debugPrint(
               '[ModelManager] ✗ ${model.fileName} download returned false',
             );
@@ -424,6 +405,8 @@ class OculaModelManager {
           }
         } catch (e) {
           allReady = false;
+          _downloadProgress.remove(model.fileName);
+          _downloadProgressStreamController.add(Map.from(_downloadProgress));
           debugPrint('[ModelManager] ✗ ${model.fileName} download failed: $e');
         }
       }
@@ -435,30 +418,8 @@ class OculaModelManager {
         _tierReadyController.add(tier);
       }
     }
-    // Guarantee the embedding model is available across all tiers.
-    // It may have been skipped during splash (e.g. network error or bundled
-    // copy not present). Re-check and download if missing.
-    final embedModel = models.where((m) => m.isEmbeddingModel).firstOrNull;
-    if (embedModel != null && !await isDownloaded(embedModel.fileName)) {
-      final copied = await _ensureBundledModelCopied(embedModel.fileName);
-      if (!copied) {
-        try {
-          debugPrint('[ModelManager] Downloading embedding model (missed during splash)...');
-          await download(
-            embedModel,
-            onProgress: (progress, status) {
-              _downloadProgress[embedModel.fileName] = progress;
-              _downloadProgressStreamController.add(_downloadProgress);
-            },
-          ).timeout(const Duration(minutes: 5));
-          debugPrint('[ModelManager] ✓ Embedding model downloaded');
-        } catch (e) {
-          debugPrint('[ModelManager] ✗ Embedding model download failed: $e');
-        }
-      }
-    }
 
-    debugPrint('[ModelManager] Background download pass complete');
+    debugPrint('[ModelManager] Background Plus download pass complete');
   }
 
   Future<void> downloadAllModelsInBackground() async {
@@ -508,12 +469,21 @@ class OculaModelManager {
   /// a partial set as "not downloaded".
   Future<bool> isDownloaded(String fileName) async {
     final parts = _allSplitParts(fileName);
-    for (final part in parts) {
-      final path = await modelPath(part);
+    for (int i = 0; i < parts.length; i++) {
+      final path = await modelPath(parts[i]);
       final file = File(path);
       if (!file.existsSync()) return false;
       final size = await file.length();
       if (size < 1024 * 1024) return false;
+      // Validate GGUF header to catch truncated/corrupt files that
+      // pass the size check but would crash llama.cpp on load.
+      if (i == 0 && !_isGGUFPart1Valid(path)) {
+        debugPrint('[ModelManager] isDownloaded: corrupt part1 detected, treating as not downloaded: $path');
+        return false;
+      } else if (i > 0 && !_hasGGUFHeaderSync(path)) {
+        debugPrint('[ModelManager] isDownloaded: corrupt part${i + 1} detected: $path');
+        return false;
+      }
     }
     return parts.isNotEmpty;
   }
@@ -1373,6 +1343,23 @@ class OculaModelManager {
     }
   }
 
+  /// Clear stale "downloading_*" SharedPreferences flags left by a crashed or
+  /// killed session. In-memory download state does not survive restarts, but
+  /// the pref flags do — causing the model management UI to show "downloading"
+  /// for a model that is not actually downloading. Call this once at app start,
+  /// before any downloads begin.
+  Future<void> clearStaleDownloadFlags() async {
+    final prefs = await SharedPreferences.getInstance();
+    for (final model in models) {
+      final allParts = _allSplitParts(model.fileName);
+      for (final part in allParts) {
+        await prefs.setBool('downloading_$part', false);
+      }
+      await prefs.setBool('downloading_${model.fileName}', false);
+    }
+    debugPrint('[ModelManager] Cleared stale downloading_* flags');
+  }
+
   /// Get status of a specific model.
   Future<ModelStatus> getStatus(String fileName) async {
     if (await isDownloaded(fileName)) return ModelStatus.ready;
@@ -1432,7 +1419,12 @@ class OculaModelManager {
     // ── Fallback A: split network-download (no manifest) ────────────────────
     // The direct HTTP path downloads all split parts but does not write
     // the ODR/PAD manifest. Accept this path if all parts exist, pass
-    // GGUF header checks, and each part is plausibly sized.
+    // GGUF header checks, and each is ≥ 1 MB.
+    //
+    // NOTE: Do NOT use per-part expected-size here. The last shard of a split
+    // GGUF is always smaller than the others (e.g. part 3 of Qwen3-1.7B is
+    // ~363 MB vs ~448 MB for parts 1–2). A uniform perPartExpected = total/N
+    // would flag the last part as undersized and show it as "corrupt".
     final freeModel = models.firstWhere(
       (m) =>
           m.tier == AITier.free &&
@@ -1441,14 +1433,12 @@ class OculaModelManager {
     );
     final splitParts = _allSplitParts(freeModel.fileName);
     if (splitParts.length > 1) {
-      final perPartExpected = freeModel.sizeBytes ~/ splitParts.length;
       var allGood = true;
       for (final part in splitParts) {
         final partPath = await modelPath(part);
-        final ok = await isValidLocalModel(
-          partPath,
-          expectedSizeBytes: perPartExpected,
-        );
+        // Check existence + GGUF header only — no size threshold.
+        // Post-download validation already ensured each part is intact.
+        final ok = await isValidLocalModel(partPath);
         if (!ok) {
           allGood = false;
           break;

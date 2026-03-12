@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 /// First-launch onboarding. Shows once, then never again.
 /// Focus: Privacy + Multi-Modal + Assistant identity.
@@ -66,34 +67,45 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
     super.dispose();
   }
 
+  // Total pages = onboarding slides + 1 privacy consent page.
+  int get _totalPages => _pages.length + 1;
+  bool get _isConsentPage => _currentPage == _pages.length;
+
+  Color get _currentColor => _isConsentPage
+      ? const Color(0xFF6C5CE7)
+      : _pages[_currentPage].color;
+
   @override
   Widget build(BuildContext context) {
-    final isLast = _currentPage == _pages.length - 1;
+    final isLast = _currentPage == _totalPages - 1;
 
     return Scaffold(
       backgroundColor: const Color(0xFF0A0A0A),
       body: SafeArea(
         child: Column(
           children: [
-            // Skip button
+            // Skip button — hidden on the consent page (must tap Get Started)
             Align(
               alignment: Alignment.topRight,
-              child: TextButton(
-                onPressed: _complete,
-                child: Text(
-                  'Skip',
-                  style: TextStyle(color: Colors.white.withAlpha(120)),
-                ),
-              ),
+              child: _isConsentPage
+                  ? const SizedBox(height: 40)
+                  : TextButton(
+                      onPressed: _complete,
+                      child: Text(
+                        'Skip',
+                        style: TextStyle(color: Colors.white.withAlpha(120)),
+                      ),
+                    ),
             ),
 
             // Pages
             Expanded(
               child: PageView.builder(
                 controller: _controller,
-                itemCount: _pages.length,
+                itemCount: _totalPages,
                 onPageChanged: (i) => setState(() => _currentPage = i),
                 itemBuilder: (context, index) {
+                  if (index == _pages.length) return _buildConsentPage();
                   if (index >= 4) return _buildFeaturePage(index);
                   return _buildPage(_pages[index]);
                 },
@@ -107,7 +119,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                 children: [
                   // Page dots
                   Row(
-                    children: List.generate(_pages.length, (i) {
+                    children: List.generate(_totalPages, (i) {
                       return AnimatedContainer(
                         duration: const Duration(milliseconds: 300),
                         margin: const EdgeInsets.only(right: 8),
@@ -115,7 +127,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                         height: 8,
                         decoration: BoxDecoration(
                           color: i == _currentPage
-                              ? _pages[_currentPage].color
+                              ? _currentColor
                               : Colors.white.withAlpha(50),
                           borderRadius: BorderRadius.circular(4),
                         ),
@@ -136,7 +148,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                       }
                     },
                     style: FilledButton.styleFrom(
-                      backgroundColor: _pages[_currentPage].color,
+                      backgroundColor: _currentColor,
                       padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 14),
                     ),
                     child: Text(isLast ? 'Get Started' : 'Next'),
@@ -146,6 +158,102 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
             ),
           ],
         ),
+      ),
+    );
+  }
+
+  Widget _buildConsentPage() {
+    return SingleChildScrollView(
+      padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 16),
+      child: Column(
+        children: [
+          const SizedBox(height: 16),
+          _AssistantOrb(color: const Color(0xFF6C5CE7)),
+          const SizedBox(height: 32),
+          const Text(
+            'Before You Begin',
+            style: TextStyle(
+              color: Colors.white,
+              fontSize: 26,
+              fontWeight: FontWeight.bold,
+            ),
+            textAlign: TextAlign.center,
+          ),
+          const SizedBox(height: 14),
+          Text(
+            'Ocula is a fully on-device AI assistant. '
+            'Here is what it may access on this device, and how:',
+            style: TextStyle(
+              color: Colors.white.withAlpha(160),
+              fontSize: 15,
+              height: 1.5,
+            ),
+            textAlign: TextAlign.center,
+          ),
+          const SizedBox(height: 24),
+          _ConsentItem(
+            icon: Icons.mic_none_rounded,
+            title: 'Microphone & Voice',
+            detail: 'Transcribed on-device using Apple\'s on-device Speech Recognition. '
+                'Audio is never sent to Ocula servers or any third-party AI service.',
+          ),
+          _ConsentItem(
+            icon: Icons.photo_library_outlined,
+            title: 'Photos',
+            detail: 'Analyzed locally by the AI model stored on this device. '
+                'No image data leaves your phone.',
+          ),
+          _ConsentItem(
+            icon: Icons.people_outline,
+            title: 'Contacts',
+            detail: 'Read locally to answer questions about people you know. '
+                'Contact data is never uploaded.',
+          ),
+          _ConsentItem(
+            icon: Icons.event_outlined,
+            title: 'Calendar',
+            detail: 'Read locally to help with scheduling questions. '
+                'Calendar data stays on-device.',
+          ),
+          _ConsentItem(
+            icon: Icons.insert_drive_file_outlined,
+            title: 'Documents',
+            detail: 'Indexed locally for search and Q&A. '
+                'File contents are never transmitted.',
+          ),
+          const SizedBox(height: 20),
+          Container(
+            padding: const EdgeInsets.all(14),
+            decoration: BoxDecoration(
+              color: const Color(0xFF6C5CE7).withAlpha(30),
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: const Color(0xFF6C5CE7).withAlpha(80)),
+            ),
+            child: Text(
+              'All AI inference runs on a model stored on your device. '
+              'Ocula does not use any cloud-based or third-party AI service. '
+              'No personal data is ever transmitted to Ocula, Finailabz, or any third party.',
+              style: TextStyle(
+                color: Colors.white.withAlpha(200),
+                fontSize: 13,
+                height: 1.5,
+              ),
+              textAlign: TextAlign.center,
+            ),
+          ),
+          const SizedBox(height: 16),
+          TextButton(
+            onPressed: () => launchUrl(
+              Uri.parse('https://finailabz.com/privacy'),
+              mode: LaunchMode.externalApplication,
+            ),
+            child: const Text(
+              'View Privacy Policy',
+              style: TextStyle(color: Color(0xFF6C5CE7), fontSize: 14),
+            ),
+          ),
+          const SizedBox(height: 8),
+        ],
       ),
     );
   }
@@ -309,6 +417,51 @@ class _OnboardingPage {
     required this.subtitle,
     required this.color,
   });
+}
+
+class _ConsentItem extends StatelessWidget {
+  final IconData icon;
+  final String title;
+  final String detail;
+  const _ConsentItem({required this.icon, required this.title, required this.detail});
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 14),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(icon, color: const Color(0xFF6C5CE7), size: 22),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  title,
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 14,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                const SizedBox(height: 3),
+                Text(
+                  detail,
+                  style: TextStyle(
+                    color: Colors.white.withAlpha(130),
+                    fontSize: 13,
+                    height: 1.4,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
 }
 
 /// Pulsing assistant orb animation.

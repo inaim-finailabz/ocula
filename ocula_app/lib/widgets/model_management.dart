@@ -32,12 +32,33 @@ class _ModelManagementState extends State<ModelManagement> {
   /// Tier being activated right now (for loading state)
   AITier? _activatingTier;
 
+  StreamSubscription<Map<String, double>>? _globalProgressSub;
+  StreamSubscription<bool>? _freeModelStatusSub;
+
   @override
   void initState() {
     super.initState();
     _activeTier = AIManager().activeTier;
     _activeTierSub = AIManager().activeTierStream.listen((tier) {
       if (mounted) setState(() => _activeTier = tier);
+    });
+    // Mirror global download progress (e.g. ensureFreeModelReady background download)
+    // so the status display stays current even when the download was not started here.
+    _globalProgressSub = _modelManager.downloadProgressStream.listen((progress) {
+      if (!mounted) return;
+      setState(() {
+        for (final entry in progress.entries) {
+          if (entry.value >= 1.0) {
+            _downloadProgress.remove(entry.key);
+          } else if (entry.value > 0) {
+            _downloadProgress[entry.key] = entry.value;
+          }
+        }
+      });
+    });
+    // Refresh status when the free model finishes installing.
+    _freeModelStatusSub = _modelManager.freeModelStatusStream.listen((_) {
+      if (mounted) _loadModelStatuses();
     });
     _loadModelStatuses();
     _loadRecommendedTier();
@@ -46,6 +67,8 @@ class _ModelManagementState extends State<ModelManagement> {
   @override
   void dispose() {
     _activeTierSub?.cancel();
+    _globalProgressSub?.cancel();
+    _freeModelStatusSub?.cancel();
     super.dispose();
   }
 
@@ -227,9 +250,21 @@ class _ModelManagementState extends State<ModelManagement> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        const Text(
-          'AI Models',
-          style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
+        Row(
+          children: [
+            const Text(
+              'AI Models',
+              style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
+            ),
+            const Spacer(),
+            IconButton(
+              icon: const Icon(Icons.refresh, size: 18),
+              tooltip: 'Refresh model status',
+              visualDensity: VisualDensity.compact,
+              padding: EdgeInsets.zero,
+              onPressed: _loadModelStatuses,
+            ),
+          ],
         ),
         const SizedBox(height: 10),
 
