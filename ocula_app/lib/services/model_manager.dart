@@ -1760,7 +1760,8 @@ class OculaModelManager {
 
     try {
       _httpClient ??= HttpClient()
-        ..connectionTimeout = const Duration(seconds: 15);
+        ..connectionTimeout = const Duration(seconds: 30)
+        ..idleTimeout = const Duration(seconds: 60);
       final resolvedUrl = _resolveUrl(model.downloadUrl);
       final resolvedUri = Uri.parse(resolvedUrl);
       if (resolvedUri.scheme.toLowerCase() != 'https') {
@@ -1797,7 +1798,16 @@ class OculaModelManager {
       final total = model.sizeBytes;
       bool cancelled = false;
 
-      await for (final chunk in response) {
+      // Wrap the response stream with a per-chunk timeout so a stalled
+      // connection is detected and surfaced as an error rather than hanging
+      // silently (especially important for macOS where llama.cpp models are
+      // downloaded over HTTP with no built-in idle detection).
+      await for (final chunk in response.timeout(
+        const Duration(seconds: 90),
+        onTimeout: (sink) => sink.addError(
+          TimeoutException('Download stalled — no data for 90 s'),
+        ),
+      )) {
         if (_cancelledDownloads.contains(model.fileName)) {
           cancelled = true;
           break;

@@ -106,6 +106,8 @@ class _AssistantScreenState extends State<AssistantScreen>
   StreamSubscription? _featureReadySubscription;
   StreamSubscription? _tierChangeSubscription;
   StreamSubscription? _freeModelStatusSubscription;
+  StreamSubscription? _stepSubscription;
+  String? _currentStepLabel;
 
   bool _freeModelFailed = false;
 
@@ -216,8 +218,16 @@ class _AssistantScreenState extends State<AssistantScreen>
       await _ensureLiteActivatedIfReady();
     });
 
-    _orchestrator.onAskInternet = _showInternetDialog;
-    _orchestrator.onAskEnableConnectivity = _showConnectivityDialog;
+    _orchestrator.onAskCapability = (_) => _showInternetDialog();
+    _orchestrator.onConnectivityNeeded = _showConnectivityDialog;
+
+    _stepSubscription = _orchestrator.stepStream.listen((step) {
+      if (!mounted) return;
+      setState(() {
+        _currentStepLabel =
+            step.type == AgentStepType.complete ? null : step.label;
+      });
+    });
     Indexer().startBackgroundIndexing();
 
     // Initialize notifications — calendar reminders + daily briefing
@@ -533,22 +543,24 @@ class _AssistantScreenState extends State<AssistantScreen>
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              ListTile(
-                leading: const Icon(Icons.camera_alt),
-                title: const Text('Take Photo'),
-                onTap: () async {
-                  Navigator.pop(ctx);
-                  final picked = await ImagePicker().pickImage(
-                    source: ImageSource.camera,
-                    maxWidth: 1024,
-                    maxHeight: 1024,
-                    imageQuality: 85,
-                  );
-                  if (picked != null) {
-                    setState(() => _attachedImage = File(picked.path));
-                  }
-                },
-              ),
+              // camera is not supported on desktop platforms
+              if (!Platform.isMacOS && !Platform.isWindows && !Platform.isLinux)
+                ListTile(
+                  leading: const Icon(Icons.camera_alt),
+                  title: const Text('Take Photo'),
+                  onTap: () async {
+                    Navigator.pop(ctx);
+                    final picked = await ImagePicker().pickImage(
+                      source: ImageSource.camera,
+                      maxWidth: 1024,
+                      maxHeight: 1024,
+                      imageQuality: 85,
+                    );
+                    if (picked != null) {
+                      setState(() => _attachedImage = File(picked.path));
+                    }
+                  },
+                ),
               ListTile(
                 leading: const Icon(Icons.photo_library),
                 title: const Text('Choose from Gallery'),
@@ -1012,6 +1024,8 @@ class _AssistantScreenState extends State<AssistantScreen>
     _featureReadySubscription?.cancel();
     _tierChangeSubscription?.cancel();
     _freeModelStatusSubscription?.cancel();
+    _stepSubscription?.cancel();
+    _orchestrator.dispose();
     super.dispose();
   }
 
@@ -1209,7 +1223,7 @@ class _AssistantScreenState extends State<AssistantScreen>
                             itemCount: _messages.length + (_isThinking ? 1 : 0),
                             itemBuilder: (context, index) {
                               if (_isThinking && index == _messages.length) {
-                                return const _ThinkingBubble();
+                                return _ThinkingBubble(stepLabel: _currentStepLabel);
                               }
                               final msg = _messages[index];
                               // Find the user query that preceded this AI response
@@ -1931,9 +1945,10 @@ class _AssetChip extends StatelessWidget {
   }
 }
 
-/// Animated "thinking" indicator with pulsing dots.
+/// Animated "thinking" indicator with pulsing dots and optional step label.
 class _ThinkingBubble extends StatefulWidget {
-  const _ThinkingBubble();
+  final String? stepLabel;
+  const _ThinkingBubble({this.stepLabel});
 
   @override
   State<_ThinkingBubble> createState() => _ThinkingBubbleState();
@@ -1974,34 +1989,50 @@ class _ThinkingBubbleState extends State<_ThinkingBubble>
           ).copyWith(bottomLeft: const Radius.circular(4)),
           border: Border.all(color: colors.outline.withAlpha(25)),
         ),
-        child: AnimatedBuilder(
-          animation: _controller,
-          builder: (context, _) {
-            return Row(
-              mainAxisSize: MainAxisSize.min,
-              children: List.generate(3, (i) {
-                final delay = i * 0.2;
-                final t = ((_controller.value - delay) % 1.0).clamp(0.0, 1.0);
-                final y = -4.0 * (1.0 - (2.0 * t - 1.0) * (2.0 * t - 1.0));
-                return Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 3),
-                  child: Transform.translate(
-                    offset: Offset(0, y),
-                    child: Container(
-                      width: 8,
-                      height: 8,
-                      decoration: BoxDecoration(
-                        shape: BoxShape.circle,
-                        color: colors.primary.withAlpha(
-                          (150 + (t * 105)).toInt(),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            AnimatedBuilder(
+              animation: _controller,
+              builder: (context, _) {
+                return Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: List.generate(3, (i) {
+                    final delay = i * 0.2;
+                    final t = ((_controller.value - delay) % 1.0).clamp(0.0, 1.0);
+                    final y = -4.0 * (1.0 - (2.0 * t - 1.0) * (2.0 * t - 1.0));
+                    return Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 3),
+                      child: Transform.translate(
+                        offset: Offset(0, y),
+                        child: Container(
+                          width: 8,
+                          height: 8,
+                          decoration: BoxDecoration(
+                            shape: BoxShape.circle,
+                            color: colors.primary.withAlpha(
+                              (150 + (t * 105)).toInt(),
+                            ),
+                          ),
                         ),
                       ),
-                    ),
-                  ),
+                    );
+                  }),
                 );
-              }),
-            );
-          },
+              },
+            ),
+            if (widget.stepLabel != null) ...[
+              const SizedBox(height: 6),
+              Text(
+                widget.stepLabel!,
+                style: TextStyle(
+                  fontSize: 11,
+                  color: colors.onSurface.withAlpha(120),
+                ),
+              ),
+            ],
+          ],
         ),
       ),
     );

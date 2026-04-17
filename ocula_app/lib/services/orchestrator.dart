@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/foundation.dart';
 
 import 'ai_manager.dart';
@@ -12,6 +13,81 @@ import 'ocula_db.dart';
 /// No backend. No MongoDB. Just a local state machine on the phone.
 ///
 /// Pipeline: Intent → Retrieve → Route Model → Generate → Log
+
+// ──────────────────────────────────────────
+// Capability permission system
+// Inspired by agent-web-client/src/agent/permissions.ts
+// ──────────────────────────────────────────
+
+/// Capabilities the orchestrator may request at runtime.
+enum OculaCapability { webSearch, contactsRead, calendarRead, emailRead, photoRead, fileRead }
+
+enum CapabilityBehavior { allow, deny, ask }
+
+/// In-memory permission context for a single orchestrator instance.
+/// Persistent user preferences live in NetworkPermission (SharedPreferences).
+/// This layer handles per-query temporary grants and tier-based overrides.
+class CapabilityPermission {
+  final Map<OculaCapability, CapabilityBehavior> _rules;
+
+  CapabilityPermission._(this._rules);
+
+  factory CapabilityPermission.defaults() => CapabilityPermission._({
+    OculaCapability.webSearch: CapabilityBehavior.ask,
+    OculaCapability.contactsRead: CapabilityBehavior.allow,
+    OculaCapability.calendarRead: CapabilityBehavior.allow,
+    OculaCapability.emailRead: CapabilityBehavior.allow,
+    OculaCapability.photoRead: CapabilityBehavior.allow,
+    OculaCapability.fileRead: CapabilityBehavior.allow,
+  });
+
+  CapabilityBehavior resolve(OculaCapability cap) =>
+      _rules[cap] ?? CapabilityBehavior.ask;
+
+  /// Grant a capability for the current query only.
+  void grantTemp(OculaCapability cap) => _rules[cap] = CapabilityBehavior.allow;
+
+  /// Revert a temporary grant back to "ask" for the next query.
+  void revokeTemp(OculaCapability cap) => _rules[cap] = CapabilityBehavior.ask;
+
+  /// Permanently block a capability (e.g. tier restriction).
+  void block(OculaCapability cap) => _rules[cap] = CapabilityBehavior.deny;
+}
+
+// ──────────────────────────────────────────
+// Agent step events
+// Inspired by agent-web-client/src/index.ts ServerEvent types
+// ──────────────────────────────────────────
+
+enum AgentStepType {
+  detectingIntent,
+  retrieving,
+  webSearching,
+  requestingPermission,
+  routingModel,
+  generating,
+  complete,
+  error,
+}
+
+class AgentStep {
+  final AgentStepType type;
+  final String? detail;
+  AgentStep(this.type, [this.detail]);
+
+  String get label {
+    switch (type) {
+      case AgentStepType.detectingIntent:      return 'Analyzing...';
+      case AgentStepType.retrieving:           return detail ?? 'Searching...';
+      case AgentStepType.webSearching:         return 'Searching the web...';
+      case AgentStepType.requestingPermission: return 'Waiting for permission...';
+      case AgentStepType.routingModel:         return 'Selecting model...';
+      case AgentStepType.generating:           return 'Generating response...';
+      case AgentStepType.complete:             return 'Done';
+      case AgentStepType.error:                return detail ?? 'Error';
+    }
+  }
+}
 
 /// Result from an orchestrator run — response text + linked assets.
 class OrchestratorResult {
@@ -90,13 +166,22 @@ class Orchestrator {
   /// Set to true to abort the current pipeline mid-flight.
   bool _cancelled = false;
 
-  /// Callback the UI registers to show an "Allow internet?" dialog.
-  /// Returns true if user grants permission, false if denied.
-  Future<bool> Function()? onAskInternet;
+  /// Per-run capability permission context.
+  /// Web search starts as "ask"; local data capabilities default to "allow".
+  final CapabilityPermission _permissions = CapabilityPermission.defaults();
 
-  /// Callback when web search is allowed but network is currently offline.
-  /// Returns true if user agreed to open settings / enable connectivity.
-  Future<bool> Function()? onAskEnableConnectivity;
+  /// Broadcast stream of pipeline step events for the UI to display progress.
+  final StreamController<AgentStep> _stepController =
+      StreamController<AgentStep>.broadcast();
+  Stream<AgentStep> get stepStream => _stepController.stream;
+
+  /// Called when a capability requires user confirmation.
+  /// Return true to grant, false to deny for this query.
+  Future<bool> Function(OculaCapability capability)? onAskCapability;
+
+  /// Called when the web is allowed but device connectivity is off.
+  /// Return true if user agreed to open Settings.
+  Future<bool> Function()? onConnectivityNeeded;
 
   Orchestrator({
     AIManager? ai,
@@ -104,8 +189,6 @@ class Orchestrator {
     EpisodicMemory? memory,
     NetworkPermission? network,
     LocalData? localData,
-    this.onAskInternet,
-    this.onAskEnableConnectivity,
   }) : _ai = ai ?? AIManager(),
        _rag = rag ?? RAGEngine(),
        _memory = memory ?? EpisodicMemory(),
@@ -182,6 +265,7 @@ class Orchestrator {
     if (_cancelled) return OrchestratorResult.empty;
 
     // STEP 1: Detect intent
+    _stepController.add(AgentStep(AgentStepType.detectingIntent));
     state = await _detectIntent(state);
     if (_cancelled) return OrchestratorResult.empty;
 
@@ -196,6 +280,8 @@ class Orchestrator {
     }
 
     // STEPS 2+3: RAG retrieval and episodic memory in parallel
+    _stepController.add(AgentStep(AgentStepType.retrieving,
+        _retrievalLabel(state.intent, state.retrievalScope)));
     // These are independent DB queries — running them concurrently saves 200-500ms.
     final results = await Future.wait([
       _retrieve(
@@ -231,15 +317,18 @@ class Orchestrator {
 
     // STEP 4: If web intent, check internet permission
     if (state.intent == QueryIntent.web) {
+      _stepController.add(AgentStep(AgentStepType.webSearching));
       state = await _webSearch(state);
       if (_cancelled) return OrchestratorResult.empty;
     }
 
     // STEP 5: Route to the right model
+    _stepController.add(AgentStep(AgentStepType.routingModel));
     state = await _routeModel(state);
     if (_cancelled) return OrchestratorResult.empty;
 
     // STEP 6: Generate response
+    _stepController.add(AgentStep(AgentStepType.generating));
     state = await _generate(state);
     if (_cancelled) return OrchestratorResult.empty;
 
@@ -249,11 +338,39 @@ class Orchestrator {
     // STEP 8: Index conversation for RAG (non-blocking)
     Indexer().indexChatTurn(state.query, state.response).catchError((_) {});
 
-    // Revoke temp internet grant after query completes
+    // Revoke temp grants after query completes
     _network.revokeTemp();
+    _permissions.revokeTemp(OculaCapability.webSearch);
 
     state.status = StepStatus.completed;
+    _stepController.add(AgentStep(AgentStepType.complete));
     return OrchestratorResult(state.response, state.linkedAssets);
+  }
+
+  /// Dispose the step stream. Call when the orchestrator is no longer needed.
+  void dispose() {
+    _stepController.close();
+  }
+
+  /// Human-readable retrieval label for the step stream.
+  String _retrievalLabel(QueryIntent intent, RetrievalScope scope) {
+    switch (scope) {
+      case RetrievalScope.docs:      return 'Searching documents...';
+      case RetrievalScope.images:    return 'Searching photos...';
+      case RetrievalScope.contacts:  return 'Searching contacts...';
+      case RetrievalScope.email:     return 'Searching emails...';
+      case RetrievalScope.calendar:  return 'Searching calendar...';
+      case RetrievalScope.location:  return 'Searching by location...';
+      case RetrievalScope.all:
+        switch (intent) {
+          case QueryIntent.contact:  return 'Searching contacts...';
+          case QueryIntent.calendar: return 'Searching calendar...';
+          case QueryIntent.email:    return 'Searching emails...';
+          case QueryIntent.file:     return 'Searching documents...';
+          case QueryIntent.photo:    return 'Searching photos...';
+          default:                   return 'Searching...';
+        }
+    }
   }
 
   /// Check if a query is a simple greeting (hello, hi, hey, etc.).
@@ -932,23 +1049,44 @@ class Orchestrator {
   }
 
   /// Node 4: Web search — only runs when intent is web AND user grants access.
+  ///
+  /// Permission resolution order:
+  /// 1. CapabilityPermission in-memory context (allow/deny overrides)
+  /// 2. NetworkPermission persistent prefs (always-allow / always-deny / ask)
+  /// 3. onAskCapability UI callback for "ask" behavior
   Future<AgentState> _webSearch(AgentState state) async {
     await _network.load();
 
-    bool allowed = _network.isAllowed;
+    // Check in-memory capability context first (tier blocks, temp grants)
+    final capBehavior = _permissions.resolve(OculaCapability.webSearch);
+    bool allowed;
 
-    // If set to "ask every time", prompt the user via the UI callback
-    if (!allowed && _network.needsPrompt && onAskInternet != null) {
-      allowed = await onAskInternet!();
-      if (allowed) _network.grantTemp();
+    if (capBehavior == CapabilityBehavior.deny) {
+      allowed = false;
+    } else if (capBehavior == CapabilityBehavior.allow) {
+      allowed = true;
+    } else {
+      // "ask" — defer to persistent NetworkPermission prefs
+      allowed = _network.isAllowed;
+
+      if (!allowed && _network.needsPrompt) {
+        _stepController.add(AgentStep(AgentStepType.requestingPermission));
+        if (onAskCapability != null) {
+          allowed = await onAskCapability!(OculaCapability.webSearch);
+          if (allowed) {
+            _network.grantTemp();
+            _permissions.grantTemp(OculaCapability.webSearch);
+          }
+        }
+      }
     }
 
     if (allowed) {
       final online = await _localData.hasInternetConnection();
       if (!online) {
         bool userWillEnable = false;
-        if (onAskEnableConnectivity != null) {
-          userWillEnable = await onAskEnableConnectivity!();
+        if (onConnectivityNeeded != null) {
+          userWillEnable = await onConnectivityNeeded!();
         }
         state.ragContext +=
             '\n\n[Note: Internet is currently unavailable. '
@@ -966,7 +1104,6 @@ class Orchestrator {
       }
       state.stepsCompleted.add('web_search');
     } else {
-      // Denied — tell the LLM it can't access the web
       state.ragContext +=
           '\n\n[Note: User denied internet access for this query. '
           'Answer using only on-device knowledge.]';
