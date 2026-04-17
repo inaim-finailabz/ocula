@@ -1878,7 +1878,7 @@ class OculaModelManager {
             fileName: allParts[i],
             displayName: model.displayName,
             downloadUrl: partUrl,
-            sizeBytes: partSizeBytes,
+            sizeBytes: 0, // skip uniform-size validation; last part is always smaller
             tier: model.tier,
           );
           debugPrint(

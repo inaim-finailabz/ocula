@@ -531,6 +531,10 @@ class _AssistantScreenState extends State<AssistantScreen>
   }
 
   void _pickImage() {
+    if (Platform.isMacOS || Platform.isWindows || Platform.isLinux) {
+      _pickImageDesktop();
+      return;
+    }
     showModalBottomSheet(
       context: context,
       backgroundColor: Theme.of(context).colorScheme.surfaceContainerHighest,
@@ -543,24 +547,22 @@ class _AssistantScreenState extends State<AssistantScreen>
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              // camera is not supported on desktop platforms
-              if (!Platform.isMacOS && !Platform.isWindows && !Platform.isLinux)
-                ListTile(
-                  leading: const Icon(Icons.camera_alt),
-                  title: const Text('Take Photo'),
-                  onTap: () async {
-                    Navigator.pop(ctx);
-                    final picked = await ImagePicker().pickImage(
-                      source: ImageSource.camera,
-                      maxWidth: 1024,
-                      maxHeight: 1024,
-                      imageQuality: 85,
-                    );
-                    if (picked != null) {
-                      setState(() => _attachedImage = File(picked.path));
-                    }
-                  },
-                ),
+              ListTile(
+                leading: const Icon(Icons.camera_alt),
+                title: const Text('Take Photo'),
+                onTap: () async {
+                  Navigator.pop(ctx);
+                  final picked = await ImagePicker().pickImage(
+                    source: ImageSource.camera,
+                    maxWidth: 1024,
+                    maxHeight: 1024,
+                    imageQuality: 85,
+                  );
+                  if (picked != null) {
+                    setState(() => _attachedImage = File(picked.path));
+                  }
+                },
+              ),
               ListTile(
                 leading: const Icon(Icons.photo_library),
                 title: const Text('Choose from Gallery'),
@@ -582,6 +584,20 @@ class _AssistantScreenState extends State<AssistantScreen>
         ),
       ),
     );
+  }
+
+  Future<void> _pickImageDesktop() async {
+    try {
+      final result = await FilePicker.platform.pickFiles(
+        type: FileType.image,
+        allowMultiple: false,
+      );
+      if (result != null && result.files.single.path != null) {
+        setState(() => _attachedImage = File(result.files.single.path!));
+      }
+    } catch (e) {
+      if (mounted) _showSnackbar('Could not pick image: $e');
+    }
   }
 
   Future<void> _pickDocument() async {
