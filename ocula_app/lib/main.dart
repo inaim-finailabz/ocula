@@ -1107,7 +1107,36 @@ class _AssistantScreenState extends State<AssistantScreen>
     const expandedSize = 160.0;
     const miniSize = 56.0;
 
-    return Scaffold(
+    return PopScope(
+      // On Android, warn before discarding an active conversation.
+      canPop: _messages.isEmpty,
+      onPopInvokedWithResult: (didPop, _) async {
+        if (didPop) return;
+        final confirmed = await showDialog<bool>(
+          context: context,
+          builder: (ctx) => AlertDialog(
+            title: const Text('Leave conversation?'),
+            content: const Text(
+              'Your current chat will be lost. Start a new session from the home screen.',
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(ctx, false),
+                child: const Text('Stay'),
+              ),
+              FilledButton(
+                onPressed: () => Navigator.pop(ctx, true),
+                child: const Text('Leave'),
+              ),
+            ],
+          ),
+        );
+        if ((confirmed ?? false) && context.mounted) {
+          Navigator.of(context).pop();
+        }
+      },
+      child: Scaffold(
+      resizeToAvoidBottomInset: true,
       body: Container(
         decoration: BoxDecoration(
           gradient: LinearGradient(
@@ -1185,7 +1214,11 @@ class _AssistantScreenState extends State<AssistantScreen>
                             ),
                           ),
                         const Spacer(),
-                        if (_messages.any((m) => !m.isUser))
+                        // Export button — visible in the top bar only on
+                        // tablet/desktop where there is room; phones access it
+                        // via the overflow menu below.
+                        if (_isTabletOrDesktop &&
+                            _messages.any((m) => !m.isUser))
                           Builder(
                             builder: (ctx) => IconButton(
                               icon: const Icon(Icons.ios_share, size: 20),
@@ -1232,7 +1265,7 @@ class _AssistantScreenState extends State<AssistantScreen>
                             );
                           },
                         ),
-                        // Overflow menu: history + help
+                        // Overflow menu: history + help + export (on phone)
                         Builder(
                           builder: (ctx) => PopupMenuButton<String>(
                             icon: const Icon(Icons.more_vert, size: 20),
@@ -1242,10 +1275,23 @@ class _AssistantScreenState extends State<AssistantScreen>
                                 _openSessionHistory(ctx);
                               } else if (value == 'help') {
                                 _startHelpTour();
+                              } else if (value == 'export') {
+                                final lastResponse = _messages
+                                    .lastWhere((m) => !m.isUser)
+                                    .text;
+                                final box =
+                                    ctx.findRenderObject() as RenderBox?;
+                                final origin = box != null
+                                    ? box.localToGlobal(Offset.zero) & box.size
+                                    : null;
+                                _export.exportAndShare(
+                                  lastResponse,
+                                  origin: origin,
+                                );
                               }
                             },
-                            itemBuilder: (_) => const [
-                              PopupMenuItem(
+                            itemBuilder: (_) => [
+                              const PopupMenuItem(
                                 value: 'history',
                                 child: Row(
                                   children: [
@@ -1255,7 +1301,7 @@ class _AssistantScreenState extends State<AssistantScreen>
                                   ],
                                 ),
                               ),
-                              PopupMenuItem(
+                              const PopupMenuItem(
                                 value: 'help',
                                 child: Row(
                                   children: [
@@ -1265,6 +1311,20 @@ class _AssistantScreenState extends State<AssistantScreen>
                                   ],
                                 ),
                               ),
+                              // Export last response — shown on phone only
+                              // (tablet/desktop have the dedicated icon button)
+                              if (!_isTabletOrDesktop &&
+                                  _messages.any((m) => !m.isUser))
+                                const PopupMenuItem(
+                                  value: 'export',
+                                  child: Row(
+                                    children: [
+                                      Icon(Icons.ios_share, size: 18),
+                                      SizedBox(width: 10),
+                                      Text('Export response'),
+                                    ],
+                                  ),
+                                ),
                             ],
                           ),
                         ),
@@ -1585,6 +1645,14 @@ class _AssistantScreenState extends State<AssistantScreen>
                               child: TextField(
                                 controller: _textController,
                                 style: const TextStyle(fontSize: 15),
+                                maxLines: null,
+                                minLines: 1,
+                                keyboardType: TextInputType.multiline,
+                                textCapitalization:
+                                    TextCapitalization.sentences,
+                                textInputAction: TextInputAction.newline,
+                                autocorrect: true,
+                                enableSuggestions: true,
                                 decoration: InputDecoration(
                                   hintText: 'Ask anything...',
                                   hintStyle: TextStyle(
@@ -1595,7 +1663,6 @@ class _AssistantScreenState extends State<AssistantScreen>
                                     vertical: 12,
                                   ),
                                 ),
-                                onSubmitted: _send,
                               ),
                             ),
                           ),
@@ -1769,7 +1836,8 @@ class _AssistantScreenState extends State<AssistantScreen>
           ),
         ),
       ),
-    );
+    ), // Scaffold
+    ); // PopScope
   }
 }
 
@@ -2313,7 +2381,12 @@ class _InputAction extends StatelessWidget {
     final c = color ?? Theme.of(context).colorScheme.onSurface;
     return InkWell(
       borderRadius: BorderRadius.circular(12),
-      onTap: onTap,
+      onTap: onTap == null
+          ? null
+          : () {
+              HapticFeedback.lightImpact();
+              onTap!();
+            },
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
         child: Column(
@@ -2342,7 +2415,10 @@ class _SendButton extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return GestureDetector(
-      onTap: onTap,
+      onTap: () {
+        HapticFeedback.mediumImpact();
+        onTap();
+      },
       child: Container(
         width: 40,
         height: 40,
