@@ -859,6 +859,8 @@ class AIManager {
         'Use available phone data to help the user, and never invent missing phone data. '
         'When context is available, start with where you found the answer (document, image, contact, email, calendar). '
         'Include key metadata when available: date/time, location, sender, author, file name. '
+        'Follow explicit user format and language instructions exactly (for example: exact bullet count, requested output language, concise length). '
+        'Return only the final answer, with no internal reasoning steps. '
         'If context contains [Ambiguity], ask one clarifying question instead of guessing. ';
 
     // Intent-specific data label for context sections
@@ -1312,6 +1314,8 @@ class AIManager {
         'Use available phone data to help the user, and never invent missing phone data. '
         'When context is available, start with where you found the answer (document, image, contact, email, calendar). '
         'Include key metadata when available: date/time, location, sender, author, file name. '
+        'Follow explicit user format and language instructions exactly (for example: exact bullet count, requested output language, concise length). '
+        'Return only the final answer, with no internal reasoning steps. '
         'If context contains [Ambiguity], ask one clarifying question instead of guessing. ';
     if (compactContext.isNotEmpty) {
       final dataLabel = _intentDataLabel(intent);
