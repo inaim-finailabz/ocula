@@ -1,3 +1,4 @@
+import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_llama/flutter_llama.dart';
 import 'ocula_db.dart';
@@ -51,12 +52,17 @@ class RAGEngine {
     _cachedCount = await _db.chunkCount;
 
     try {
-      // Prefer dedicated embedding model dimension
-      final llama = FlutterLlama.instance;
-      if (llama.isEmbeddingModelLoaded) {
-        _embeddingDim = await llama.getEmbeddingModelDim();
-      } else {
-        _embeddingDim = await llama.getEmbeddingDim();
+      // Prefer dedicated embedding model dimension.
+      // On macOS, all llama_encode-based calls (getEmbeddingDim, getEmbeddingModelDim,
+      // getEmbedding, getEmbeddingV2) crash with Qwen3 (null KV cache, llama.cpp bug).
+      // Skip entirely on macOS — RAG falls back to keyword-only (FTS5).
+      if (!Platform.isMacOS) {
+        final llama = FlutterLlama.instance;
+        if (llama.isEmbeddingModelLoaded) {
+          _embeddingDim = await llama.getEmbeddingModelDim();
+        } else {
+          _embeddingDim = await llama.getEmbeddingDim();
+        }
       }
       if (kDebugMode) {
         print('[RAG] Init: $_cachedCount entries in DB, dim=$_embeddingDim');
@@ -553,21 +559,23 @@ class RAGEngine {
     try {
       final llama = FlutterLlama.instance;
 
-      // Prefer dedicated embedding model (trained for sentence similarity)
-      if (llama.isEmbeddingModelLoaded) {
-        final embedding = await llama.getEmbeddingV2(text);
-        if (embedding != null && embedding.isNotEmpty) {
-          _embeddingDim = embedding.length;
-          return embedding;
+      // Both getEmbeddingV2 and getEmbedding call llama_encode natively.
+      // Qwen3 crashes in llama_encode (null KV cache context, llama.cpp bug).
+      // On macOS, skip all vector embeddings — RAG falls back to keyword-only (FTS5).
+      if (!Platform.isMacOS) {
+        if (llama.isEmbeddingModelLoaded) {
+          final embedding = await llama.getEmbeddingV2(text);
+          if (embedding != null && embedding.isNotEmpty) {
+            _embeddingDim = embedding.length;
+            return embedding;
+          }
         }
-      }
-
-      // Fallback: generative model embeddings (lower quality)
-      if (llama.isModelLoaded) {
-        final embedding = await llama.getEmbedding(text);
-        if (embedding != null && embedding.isNotEmpty) {
-          _embeddingDim = embedding.length;
-          return embedding;
+        if (llama.isModelLoaded) {
+          final embedding = await llama.getEmbedding(text);
+          if (embedding != null && embedding.isNotEmpty) {
+            _embeddingDim = embedding.length;
+            return embedding;
+          }
         }
       }
     } catch (e) {

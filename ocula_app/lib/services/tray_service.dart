@@ -1,5 +1,6 @@
 import 'dart:io';
 import 'dart:ui';
+import 'package:flutter/foundation.dart';
 import 'package:tray_manager/tray_manager.dart';
 import 'package:window_manager/window_manager.dart';
 
@@ -22,7 +23,7 @@ class TrayService with TrayListener, WindowListener {
       title: 'Ocula',
       center: true,
       minimumSize: Size(380, 600),
-      skipTaskbar: false,
+      skipTaskbar: true,   // menu bar app — no Dock tile or Mission Control entry
       titleBarStyle: TitleBarStyle.normal,
     );
     await windowManager.waitUntilReadyToShow(options);
@@ -31,19 +32,26 @@ class TrayService with TrayListener, WindowListener {
     await windowManager.show();
 
     // Tray icon
-    await trayManager.setIcon(_iconPath);
-    await trayManager.setToolTip('Ocula');
-    await _rebuildMenu();
-    trayManager.addListener(this);
+    try {
+      await trayManager.setIcon(_iconPath, isTemplate: false);
+      debugPrint('[TrayService] setIcon OK');
+      await trayManager.setToolTip('Ocula');
+      await _rebuildMenu();
+      trayManager.addListener(this);
+      debugPrint('[TrayService] init complete — icon visible in menu bar');
+    } catch (e, stack) {
+      debugPrint('[TrayService] INIT ERROR: $e\n$stack');
+    }
   }
 
   // ── TrayListener ────────────────────────────────────────────────────────────
 
   @override
   void onTrayIconMouseDown() {
-    // macOS: left-click shows the menu. Windows: left-click toggles window.
+    // macOS: left-click rebuilds menu (to reflect current visibility) then shows it.
+    // Windows: left-click toggles window.
     if (Platform.isMacOS) {
-      trayManager.popUpContextMenu();
+      _rebuildMenu().then((_) => trayManager.popUpContextMenu());
     } else if (Platform.isWindows) {
       _toggleWindow();
     }
@@ -51,15 +59,13 @@ class TrayService with TrayListener, WindowListener {
 
   @override
   void onTrayIconRightMouseDown() {
-    trayManager.popUpContextMenu();
+    _rebuildMenu().then((_) => trayManager.popUpContextMenu());
   }
 
   @override
   void onTrayMenuItemClick(MenuItem item) {
     switch (item.key) {
       case 'open':
-        _showWindow();
-      case 'show':
         _showWindow();
       case 'hide':
         _hideWindow();
@@ -120,11 +126,9 @@ class TrayService with TrayListener, WindowListener {
     final visible = await windowManager.isVisible();
     await trayManager.setContextMenu(Menu(
       items: [
-        MenuItem(key: 'open', label: 'Open Ocula'),
-        MenuItem.separator(),
         MenuItem(
-          key: visible ? 'hide' : 'show',
-          label: visible ? 'Hide' : 'Show',
+          key: visible ? 'hide' : 'open',
+          label: visible ? 'Hide Ocula' : 'Open Ocula',
         ),
         MenuItem.separator(),
         MenuItem(key: 'quit', label: 'Quit Ocula'),

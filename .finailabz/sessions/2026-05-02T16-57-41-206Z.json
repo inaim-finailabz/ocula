@@ -1,0 +1,69 @@
+{
+  "id": "2026-05-02T16-57-41-206Z",
+  "model": "default",
+  "startedAt": "2026-05-02T16:57:41.206Z",
+  "turns": [
+    {
+      "timestamp": 1777741061206,
+      "role": "user",
+      "text": "run similuation iphoen and abroid"
+    },
+    {
+      "timestamp": 1777741061206,
+      "role": "assistant",
+      "text": "",
+      "toolCalls": [],
+      "iterationMs": 4
+    },
+    {
+      "timestamp": 1777741207993,
+      "role": "user",
+      "text": "run similuation iphoen and abroid"
+    },
+    {
+      "timestamp": 1777741207993,
+      "role": "assistant",
+      "text": "",
+      "toolCalls": [],
+      "iterationMs": 3
+    },
+    {
+      "timestamp": 1777747474695,
+      "role": "user",
+      "text": "Analyze this project: read the key files, understand the architecture, and suggest the top 3 improvements."
+    },
+    {
+      "timestamp": 1777747474695,
+      "role": "assistant",
+      "text": "",
+      "toolCalls": [],
+      "iterationMs": 4
+    },
+    {
+      "timestamp": 1777747508643,
+      "role": "user",
+      "text": "Analyze this project: read the key files, understand the architecture, and suggest the top 3 improvements."
+    },
+    {
+      "timestamp": 1777747508643,
+      "role": "assistant",
+      "text": "",
+      "toolCalls": [],
+      "iterationMs": 4
+    },
+    {
+      "timestamp": 1777747552805,
+      "role": "user",
+      "text": "Analyze this project: read the key files, understand the architecture, and suggest the top 3 improvements."
+    },
+    {
+      "timestamp": 1777747552805,
+      "role": "assistant",
+      "text": "",
+      "toolCalls": [],
+      "iterationMs": 3
+    }
+  ],
+  "totalIterations": 5,
+  "totalToolCalls": 0
+}

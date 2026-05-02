@@ -126,22 +126,45 @@ class _OculaSplashScreenState extends State<OculaSplashScreen>
       }
 
       // ── Step 2: Check if model already exists ──
+      // On desktop, prefer the highest-quality downloaded tier (Pro > Plus > Free).
+      final isDesktopCheck =
+          Platform.isMacOS || Platform.isWindows || Platform.isLinux;
+      AITier? bestReadyTier;
+      if (isDesktopCheck) {
+        for (final tier in [AITier.pro, AITier.plus, AITier.free]) {
+          final mainModel = OculaModelManager.models
+              .where((m) =>
+                  m.tier == tier &&
+                  !m.isVisionProjector &&
+                  !m.isEmbeddingModel)
+              .firstOrNull;
+          if (mainModel != null &&
+              await modelManager.isDownloaded(mainModel.fileName)) {
+            bestReadyTier = tier;
+            _logStep('MODEL-CHECK', 'Best downloaded tier: ${tier.name}');
+            break;
+          }
+        }
+      }
       _logStep('MODEL-CHECK', 'Checking isFreeModelReady...');
-      final alreadyReady = await modelManager.isFreeModelReady;
-      _logStep('MODEL-CHECK', 'isFreeModelReady = $alreadyReady');
+      final alreadyReady = bestReadyTier != null
+          ? true
+          : await modelManager.isFreeModelReady;
+      final tierToLoad = bestReadyTier ?? AITier.free;
+      _logStep('MODEL-CHECK', 'alreadyReady=$alreadyReady tier=${tierToLoad.name}');
 
       if (alreadyReady) {
         _logStep('MODEL-LOAD', 'Model already on disk — loading into memory...');
         if (mounted) setState(() => _statusText = 'Loading AI engine...');
-        final path = await modelManager.mainModelPath(AITier.free);
+        final path = await modelManager.mainModelPath(tierToLoad);
         _logStep('MODEL-LOAD', 'mainModelPath = $path');
         if (path != null) {
           final fileSize = await File(path).length();
           _logStep('MODEL-LOAD', 'File size: ${(fileSize / (1024 * 1024)).toStringAsFixed(1)} MB');
         }
         try {
-          await AIManager().switchEngine(AITier.free);
-          _logStep('MODEL-LOAD', 'switchEngine(free) succeeded ✓');
+          await AIManager().switchEngine(tierToLoad);
+          _logStep('MODEL-LOAD', 'switchEngine(${tierToLoad.name}) succeeded ✓');
         } catch (loadErr, loadStack) {
           _logStep('MODEL-LOAD', 'switchEngine FAILED: $loadErr');
           debugPrint('[Splash] Load stack: $loadStack');
@@ -152,16 +175,92 @@ class _OculaSplashScreenState extends State<OculaSplashScreen>
         return;
       }
 
-      // ── Step 3: Start model install in background — do NOT block navigation ──
-      // ODR/PAD delivers the model at install on App Store builds; TestFlight and
-      // direct installs fall back to a backend download.  Either way the home
-      // screen handles progress via its download banner and auto-loads the model
-      // when [freeModelStatusStream] emits true.  If install fails the home
-      // screen shows a retry button.
-      _logStep('ENSURE-MODEL', 'Firing ensureFreeModelReady in background...');
-      modelManager.ensureFreeModelReady().catchError((e) {
-        debugPrint('[Splash] Background model install error: $e');
-      });
+      // ── Step 3: Ensure model is ready ──
+      // On desktop (macOS/Windows/Linux) there is no ODR/PAD delivery.
+      // macOS downloads Pro tier on first run (best quality, no storage constraints).
+      // Windows/Linux fall back to Free.
+      // Mobile keeps fire-and-forget (ODR/PAD handles it).
+      final isDesktop =
+          Platform.isMacOS || Platform.isWindows || Platform.isLinux;
+
+      if (isDesktop) {
+        // On macOS/Windows/Linux: download Plus as default (Pro is on-demand from Settings).
+        // Plus covers vision + text and fits all Apple Silicon Macs comfortably.
+        _logStep('ENSURE-MODEL', 'Downloading Plus model (desktop first-run)...');
+        if (mounted) setState(() => _statusText = 'Downloading AI model...');
+
+        bool ok;
+        if (Platform.isMacOS || Platform.isWindows || Platform.isLinux) {
+          ok = await modelManager.downloadTier(
+            AITier.plus,
+            onProgress: (progress, status) {
+              if (mounted) {
+                setState(() {
+                  _downloadProgress = progress;
+                  _statusText = status;
+                });
+              }
+            },
+          );
+          if (!ok) {
+            // Fall back to Free if Plus download fails
+            debugPrint('[Splash] Plus download failed, falling back to Free');
+            ok = await modelManager.ensureFreeModelReady(
+              onProgress: (progress, status) {
+                if (mounted) {
+                  setState(() {
+                    _downloadProgress = progress;
+                    _statusText = status;
+                  });
+                }
+              },
+            );
+          }
+        } else {
+          ok = await modelManager.ensureFreeModelReady(
+            onProgress: (progress, status) {
+              if (mounted) {
+                setState(() {
+                  _downloadProgress = progress;
+                  _statusText = status;
+                });
+              }
+            },
+          );
+        }
+
+        if (!ok && mounted) {
+          setState(() {
+            _errorText = 'Model download failed. Check your connection and retry.';
+            _showRetry = true;
+          });
+          timer.cancel();
+          return;
+        }
+        // Model is on disk — load it into memory before navigating.
+        // Re-run tier detection to pick the best downloaded model.
+        AITier? reloadTier;
+        for (final tier in [AITier.pro, AITier.plus, AITier.free]) {
+          final mainModel = OculaModelManager.models
+              .where((m) => m.tier == tier && !m.isVisionProjector && !m.isEmbeddingModel)
+              .firstOrNull;
+          if (mainModel != null && await modelManager.isDownloaded(mainModel.fileName)) {
+            reloadTier = tier;
+            break;
+          }
+        }
+        if (mounted) setState(() => _statusText = 'Loading AI engine...');
+        try {
+          await AIManager().switchEngine(reloadTier ?? AITier.free);
+        } catch (e) {
+          debugPrint('[Splash] Desktop model load error: $e');
+        }
+      } else {
+        _logStep('ENSURE-MODEL', 'Firing ensureFreeModelReady in background...');
+        modelManager.ensureFreeModelReady().catchError((e) {
+          debugPrint('[Splash] Background model install error: $e');
+        });
+      }
 
       _completeInitialization(prefs, modelManager);
       timer.cancel();

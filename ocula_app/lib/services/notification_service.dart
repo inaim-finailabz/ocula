@@ -62,7 +62,9 @@ class NotificationService {
   Future<void> init() async {
     if (_initialized) return;
     await _initPlugin();
-    await _registerBackgroundTasks();
+    if (Platform.isAndroid || Platform.isIOS) {
+      await _registerBackgroundTasks();
+    }
     _initialized = true;
   }
 
@@ -70,7 +72,7 @@ class NotificationService {
     tz.initializeTimeZones();
 
     const androidSettings = AndroidInitializationSettings('@mipmap/ic_launcher');
-    const iosSettings = DarwinInitializationSettings(
+    const darwinSettings = DarwinInitializationSettings(
       requestAlertPermission: true,
       requestBadgePermission: true,
       requestSoundPermission: true,
@@ -79,7 +81,8 @@ class NotificationService {
     await _plugin.initialize(
       const InitializationSettings(
         android: androidSettings,
-        iOS: iosSettings,
+        iOS: darwinSettings,
+        macOS: darwinSettings,
       ),
       onDidReceiveNotificationResponse: _onNotificationTap,
     );
@@ -92,7 +95,7 @@ class NotificationService {
     }
   }
 
-  /// Request notification permission (Android 13+, iOS).
+  /// Request notification permission (Android 13+, iOS, macOS).
   Future<bool> requestPermission() async {
     if (Platform.isAndroid) {
       final android = _plugin.resolvePlatformSpecificImplementation<
@@ -103,6 +106,15 @@ class NotificationService {
       final ios = _plugin.resolvePlatformSpecificImplementation<
           IOSFlutterLocalNotificationsPlugin>();
       final granted = await ios?.requestPermissions(
+        alert: true,
+        badge: true,
+        sound: true,
+      );
+      return granted ?? false;
+    } else if (Platform.isMacOS) {
+      final macos = _plugin.resolvePlatformSpecificImplementation<
+          MacOSFlutterLocalNotificationsPlugin>();
+      final granted = await macos?.requestPermissions(
         alert: true,
         badge: true,
         sound: true,

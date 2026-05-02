@@ -26,8 +26,10 @@ class ShareReceiver {
   void Function(String displayText, String queryForModel)? onSharedContent;
 
   /// Start listening for incoming shared content.
-  /// Call once from initState.
+  /// Call once from initState. No-op on desktop platforms.
   void init() {
+    if (!Platform.isAndroid && !Platform.isIOS) return;
+
     // Listen for all shared content (text, URLs, images, files) while app is running
     _intentSub = ReceiveSharingIntent.instance.getMediaStream().listen(
       (List<SharedMediaFile> files) {

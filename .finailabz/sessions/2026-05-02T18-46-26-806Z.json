@@ -1,0 +1,21 @@
+{
+  "id": "2026-05-02T18-46-26-806Z",
+  "model": "default",
+  "startedAt": "2026-05-02T18:46:26.807Z",
+  "turns": [
+    {
+      "timestamp": 1777747586807,
+      "role": "user",
+      "text": "Analyze this project: read the key files, understand the architecture, and suggest the top 3 improvements."
+    },
+    {
+      "timestamp": 1777747586807,
+      "role": "assistant",
+      "text": "",
+      "toolCalls": [],
+      "iterationMs": 182
+    }
+  ],
+  "totalIterations": 1,
+  "totalToolCalls": 0
+}

@@ -54,6 +54,33 @@ class ModelInfo {
 /// Download progress callback.
 typedef DownloadProgress = void Function(double progress, String status);
 
+/// Describes a macOS MLX model — a directory of safetensors + config files.
+/// Only used on macOS; ignored on mobile.
+class MLXModelInfo {
+  final String dirName;       // local directory name, e.g. "Qwen3-4B-4bit"
+  final String displayName;   // shown in UI
+  final String baseUrl;       // URL prefix; each file appended: "$baseUrl/$file"
+  final List<String> files;   // all files to download into the directory
+  final int totalSizeBytes;
+  final AITier tier;
+
+  const MLXModelInfo({
+    required this.dirName,
+    required this.displayName,
+    required this.baseUrl,
+    required this.files,
+    required this.totalSizeBytes,
+    required this.tier,
+  });
+
+  double get sizeMB => totalSizeBytes / (1024 * 1024);
+  String get sizeLabel {
+    final mb = sizeMB;
+    if (mb >= 1024) return '${(mb / 1024).toStringAsFixed(1)} GB';
+    return '${mb.round()} MB';
+  }
+}
+
 enum ModelStatus { notDownloaded, downloading, ready, error }
 
 class OculaModelManager {
@@ -71,6 +98,44 @@ class OculaModelManager {
 
   /// Cached model server URL (loaded from prefs on first use).
   String? _cachedModelServerUrl;
+
+  // ── macOS MLX Model Registry ──────────────────────────────────────────────
+  // MLX models are safetensors directories — Apple Silicon native, no llama.cpp.
+  // Hosted on backend mirroring mlx-community HuggingFace repos.
+  static const mlxModels = [
+    MLXModelInfo(
+      dirName: 'Qwen3-1.7B-4bit',
+      displayName: 'Ocula Lite (MLX)',
+      baseUrl: 'https://backend-ocula.finailabz.com/mlx/Qwen3-1.7B-4bit',
+      files: [
+        'config.json',
+        'generation_config.json',
+        'special_tokens_map.json',
+        'tokenizer.json',
+        'tokenizer_config.json',
+        'model.safetensors',
+      ],
+      totalSizeBytes: 1100 * 1024 * 1024, // ~1.1 GB 4-bit quantized
+      tier: AITier.free,
+    ),
+    MLXModelInfo(
+      dirName: 'Qwen3-4B-4bit',
+      displayName: 'Ocula Pro (MLX)',
+      baseUrl: 'https://backend-ocula.finailabz.com/mlx/Qwen3-4B-4bit',
+      files: [
+        'config.json',
+        'generation_config.json',
+        'special_tokens_map.json',
+        'tokenizer.json',
+        'tokenizer_config.json',
+        'model-00001-of-00002.safetensors',
+        'model-00002-of-00002.safetensors',
+        'model.safetensors.index.json',
+      ],
+      totalSizeBytes: 2500 * 1024 * 1024, // ~2.5 GB 4-bit quantized
+      tier: AITier.pro,
+    ),
+  ];
 
   // ── Model Registry ── 2026 Ocula Intelligence Stack
   //
@@ -439,6 +504,107 @@ class OculaModelManager {
       }
     }
   }
+
+  // ── macOS MLX helpers ────────────────────────────────────────────────────
+
+  String? _mlxModelsDir;
+
+  /// Root directory for MLX model directories on macOS.
+  Future<String> get mlxModelsDir async {
+    if (_mlxModelsDir != null) return _mlxModelsDir!;
+    final appDir = await getApplicationSupportDirectory();
+    final dir = Directory('${appDir.path}/mlx_models');
+    if (!await dir.exists()) await dir.create(recursive: true);
+    _mlxModelsDir = dir.path;
+    return _mlxModelsDir!;
+  }
+
+  /// Full path to an MLX model directory.
+  Future<String> mlxModelDir(String dirName) async {
+    final root = await mlxModelsDir;
+    return '$root/$dirName';
+  }
+
+  /// Returns true if all required files for the MLX model are present and non-empty.
+  Future<bool> isMLXModelDownloaded(MLXModelInfo model) async {
+    final dir = await mlxModelDir(model.dirName);
+    for (final file in model.files) {
+      final f = File('$dir/$file');
+      if (!f.existsSync() || f.lengthSync() < 64) return false;
+    }
+    return true;
+  }
+
+  /// Download all files for an MLX model into its local directory.
+  Future<bool> downloadMLXModel(
+    MLXModelInfo model, {
+    DownloadProgress? onProgress,
+  }) async {
+    final dir = await mlxModelDir(model.dirName);
+    await Directory(dir).create(recursive: true);
+
+    int totalDownloaded = 0;
+    for (int i = 0; i < model.files.length; i++) {
+      final file = model.files[i];
+      final url = '${model.baseUrl}/$file';
+      final dest = File('$dir/$file');
+      if (dest.existsSync() && dest.lengthSync() > 64) {
+        // Already downloaded — add its size to progress
+        totalDownloaded += dest.lengthSync();
+        onProgress?.call(totalDownloaded / model.totalSizeBytes,
+            'Skipping $file (cached)');
+        continue;
+      }
+      onProgress?.call(totalDownloaded / model.totalSizeBytes,
+          'Downloading $file (${i + 1}/${model.files.length})...');
+      try {
+        final client = HttpClient();
+        final req = await client.getUrl(Uri.parse(url));
+        final resp = await req.close();
+        if (resp.statusCode != 200) {
+          debugPrint('[ModelManager] MLX download HTTP ${resp.statusCode}: $url');
+          client.close();
+          return false;
+        }
+        final sink = dest.openWrite();
+        int fileBytes = 0;
+        await for (final chunk in resp) {
+          if (_cancelledDownloads.contains(model.dirName)) {
+            await sink.close();
+            client.close();
+            return false;
+          }
+          sink.add(chunk);
+          fileBytes += chunk.length;
+          totalDownloaded += chunk.length;
+          onProgress?.call(
+            totalDownloaded / model.totalSizeBytes,
+            'Downloading $file (${i + 1}/${model.files.length})... '
+            '${(fileBytes / (1024 * 1024)).toStringAsFixed(1)} MB',
+          );
+        }
+        await sink.close();
+        client.close();
+        totalDownloaded = totalDownloaded; // re-use actual
+      } catch (e) {
+        debugPrint('[ModelManager] MLX download error: $e');
+        return false;
+      }
+    }
+    onProgress?.call(1.0, 'Download complete');
+    return true;
+  }
+
+  /// Best downloaded MLX model for macOS (Pro > Free).
+  Future<MLXModelInfo?> get bestMLXModel async {
+    for (final tier in [AITier.pro, AITier.free]) {
+      final model = mlxModels.where((m) => m.tier == tier).firstOrNull;
+      if (model != null && await isMLXModelDownloaded(model)) return model;
+    }
+    return null;
+  }
+
+  // ── GGUF model directory ──────────────────────────────────────────────────
 
   /// Get the models directory, creating it if needed.
   Future<String> get modelsDir async {
@@ -1083,6 +1249,49 @@ class OculaModelManager {
           await _wipeSplitShards(parts);
           return false;
         }
+      }
+      await _writeFreeShardManifest(copiedShards);
+      return true;
+    }
+
+    // ── Step 3: Desktop (macOS / Windows / Linux) — download from backend ───
+    // No ODR or PAD on desktop. Derive each part's URL from the first-part URL
+    // stored in models, then download them sequentially.
+    if (Platform.isMacOS || Platform.isWindows || Platform.isLinux) {
+      final modelInfo = models.where((m) => m.fileName == parts.first).firstOrNull;
+      if (modelInfo == null) return false;
+
+      final copiedShards = <Map<String, dynamic>>[];
+      for (int i = 0; i < parts.length; i++) {
+        final part = parts[i];
+        final partUrl = modelInfo.downloadUrl.replaceFirst(
+          RegExp(r'\d{5}-of-\d{5}\.gguf'),
+          '${(i + 1).toString().padLeft(5, '0')}-of-'
+          '${parts.length.toString().padLeft(5, '0')}.gguf',
+        );
+        final partInfo = ModelInfo(
+          fileName: part,
+          displayName: '${modelInfo.displayName} part ${i + 1}/${parts.length}',
+          downloadUrl: partUrl,
+          sizeBytes: 0, // skip uniform-size validation; last part is always smaller
+          tier: modelInfo.tier,
+        );
+        final ok = await download(
+          partInfo,
+          onProgress: onProgress == null
+              ? null
+              : (p, s) => onProgress(
+                    (i + p) / parts.length,
+                    'Downloading AI model part ${i + 1} of ${parts.length}... '
+                    '${(p * 100).toStringAsFixed(0)}%',
+                  ),
+        );
+        if (!ok) {
+          await _wipeSplitShards(parts);
+          return false;
+        }
+        final dest = await modelPath(part);
+        copiedShards.add({'name': part, 'bytes': await File(dest).length()});
       }
       await _writeFreeShardManifest(copiedShards);
       return true;
@@ -1928,6 +2137,38 @@ class OculaModelManager {
       );
       if (!success) return false;
     }
+    return true;
+  }
+
+  /// Download all models for a tier and emit progress to [downloadProgressStream].
+  ///
+  /// Use this instead of [downloadTier] when triggered from the UI so the home
+  /// screen banner reflects progress and the tier-ready streams fire when done.
+  Future<bool> downloadTierWithProgress(
+    AITier tier, {
+    DownloadProgress? onProgress,
+  }) async {
+    final tierModels = modelsForTier(tier);
+    for (int i = 0; i < tierModels.length; i++) {
+      final model = tierModels[i];
+      final prefix = tierModels.length > 1
+          ? '(${i + 1}/${tierModels.length}) '
+          : '';
+      final success = await download(
+        model,
+        onProgress: (p, s) {
+          final overall = (i + p) / tierModels.length;
+          _downloadProgress[model.fileName] = overall;
+          _downloadProgressStreamController.add(Map.from(_downloadProgress));
+          onProgress?.call(overall, '$prefix$s');
+        },
+      );
+      _downloadProgress.remove(model.fileName);
+      _downloadProgressStreamController.add(Map.from(_downloadProgress));
+      if (!success) return false;
+    }
+    _featureReadyController.add(featureLabel(tier));
+    _tierReadyController.add(tier);
     return true;
   }
 

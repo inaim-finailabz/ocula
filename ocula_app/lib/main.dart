@@ -110,6 +110,9 @@ class _AssistantScreenState extends State<AssistantScreen>
   String? _currentStepLabel;
 
   bool _freeModelFailed = false;
+  static final bool _isDesktop =
+      Platform.isMacOS || Platform.isWindows || Platform.isLinux;
+  bool _isTabletOrDesktop = _isDesktop;
 
   // ── Help Tour ──
   static final _orbKey = GlobalKey();
@@ -172,6 +175,33 @@ class _AssistantScreenState extends State<AssistantScreen>
     });
   }
 
+  /// On tablet/desktop: silently download Plus in the background after Lite loads.
+  /// Plus is the recommended default for these form factors. Progress is shown
+  /// in the home screen banner. The AIManager auto-switches when it's ready.
+  Future<void> _autoDownloadPlusIfNeeded() async {
+    if (await _ai.isTierDownloaded(AITier.plus)) return;
+    if (!await _ai.canDeviceRunTier(AITier.plus)) return;
+    debugPrint('[Home] Tablet/desktop: auto-downloading Plus tier...');
+    _modelManager.downloadTierWithProgress(AITier.plus).catchError((e) {
+      debugPrint('[Home] Plus auto-download error: $e');
+      return false;
+    });
+  }
+
+  /// Open the model picker bottom sheet from the tier badge or image suggestion.
+  void _showModelPickerSheet() {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      useSafeArea: true,
+      backgroundColor: Theme.of(context).colorScheme.surface,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (_) => const _ModelPickerSheet(),
+    );
+  }
+
   void _startHelpTour() {
     if (mounted) setState(() => _showingHelpTour = true);
   }
@@ -205,16 +235,23 @@ class _AssistantScreenState extends State<AssistantScreen>
       if (ok) {
         setState(() => _freeModelFailed = false);
         _ensureLiteActivatedIfReady();
-        // Plus/Pro download is strictly on-demand from Settings.
-        // Auto-downloading here causes iOS to terminate the app when it
-        // goes to background mid-download (HttpClient has no background
-        // download privileges on iOS).
+        // On tablet/desktop, auto-download Plus after Lite is ready.
+        // Plus is the default tier for these form factors (better quality,
+        // vision support). On phones this stays strictly on-demand.
+        if (_isTabletOrDesktop) {
+          _autoDownloadPlusIfNeeded();
+        }
       } else {
         setState(() => _freeModelFailed = true);
       }
     });
     // Handle race: model may have finished installing before home screen opened.
     WidgetsBinding.instance.addPostFrameCallback((_) async {
+      // Detect tablet (iPad or large-screen Android) by screen size.
+      final shortestSide = MediaQuery.sizeOf(context).shortestSide;
+      if (shortestSide > 600 && !_isDesktop) {
+        _isTabletOrDesktop = true;
+      }
       await _ensureLiteActivatedIfReady();
     });
 
@@ -323,17 +360,14 @@ class _AssistantScreenState extends State<AssistantScreen>
     }
 
     // ── Normal download progress ──
-    // Show only the free-tier main model in the chat banner.
-    // Plus/Pro progress is shown in Settings, not here.
+    // Prefer showing the main (non-projector, non-embed) model being downloaded.
+    // Falls back to any downloading file so progress is never hidden.
     final primary = _activeDownloads.entries.where((e) {
       final m = OculaModelManager.models
           .where((m) => m.fileName == e.key)
           .firstOrNull;
-      return m != null &&
-          m.tier == AITier.free &&
-          !m.isVisionProjector &&
-          !m.isEmbeddingModel;
-    }).firstOrNull;
+      return m != null && !m.isVisionProjector && !m.isEmbeddingModel;
+    }).firstOrNull ?? _activeDownloads.entries.firstOrNull;
 
     if (primary == null) return const SizedBox.shrink();
 
@@ -524,17 +558,28 @@ class _AssistantScreenState extends State<AssistantScreen>
       ),
     );
     if (openSettings == true) {
-      await openAppSettings();
+      if (!Platform.isMacOS) await openAppSettings();
       return true;
     }
     return false;
   }
 
-  void _pickImage() {
-    if (Platform.isMacOS || Platform.isWindows || Platform.isLinux) {
-      _pickImageDesktop();
-      return;
+  static const _cameraChannel =
+      MethodChannel('com.finailabz.ai.ocula/camera');
+
+  /// Open the native macOS camera capture panel and return the saved path.
+  Future<void> _takeMacOSPhoto() async {
+    try {
+      final path = await _cameraChannel.invokeMethod<String>('capturePhoto');
+      if (path != null && mounted) {
+        setState(() => _attachedImage = File(path));
+      }
+    } catch (e) {
+      if (mounted) _showSnackbar('Camera error: $e');
     }
+  }
+
+  void _pickImage() {
     showModalBottomSheet(
       context: context,
       backgroundColor: Theme.of(context).colorScheme.surfaceContainerHighest,
@@ -552,6 +597,10 @@ class _AssistantScreenState extends State<AssistantScreen>
                 title: const Text('Take Photo'),
                 onTap: () async {
                   Navigator.pop(ctx);
+                  if (_isDesktop) {
+                    await _takeMacOSPhoto();
+                    return;
+                  }
                   final picked = await ImagePicker().pickImage(
                     source: ImageSource.camera,
                     maxWidth: 1024,
@@ -568,6 +617,10 @@ class _AssistantScreenState extends State<AssistantScreen>
                 title: const Text('Choose from Gallery'),
                 onTap: () async {
                   Navigator.pop(ctx);
+                  if (_isDesktop) {
+                    await _pickImageDesktop();
+                    return;
+                  }
                   final picked = await ImagePicker().pickImage(
                     source: ImageSource.gallery,
                     maxWidth: 1024,
@@ -1091,29 +1144,43 @@ class _AssistantScreenState extends State<AssistantScreen>
                           ),
                         ),
                         const SizedBox(width: 10),
-                        // Active model badge
+                        // Active model badge — tappable to open model picker
                         if (_ai.activeTier != null)
-                          Container(
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 8,
-                              vertical: 3,
-                            ),
-                            decoration: BoxDecoration(
-                              color: _tierColor(_ai.activeTier!).withAlpha(40),
-                              borderRadius: BorderRadius.circular(8),
-                              border: Border.all(
-                                color: _tierColor(
-                                  _ai.activeTier!,
-                                ).withAlpha(80),
-                                width: 0.5,
+                          GestureDetector(
+                            onTap: _showModelPickerSheet,
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 8,
+                                vertical: 3,
                               ),
-                            ),
-                            child: Text(
-                              _tierLabel(_ai.activeTier!),
-                              style: TextStyle(
-                                fontSize: 10,
-                                fontWeight: FontWeight.w600,
-                                color: _tierColor(_ai.activeTier!),
+                              decoration: BoxDecoration(
+                                color: _tierColor(_ai.activeTier!).withAlpha(40),
+                                borderRadius: BorderRadius.circular(8),
+                                border: Border.all(
+                                  color: _tierColor(
+                                    _ai.activeTier!,
+                                  ).withAlpha(80),
+                                  width: 0.5,
+                                ),
+                              ),
+                              child: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Text(
+                                    _tierLabel(_ai.activeTier!),
+                                    style: TextStyle(
+                                      fontSize: 10,
+                                      fontWeight: FontWeight.w600,
+                                      color: _tierColor(_ai.activeTier!),
+                                    ),
+                                  ),
+                                  const SizedBox(width: 2),
+                                  Icon(
+                                    Icons.expand_more,
+                                    size: 13,
+                                    color: _tierColor(_ai.activeTier!),
+                                  ),
+                                ],
                               ),
                             ),
                           ),
@@ -1206,15 +1273,19 @@ class _AssistantScreenState extends State<AssistantScreen>
                   ),
 
                   // Show failure banner always (needs user action).
-                  // Show download progress only for free-tier install and only
-                  // while no model is active (first-time install). Plus/Pro
-                  // progress stays in Settings — not here — to avoid confusion.
+                  // Show download progress for free-tier (first install) and
+                  // for Plus/Pro when explicitly downloading from the picker
+                  // or auto-downloading on tablet/desktop.
                   if (_freeModelFailed ||
-                      (_activeDownloads.keys.any((k) =>
-                              OculaModelManager.models.any(
-                                (m) => m.fileName == k && m.tier == AITier.free,
-                              )) &&
-                          _ai.activeTier == null))
+                      (_activeDownloads.isNotEmpty &&
+                          (_ai.activeTier == null ||
+                              _activeDownloads.keys.any((k) =>
+                                  OculaModelManager.models.any(
+                                    (m) =>
+                                        m.fileName == k &&
+                                        (m.tier == AITier.plus ||
+                                            m.tier == AITier.pro),
+                                  )))))
                     _buildDownloadBanner(colors),
 
                   // Chat messages
@@ -1265,32 +1336,83 @@ class _AssistantScreenState extends State<AssistantScreen>
                   if (_attachedImage != null)
                     Container(
                       padding: const EdgeInsets.fromLTRB(16, 6, 16, 0),
-                      child: Row(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          ClipRRect(
-                            borderRadius: BorderRadius.circular(10),
-                            child: Image.file(
-                              _attachedImage!,
-                              width: 56,
-                              height: 56,
-                              fit: BoxFit.cover,
-                            ),
+                          Row(
+                            children: [
+                              ClipRRect(
+                                borderRadius: BorderRadius.circular(10),
+                                child: Image.file(
+                                  _attachedImage!,
+                                  width: 56,
+                                  height: 56,
+                                  fit: BoxFit.cover,
+                                ),
+                              ),
+                              const SizedBox(width: 8),
+                              Expanded(
+                                child: Text(
+                                  'Image attached',
+                                  style: TextStyle(
+                                    color: colors.onSurface.withAlpha(150),
+                                    fontSize: 13,
+                                  ),
+                                ),
+                              ),
+                              IconButton(
+                                icon: const Icon(Icons.close, size: 18),
+                                onPressed: () =>
+                                    setState(() => _attachedImage = null),
+                              ),
+                            ],
                           ),
-                          const SizedBox(width: 8),
-                          Expanded(
-                            child: Text(
-                              'Image attached',
-                              style: TextStyle(
-                                color: colors.onSurface.withAlpha(150),
-                                fontSize: 13,
+                          // Suggest upgrading to vision tier when on Lite
+                          if (_ai.activeTier == AITier.free)
+                            Padding(
+                              padding: const EdgeInsets.only(top: 6),
+                              child: GestureDetector(
+                                onTap: _showModelPickerSheet,
+                                child: Container(
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 10,
+                                    vertical: 5,
+                                  ),
+                                  decoration: BoxDecoration(
+                                    color: const Color(0xFF6C5CE7).withAlpha(30),
+                                    borderRadius: BorderRadius.circular(8),
+                                    border: Border.all(
+                                      color: const Color(0xFF6C5CE7).withAlpha(80),
+                                    ),
+                                  ),
+                                  child: Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      const Icon(
+                                        Icons.auto_awesome,
+                                        size: 13,
+                                        color: Color(0xFF6C5CE7),
+                                      ),
+                                      const SizedBox(width: 5),
+                                      Text(
+                                        'Switch to Plus for better image analysis',
+                                        style: const TextStyle(
+                                          fontSize: 11,
+                                          color: Color(0xFF6C5CE7),
+                                          fontWeight: FontWeight.w500,
+                                        ),
+                                      ),
+                                      const SizedBox(width: 4),
+                                      const Icon(
+                                        Icons.chevron_right,
+                                        size: 14,
+                                        color: Color(0xFF6C5CE7),
+                                      ),
+                                    ],
+                                  ),
+                                ),
                               ),
                             ),
-                          ),
-                          IconButton(
-                            icon: const Icon(Icons.close, size: 18),
-                            onPressed: () =>
-                                setState(() => _attachedImage = null),
-                          ),
                         ],
                       ),
                     ),
@@ -2240,6 +2362,396 @@ class _SendButton extends StatelessWidget {
           ],
         ),
         child: const Icon(Icons.arrow_upward, size: 20, color: Colors.white),
+      ),
+    );
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Model Picker Sheet
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Bottom sheet that lets the user view and switch between AI model tiers.
+/// Shows download status, progress, RAM requirements, and device recommendation.
+class _ModelPickerSheet extends StatefulWidget {
+  const _ModelPickerSheet();
+
+  @override
+  State<_ModelPickerSheet> createState() => _ModelPickerSheetState();
+}
+
+class _ModelPickerSheetState extends State<_ModelPickerSheet> {
+  final _modelManager = OculaModelManager();
+  final _ai = AIManager();
+
+  AITier? _activeTier;
+  AITier? _downloadingTier;
+  double _downloadProgress = 0.0;
+  String _downloadStatus = '';
+  AITier? _recommendedTier;
+  final Map<AITier, bool> _tierDownloaded = {};
+  bool _loading = true;
+
+  StreamSubscription<AITier>? _activeTierSub;
+  StreamSubscription<Map<String, double>>? _progressSub;
+
+  @override
+  void initState() {
+    super.initState();
+    _activeTier = _ai.activeTier;
+    _activeTierSub = _ai.activeTierStream.listen((tier) {
+      if (mounted) setState(() => _activeTier = tier);
+    });
+    _progressSub = _modelManager.downloadProgressStream.listen((progress) {
+      if (!mounted) return;
+      // Update overall download progress from the stream for any tier
+      if (_downloadingTier != null) {
+        final tierFiles = _modelManager
+            .modelsForTier(_downloadingTier!)
+            .map((m) => m.fileName)
+            .toSet();
+        final relevant = progress.entries
+            .where((e) => tierFiles.contains(e.key))
+            .toList();
+        if (relevant.isNotEmpty) {
+          final avg = relevant.map((e) => e.value).reduce((a, b) => a + b) /
+              relevant.length;
+          setState(() => _downloadProgress = avg);
+        }
+      }
+    });
+    _loadStatuses();
+    _loadRecommendedTier();
+  }
+
+  @override
+  void dispose() {
+    _activeTierSub?.cancel();
+    _progressSub?.cancel();
+    super.dispose();
+  }
+
+  Future<void> _loadStatuses() async {
+    final statuses = <AITier, bool>{};
+    for (final tier in [AITier.free, AITier.plus, AITier.pro]) {
+      statuses[tier] = await _ai.isTierDownloaded(tier);
+    }
+    if (mounted) {
+      setState(() {
+        _tierDownloaded.addAll(statuses);
+        _loading = false;
+      });
+    }
+  }
+
+  Future<void> _loadRecommendedTier() async {
+    AITier best = AITier.free;
+    for (final tier in [AITier.pro, AITier.plus, AITier.free]) {
+      if (await _ai.canDeviceRunTier(tier)) {
+        best = tier;
+        break;
+      }
+    }
+    if (mounted) setState(() => _recommendedTier = best);
+  }
+
+  Future<void> _downloadAndActivate(AITier tier) async {
+    setState(() {
+      _downloadingTier = tier;
+      _downloadProgress = 0.0;
+      _downloadStatus = 'Starting download...';
+    });
+
+    final ok = await _modelManager.downloadTierWithProgress(
+      tier,
+      onProgress: (p, s) {
+        if (mounted) {
+          setState(() {
+            _downloadProgress = p;
+            _downloadStatus = s;
+          });
+        }
+      },
+    );
+
+    if (!mounted) return;
+
+    if (!ok) {
+      setState(() => _downloadingTier = null);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            '${OculaModelManager.featureLabel(tier)} download failed',
+          ),
+        ),
+      );
+      return;
+    }
+
+    setState(() {
+      _tierDownloaded[tier] = true;
+      _downloadingTier = null;
+    });
+
+    await _activate(tier);
+  }
+
+  Future<void> _activate(AITier tier) async {
+    try {
+      await _ai.switchEngine(tier);
+      if (mounted) Navigator.pop(context);
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              'Could not activate ${OculaModelManager.featureLabel(tier)}: $e',
+            ),
+          ),
+        );
+      }
+    }
+  }
+
+  Color _tierColor(AITier tier) {
+    switch (tier) {
+      case AITier.free:
+        return const Color(0xFF00CEC9);
+      case AITier.plus:
+        return const Color(0xFF6C5CE7);
+      case AITier.pro:
+        return const Color(0xFFFD79A8);
+      case AITier.enterprise:
+        return const Color(0xFFFDCB6E);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+
+    return DraggableScrollableSheet(
+      initialChildSize: 0.6,
+      minChildSize: 0.4,
+      maxChildSize: 0.88,
+      expand: false,
+      builder: (context, scrollController) => Column(
+        children: [
+          Center(
+            child: Container(
+              margin: const EdgeInsets.only(top: 12, bottom: 4),
+              width: 36,
+              height: 4,
+              decoration: BoxDecoration(
+                color: colors.onSurface.withAlpha(50),
+                borderRadius: BorderRadius.circular(2),
+              ),
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(20, 8, 20, 10),
+            child: Row(
+              children: [
+                const Text(
+                  'AI Model',
+                  style: TextStyle(fontSize: 17, fontWeight: FontWeight.bold),
+                ),
+                if (_recommendedTier != null) ...[
+                  const Spacer(),
+                  Text(
+                    'Device fit: ${OculaModelManager.featureLabel(_recommendedTier!)}',
+                    style: TextStyle(
+                      fontSize: 11,
+                      color: colors.primary.withAlpha(180),
+                    ),
+                  ),
+                ],
+              ],
+            ),
+          ),
+          const Divider(height: 1),
+          Expanded(
+            child: ListView(
+              controller: scrollController,
+              padding: const EdgeInsets.symmetric(vertical: 8),
+              children: [
+                for (final tier in [AITier.free, AITier.plus, AITier.pro])
+                  _buildTierCard(tier, colors),
+                const SizedBox(height: 16),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildTierCard(AITier tier, ColorScheme colors) {
+    final isActive = _activeTier == tier;
+    final isDownloaded = _tierDownloaded[tier] ?? false;
+    final isDownloading = _downloadingTier == tier;
+    final isRecommended = _recommendedTier == tier;
+    final tierColor = _tierColor(tier);
+    final label = OculaModelManager.featureLabel(tier);
+
+    final String description;
+    final String sizeLabel;
+    final String ramNote;
+    switch (tier) {
+      case AITier.free:
+        description = 'Text reasoning — contacts, email, calendar, documents';
+        sizeLabel = '~1.3 GB';
+        ramNote = 'Requires ~2 GB RAM';
+      case AITier.plus:
+        description = 'Vision + text — analyze images, photos, screenshots';
+        sizeLabel = '~1.9 GB';
+        ramNote = 'Requires ~4 GB RAM';
+      case AITier.pro:
+        description = 'Vision Pro — higher quality, larger model';
+        sizeLabel = '~3.3 GB';
+        ramNote = 'Requires 8 GB RAM (iPhone 16+ / iPad)';
+      case AITier.enterprise:
+        return const SizedBox.shrink();
+    }
+
+    return Container(
+      margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+      decoration: BoxDecoration(
+        color: isActive
+            ? tierColor.withAlpha(25)
+            : colors.surfaceContainerHighest,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(
+          color: isActive
+              ? tierColor.withAlpha(120)
+              : colors.outline.withAlpha(50),
+        ),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Text(
+                  label,
+                  style: TextStyle(
+                    fontSize: 15,
+                    fontWeight: FontWeight.bold,
+                    color: isActive ? tierColor : colors.onSurface,
+                  ),
+                ),
+                const SizedBox(width: 8),
+                if (isActive)
+                  _chip('Active', tierColor),
+                if (isRecommended && !isActive)
+                  _chip('Recommended', colors.primary),
+                const Spacer(),
+                Text(
+                  sizeLabel,
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: colors.onSurface.withAlpha(120),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 4),
+            Text(
+              description,
+              style: TextStyle(
+                fontSize: 12,
+                color: colors.onSurface.withAlpha(160),
+              ),
+            ),
+            Text(
+              ramNote,
+              style: TextStyle(
+                fontSize: 11,
+                color: colors.onSurface.withAlpha(100),
+              ),
+            ),
+
+            if (isDownloading) ...[
+              const SizedBox(height: 12),
+              Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      _downloadStatus,
+                      style: TextStyle(fontSize: 11, color: tierColor),
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                  Text(
+                    '${(_downloadProgress * 100).toStringAsFixed(0)}%',
+                    style: TextStyle(
+                      fontSize: 11,
+                      fontWeight: FontWeight.w600,
+                      color: tierColor,
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 6),
+              ClipRRect(
+                borderRadius: BorderRadius.circular(3),
+                child: LinearProgressIndicator(
+                  value: _downloadProgress > 0 ? _downloadProgress : null,
+                  minHeight: 4,
+                  backgroundColor: tierColor.withAlpha(25),
+                  valueColor: AlwaysStoppedAnimation<Color>(tierColor),
+                ),
+              ),
+            ] else if (!isActive && !_loading) ...[
+              const SizedBox(height: 12),
+              SizedBox(
+                width: double.infinity,
+                child: isDownloaded
+                    ? FilledButton(
+                        onPressed: _downloadingTier != null
+                            ? null
+                            : () => _activate(tier),
+                        style: FilledButton.styleFrom(
+                          backgroundColor: tierColor,
+                        ),
+                        child: const Text('Activate'),
+                      )
+                    : OutlinedButton.icon(
+                        onPressed: _downloadingTier != null
+                            ? null
+                            : () => _downloadAndActivate(tier),
+                        icon: const Icon(Icons.download, size: 16),
+                        label: Text('Download & Switch ($sizeLabel)'),
+                        style: OutlinedButton.styleFrom(
+                          foregroundColor: tierColor,
+                          side: BorderSide(color: tierColor.withAlpha(120)),
+                        ),
+                      ),
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _chip(String label, Color color) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+      decoration: BoxDecoration(
+        color: color.withAlpha(35),
+        borderRadius: BorderRadius.circular(6),
+        border: Border.all(color: color.withAlpha(100)),
+      ),
+      child: Text(
+        label,
+        style: TextStyle(
+          fontSize: 10,
+          fontWeight: FontWeight.w600,
+          color: color,
+        ),
       ),
     );
   }

@@ -8,6 +8,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_llama/flutter_llama.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'app_language.dart';
+import 'mlx_bridge.dart';
 import 'model_manager.dart';
 import 'rag_engine.dart';
 import 'rag_config.dart';
@@ -42,6 +43,10 @@ class AIManager {
   final FlutterLlamaMultimodal _visionEngine = FlutterLlamaMultimodal.instance;
   final OculaModelManager _models = OculaModelManager();
 
+  // macOS uses MLX instead of llama.cpp.
+  final MLXBridge _mlx = MLXBridge();
+  bool get _isMacOS => Platform.isMacOS;
+
   AITier? _activeTier;
   bool _isSwitching = false;
   final AppLanguage _appLang = AppLanguage();
@@ -64,7 +69,7 @@ class AIManager {
 
   AITier? get activeTier => _activeTier;
   AITier? get pendingUpgradeTier => _pendingUpgradeTier;
-  bool get isModelLoaded => _textEngine.isModelLoaded;
+  bool get isModelLoaded => _isMacOS ? _mlx.isLoaded : _textEngine.isModelLoaded;
 
   /// Tier priority: higher index = better model
   static const _tierRank = {
@@ -719,6 +724,9 @@ class AIManager {
   /// Called after every tier switch so embedding stays active regardless of
   /// which text model is loaded (lite, plus, or pro).
   void _loadEmbeddingModelIfAvailable() async {
+    // Qwen3-Embedding crashes on macOS in llama_encode (null KV cache context,
+    // llama.cpp bug with Qwen3 causal_attn=1). Skip until plugin is updated.
+    if (Platform.isMacOS) return;
     // Prevent concurrent calls — only one load attempt at a time.
     if (_isLoadingEmbedding) return;
     // Skip if already loaded AND still usable (separate native instance).

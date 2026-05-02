@@ -34,21 +34,30 @@ class LocalData {
   /// Call once during onboarding or first launch.
   Future<Map<String, bool>> requestAllPermissions() async {
     final results = <String, bool>{};
+    final isMobile = Platform.isAndroid || Platform.isIOS;
 
     // Photos
     final photoState = await PhotoManager.requestPermissionExtend();
     results['photos'] =
         photoState.isAuth || photoState == PermissionState.limited;
 
-    // Contacts
-    results['contacts'] = await FlutterContacts.requestPermission(
-      readonly: true,
-    );
+    // Contacts — flutter_contacts is Android/iOS only
+    if (isMobile) {
+      results['contacts'] = await FlutterContacts.requestPermission(
+        readonly: true,
+      );
+    } else {
+      results['contacts'] = false;
+    }
 
-    // Calendar
-    final calPlugin = cal.DeviceCalendarPlugin();
-    final calResult = await calPlugin.requestPermissions();
-    results['calendar'] = calResult.data ?? false;
+    // Calendar — device_calendar is Android/iOS only
+    if (isMobile) {
+      final calPlugin = cal.DeviceCalendarPlugin();
+      final calResult = await calPlugin.requestPermissions();
+      results['calendar'] = calResult.data ?? false;
+    } else {
+      results['calendar'] = false;
+    }
 
     if (kDebugMode) {
       print('[LocalData] Permissions: $results');
@@ -230,6 +239,7 @@ class LocalData {
 
   /// Get all contacts for indexing. Returns name, phone, email.
   Future<List<LocalContact>> getAllContacts() async {
+    if (!Platform.isAndroid && !Platform.isIOS) return [];
     try {
       final hasPermission = await FlutterContacts.requestPermission(
         readonly: true,
@@ -292,6 +302,7 @@ class LocalData {
 
   /// Get events for a date range from all device calendars.
   Future<List<LocalEvent>> getEvents(DateTime from, DateTime to) async {
+    if (!Platform.isAndroid && !Platform.isIOS) return [];
     try {
       final plugin = cal.DeviceCalendarPlugin();
 

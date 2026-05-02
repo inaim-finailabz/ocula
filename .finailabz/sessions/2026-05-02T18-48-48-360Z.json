@@ -1,0 +1,33 @@
+{
+  "id": "2026-05-02T18-48-48-360Z",
+  "model": "default",
+  "startedAt": "2026-05-02T18:48:48.360Z",
+  "turns": [
+    {
+      "timestamp": 1777747728360,
+      "role": "user",
+      "text": "Analyze this project: read the key files, understand the architecture, and suggest the top 3 improvements."
+    },
+    {
+      "timestamp": 1777747728360,
+      "role": "assistant",
+      "text": "",
+      "toolCalls": [],
+      "iterationMs": 178
+    },
+    {
+      "timestamp": 1777747782189,
+      "role": "user",
+      "text": "Analyze this project: read the key files, understand the architecture, and suggest the top 3 improvements."
+    },
+    {
+      "timestamp": 1777747782189,
+      "role": "assistant",
+      "text": "",
+      "toolCalls": [],
+      "iterationMs": 3
+    }
+  ],
+  "totalIterations": 2,
+  "totalToolCalls": 0
+}
