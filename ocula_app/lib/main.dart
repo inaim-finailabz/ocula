@@ -182,9 +182,11 @@ class _AssistantScreenState extends State<AssistantScreen>
     if (await _ai.isTierDownloaded(AITier.plus)) return;
     if (!await _ai.canDeviceRunTier(AITier.plus)) return;
     debugPrint('[Home] Tablet/desktop: auto-downloading Plus tier...');
-    _modelManager.downloadTierWithProgress(AITier.plus).catchError((e) {
+    _modelManager.downloadTierWithProgress(AITier.plus).then((ok) {
+      if (!ok && mounted) setState(() => _backgroundDownloadFailed = AITier.plus);
+    }).catchError((e) {
       debugPrint('[Home] Plus auto-download error: $e');
-      return false;
+      if (mounted) setState(() => _backgroundDownloadFailed = AITier.plus);
     });
   }
 
@@ -220,6 +222,7 @@ class _AssistantScreenState extends State<AssistantScreen>
 
   bool _orbExpanded = true;
   Map<String, double> _activeDownloads = {};
+  AITier? _backgroundDownloadFailed;
 
   late final AnimationController _orbSizeController;
 
@@ -322,6 +325,24 @@ class _AssistantScreenState extends State<AssistantScreen>
     });
   }
 
+  void _cancelBannerDownload() {
+    final downloading = List<String>.from(_activeDownloads.keys);
+    for (final fileName in downloading) {
+      _modelManager.cancelDownload(fileName);
+    }
+    setState(() => _backgroundDownloadFailed = null);
+  }
+
+  void _resumeBannerDownload(AITier tier) {
+    setState(() => _backgroundDownloadFailed = null);
+    _modelManager.downloadTierWithProgress(tier).then((ok) {
+      if (!ok && mounted) setState(() => _backgroundDownloadFailed = tier);
+    }).catchError((e) {
+      debugPrint('[Home] Resume download error: $e');
+      if (mounted) setState(() => _backgroundDownloadFailed = tier);
+    });
+  }
+
   /// Thin banner below the top bar for background model downloads and failures.
   Widget _buildDownloadBanner(ColorScheme colors) {
     // ── Failure state: free model install failed — show retry ──
@@ -359,6 +380,50 @@ class _AssistantScreenState extends State<AssistantScreen>
       );
     }
 
+    // ── Background Plus/Pro download failed — show resume ──
+    if (_backgroundDownloadFailed != null && _activeDownloads.isEmpty) {
+      final tier = _backgroundDownloadFailed!;
+      final tierName = tier == AITier.plus ? 'Plus' : 'Pro';
+      return Container(
+        padding: const EdgeInsets.fromLTRB(16, 6, 4, 8),
+        decoration: BoxDecoration(
+          color: colors.errorContainer.withAlpha(50),
+          border: Border(
+            bottom: BorderSide(color: colors.error.withAlpha(40), width: 0.5),
+          ),
+        ),
+        child: Row(
+          children: [
+            Icon(Icons.warning_amber_rounded, size: 14, color: colors.error),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                '$tierName download failed',
+                style: TextStyle(fontSize: 11, color: colors.error),
+              ),
+            ),
+            TextButton(
+              onPressed: () => _resumeBannerDownload(tier),
+              style: TextButton.styleFrom(
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                minimumSize: Size.zero,
+                tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                foregroundColor: colors.primary,
+              ),
+              child: const Text('Resume', style: TextStyle(fontSize: 11)),
+            ),
+            IconButton(
+              onPressed: () => setState(() => _backgroundDownloadFailed = null),
+              icon: Icon(Icons.close, size: 14, color: colors.onSurface.withAlpha(120)),
+              padding: const EdgeInsets.all(6),
+              constraints: const BoxConstraints(),
+              style: IconButton.styleFrom(tapTargetSize: MaterialTapTargetSize.shrinkWrap),
+            ),
+          ],
+        ),
+      );
+    }
+
     // ── Normal download progress ──
     // Prefer showing the main (non-projector, non-embed) model being downloaded.
     // Falls back to any downloading file so progress is never hidden.
@@ -374,11 +439,12 @@ class _AssistantScreenState extends State<AssistantScreen>
     final modelInfo = OculaModelManager.models
         .where((m) => m.fileName == primary.key)
         .firstOrNull;
+    final tierForCancel = modelInfo?.tier;
     final label = modelInfo?.displayName ?? primary.key.split('.').first;
     final pct = (primary.value * 100).toStringAsFixed(0);
 
     return Container(
-      padding: const EdgeInsets.fromLTRB(16, 6, 16, 8),
+      padding: const EdgeInsets.fromLTRB(16, 6, 4, 8),
       decoration: BoxDecoration(
         color: colors.primaryContainer.withAlpha(45),
         border: Border(
@@ -423,6 +489,15 @@ class _AssistantScreenState extends State<AssistantScreen>
               ],
             ),
           ),
+          if (tierForCancel != null && tierForCancel != AITier.free)
+            IconButton(
+              onPressed: _cancelBannerDownload,
+              icon: Icon(Icons.close, size: 14, color: colors.onSurface.withAlpha(150)),
+              padding: const EdgeInsets.all(6),
+              constraints: const BoxConstraints(),
+              style: IconButton.styleFrom(tapTargetSize: MaterialTapTargetSize.shrinkWrap),
+              tooltip: 'Cancel download',
+            ),
         ],
       ),
     );
@@ -1337,6 +1412,7 @@ class _AssistantScreenState extends State<AssistantScreen>
                   // for Plus/Pro when explicitly downloading from the picker
                   // or auto-downloading on tablet/desktop.
                   if (_freeModelFailed ||
+                      _backgroundDownloadFailed != null ||
                       (_activeDownloads.isNotEmpty &&
                           (_ai.activeTier == null ||
                               _activeDownloads.keys.any((k) =>
