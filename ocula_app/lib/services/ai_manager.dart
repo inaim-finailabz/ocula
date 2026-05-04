@@ -84,7 +84,7 @@ class AIManager {
   static const _tierRamRequirementMB = {
     AITier.free: 2000, // 1.28 GB model + 25 MB embed + context → ~2 GB total
     AITier.plus: 4000, // 1.1 GB model + 819 MB mmproj + context → ~3.5 GB
-    AITier.pro: 7500,  // 2.5 GB model + 836 MB mmproj + context → needs 8 GB device
+    AITier.pro: 5500,  // 2.5 GB model + 836 MB mmproj + context → ~4–5 GB working set, fits 6 GB devices
     AITier.enterprise: 4000, // variable, conservative default
   };
 

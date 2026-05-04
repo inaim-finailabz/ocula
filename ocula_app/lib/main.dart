@@ -2462,6 +2462,7 @@ class _ModelPickerSheetState extends State<_ModelPickerSheet> {
 
   AITier? _activeTier;
   AITier? _downloadingTier;
+  AITier? _failedTier;
   double _downloadProgress = 0.0;
   String _downloadStatus = '';
   AITier? _recommendedTier;
@@ -2531,9 +2532,17 @@ class _ModelPickerSheetState extends State<_ModelPickerSheet> {
     if (mounted) setState(() => _recommendedTier = best);
   }
 
+  Future<void> _cancelDownload(AITier tier) {
+    for (final model in _modelManager.modelsForTier(tier)) {
+      _modelManager.cancelDownload(model.fileName);
+    }
+    return Future.value();
+  }
+
   Future<void> _downloadAndActivate(AITier tier) async {
     setState(() {
       _downloadingTier = tier;
+      _failedTier = null;
       _downloadProgress = 0.0;
       _downloadStatus = 'Starting download...';
     });
@@ -2553,14 +2562,10 @@ class _ModelPickerSheetState extends State<_ModelPickerSheet> {
     if (!mounted) return;
 
     if (!ok) {
-      setState(() => _downloadingTier = null);
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-            '${OculaModelManager.featureLabel(tier)} download failed',
-          ),
-        ),
-      );
+      setState(() {
+        _downloadingTier = null;
+        _failedTier = tier;
+      });
       return;
     }
 
@@ -2666,6 +2671,7 @@ class _ModelPickerSheetState extends State<_ModelPickerSheet> {
     final isActive = _activeTier == tier;
     final isDownloaded = _tierDownloaded[tier] ?? false;
     final isDownloading = _downloadingTier == tier;
+    final isFailed = _failedTier == tier;
     final isRecommended = _recommendedTier == tier;
     final tierColor = _tierColor(tier);
     final label = OculaModelManager.featureLabel(tier);
@@ -2685,7 +2691,7 @@ class _ModelPickerSheetState extends State<_ModelPickerSheet> {
       case AITier.pro:
         description = 'Vision Pro — higher quality, larger model';
         sizeLabel = '~3.3 GB';
-        ramNote = 'Requires 8 GB RAM (iPhone 16+ / iPad)';
+        ramNote = 'Requires ~6 GB RAM (iPhone 15+ / iPad)';
       case AITier.enterprise:
         return const SizedBox.shrink();
     }
@@ -2768,6 +2774,21 @@ class _ModelPickerSheetState extends State<_ModelPickerSheet> {
                       color: tierColor,
                     ),
                   ),
+                  const SizedBox(width: 8),
+                  GestureDetector(
+                    onTap: () {
+                      _cancelDownload(tier);
+                      setState(() {
+                        _downloadingTier = null;
+                        _failedTier = null;
+                      });
+                    },
+                    child: Icon(
+                      Icons.cancel_outlined,
+                      size: 16,
+                      color: colors.onSurface.withAlpha(120),
+                    ),
+                  ),
                 ],
               ),
               const SizedBox(height: 6),
@@ -2778,6 +2799,22 @@ class _ModelPickerSheetState extends State<_ModelPickerSheet> {
                   minHeight: 4,
                   backgroundColor: tierColor.withAlpha(25),
                   valueColor: AlwaysStoppedAnimation<Color>(tierColor),
+                ),
+              ),
+            ] else if (isFailed) ...[
+              const SizedBox(height: 12),
+              SizedBox(
+                width: double.infinity,
+                child: OutlinedButton.icon(
+                  onPressed: _downloadingTier != null
+                      ? null
+                      : () => _downloadAndActivate(tier),
+                  icon: const Icon(Icons.refresh, size: 16),
+                  label: Text('Resume Download ($sizeLabel)'),
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: colors.error,
+                    side: BorderSide(color: colors.error.withAlpha(120)),
+                  ),
                 ),
               ),
             ] else if (!isActive && !_loading) ...[

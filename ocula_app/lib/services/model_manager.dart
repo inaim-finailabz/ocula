@@ -2154,15 +2154,26 @@ class OculaModelManager {
       final prefix = tierModels.length > 1
           ? '(${i + 1}/${tierModels.length}) '
           : '';
-      final success = await download(
-        model,
-        onProgress: (p, s) {
-          final overall = (i + p) / tierModels.length;
-          _downloadProgress[model.fileName] = overall;
-          _downloadProgressStreamController.add(Map.from(_downloadProgress));
-          onProgress?.call(overall, '$prefix$s');
-        },
-      );
+      bool success = false;
+      for (int attempt = 1; attempt <= 5 && !success; attempt++) {
+        if (attempt > 1) {
+          final delay = attempt * 3;
+          onProgress?.call(
+            i / tierModels.length,
+            '${prefix}Retrying (attempt $attempt)...',
+          );
+          await Future.delayed(Duration(seconds: delay));
+        }
+        success = await download(
+          model,
+          onProgress: (p, s) {
+            final overall = (i + p) / tierModels.length;
+            _downloadProgress[model.fileName] = overall;
+            _downloadProgressStreamController.add(Map.from(_downloadProgress));
+            onProgress?.call(overall, '$prefix$s');
+          },
+        );
+      }
       _downloadProgress.remove(model.fileName);
       _downloadProgressStreamController.add(Map.from(_downloadProgress));
       if (!success) return false;
