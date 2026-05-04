@@ -30,6 +30,7 @@ set(GGML_OPENMP OFF CACHE BOOL "" FORCE)
 set(GGML_AMX OFF CACHE BOOL "" FORCE)
 set(GGML_CUDA OFF CACHE BOOL "" FORCE)
 set(GGML_METAL OFF CACHE BOOL "" FORCE)
+set(GGML_VULKAN OFF CACHE BOOL "" FORCE)
 
 # ── OpenCL GPU acceleration (Adreno-optimized) ──
 # Qualcomm Adreno GPUs perform significantly better with OpenCL than Vulkan.

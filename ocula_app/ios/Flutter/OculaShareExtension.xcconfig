@@ -1,1 +1,3 @@
-#include "Generated.xcconfig"
+// In Xcode Cloud, Generated.xcconfig is created during post-clone setup.
+// Keep this optional to avoid failing before setup scripts run.
+#include? "Generated.xcconfig"
