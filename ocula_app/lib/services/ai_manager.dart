@@ -1197,19 +1197,7 @@ class AIManager {
       compactContext = tighterContext;
     }
 
-    var text = response.text;
-    text = text
-        .replaceAll('<|im_end|>', '')
-        .replaceAll('<|im_start|>', '')
-        .trim();
-
-    // Strip <think>...</think> blocks — all Qwen3 models output them (Lite, Plus, Pro).
-    text = text.replaceAll(RegExp(r'<think>.*?</think>', dotAll: true), '').trim();
-    // Also strip unclosed <think> blocks (model stopped mid-think).
-    final thinkStart = text.indexOf('<think>');
-    if (thinkStart >= 0) {
-      text = text.substring(0, thinkStart).trim();
-    }
+    var text = _stripReasoningArtifacts(response.text);
 
     // Strip question-first prompt format artifacts that the model may echo back.
     // e.g. "ANSWER: The answer is..." → "The answer is..."
@@ -1238,10 +1226,7 @@ class AIManager {
           stopSequences: ['<|im_end|>'],
         ),
       );
-      text = retry.text
-          .replaceAll('<|im_end|>', '')
-          .replaceAll('<|im_start|>', '')
-          .trim();
+        text = _stripReasoningArtifacts(retry.text);
       text = stripLeakedContext(text);
     }
 
@@ -1423,29 +1408,13 @@ class AIManager {
       ),
     )) {
       buffer.write(token);
-      // Yield partial text (cleaned of ChatML artifacts and think blocks).
-      var partial = buffer
-          .toString()
-          .replaceAll('<|im_end|>', '')
-          .replaceAll('<|im_start|>', '')
-          .trimLeft();
-      // Strip complete <think>...</think> blocks, then hide any in-progress thinking.
-      partial = partial.replaceAll(RegExp(r'<think>.*?</think>', dotAll: true), '').trimLeft();
-      final thinkOpen = partial.indexOf('<think>');
-      if (thinkOpen >= 0) partial = partial.substring(0, thinkOpen).trimRight();
+      // Yield partial text with reasoning/thinking content removed.
+      final partial = _stripReasoningArtifacts(buffer.toString());
       yield partial;
     }
 
     // Final post-processing on complete text
-    var text = buffer
-        .toString()
-        .replaceAll('<|im_end|>', '')
-        .replaceAll('<|im_start|>', '')
-        .trim();
-    // Strip <think>...</think> blocks — all Qwen3 models output them (Lite, Plus, Pro).
-    text = text.replaceAll(RegExp(r'<think>.*?</think>', dotAll: true), '').trim();
-    final thinkIdx = text.indexOf('<think>');
-    if (thinkIdx >= 0) text = text.substring(0, thinkIdx).trim();
+    var text = _stripReasoningArtifacts(buffer.toString());
     // Strip question-first prompt format artifacts
     text = text.replaceFirst(RegExp(r'^ANSWER:\s*', caseSensitive: false), '');
     text = text.replaceFirst(RegExp(r'^Q:\s*', caseSensitive: false), '');
@@ -1594,17 +1563,47 @@ class AIManager {
   }
 
   String _cleanVisionText(String text) {
+    return _stripReasoningArtifacts(text);
+  }
+
+  /// Removes model reasoning/thinking traces so UI only shows the final answer.
+  /// Handles closed and unclosed tags used by different model families.
+  String _stripReasoningArtifacts(String text) {
     var t = text
         .replaceAll('<|im_end|>', '')
         .replaceAll('<|im_start|>', '')
-        .trim();
-    // Qwen3-VL-Thinking models output <think>...</think> reasoning blocks.
-    // Strip them so only the final answer is shown to the user.
-    t = t.replaceAll(RegExp(r'<think>.*?</think>', dotAll: true), '').trim();
-    // Also strip unclosed <think> blocks (model stopped mid-reasoning).
-    final thinkStart = t.indexOf('<think>');
-    if (thinkStart >= 0) t = t.substring(0, thinkStart).trim();
-    return t;
+        .trimLeft();
+
+    // Remove closed reasoning blocks first.
+    t = t.replaceAll(
+      RegExp(
+        r'<\s*(think|thinking|reasoning)\b[^>]*>.*?<\s*/\s*\1\s*>',
+        caseSensitive: false,
+        dotAll: true,
+      ),
+      '',
+    );
+
+    // Remove fenced reasoning blocks some models emit.
+    t = t.replaceAll(
+      RegExp(
+        r'```\s*(thinking|reasoning)\b[\s\S]*?```',
+        caseSensitive: false,
+        dotAll: true,
+      ),
+      '',
+    );
+
+    // Hide any unfinished reasoning block if generation stops mid-thought.
+    final openTag = RegExp(
+      r'<\s*(think|thinking|reasoning)\b[^>]*>',
+      caseSensitive: false,
+    ).firstMatch(t);
+    if (openTag != null) {
+      t = t.substring(0, openTag.start).trimRight();
+    }
+
+    return t.trim();
   }
 
   bool _isLowSignalVisionOutput(String text, String userPrompt) {

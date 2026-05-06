@@ -128,9 +128,27 @@ class MLXBridge {
         .replaceAll('<|im_end|>', '')
         .replaceAll('<|im_start|>', '')
         .trimLeft();
-    t = t.replaceAll(RegExp(r'<think>.*?</think>', dotAll: true), '').trimLeft();
-    final thinkOpen = t.indexOf('<think>');
-    if (thinkOpen >= 0) t = t.substring(0, thinkOpen).trimRight();
-    return t;
+    t = t.replaceAll(
+      RegExp(
+        r'<\s*(think|thinking|reasoning)\b[^>]*>.*?<\s*/\s*\1\s*>',
+        caseSensitive: false,
+        dotAll: true,
+      ),
+      '',
+    );
+    t = t.replaceAll(
+      RegExp(
+        r'```\s*(thinking|reasoning)\b[\s\S]*?```',
+        caseSensitive: false,
+        dotAll: true,
+      ),
+      '',
+    );
+    final openTag = RegExp(
+      r'<\s*(think|thinking|reasoning)\b[^>]*>',
+      caseSensitive: false,
+    ).firstMatch(t);
+    if (openTag != null) t = t.substring(0, openTag.start).trimRight();
+    return t.trim();
   }
 }
