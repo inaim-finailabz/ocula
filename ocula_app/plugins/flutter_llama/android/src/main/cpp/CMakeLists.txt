@@ -31,6 +31,8 @@ set(GGML_AMX OFF CACHE BOOL "" FORCE)
 set(GGML_CUDA OFF CACHE BOOL "" FORCE)
 set(GGML_METAL OFF CACHE BOOL "" FORCE)
 set(GGML_VULKAN OFF CACHE BOOL "" FORCE)
+# Force Vulkan off — NDK Vulkan lacks vulkan.hpp C++ bindings needed by shader gen
+set(vulkan-lib "" CACHE FILEPATH "" FORCE)
 
 # ── OpenCL GPU acceleration (Adreno-optimized) ──
 # Qualcomm Adreno GPUs perform significantly better with OpenCL than Vulkan.

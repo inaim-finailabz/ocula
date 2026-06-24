@@ -153,11 +153,11 @@ class OculaModelManager {
       tier: AITier.free,
     ),
     ModelInfo(
-      fileName: 'mmproj-Qwen3VL-2B-Thinking-F16.gguf',
+      fileName: 'mmproj-Qwen3VL-2B-Thinking-Q8_0.gguf',
       displayName: 'Ocula AI Vision',
       downloadUrl:
-          'https://backend-ocula.finailabz.com/models/mmproj-Qwen3VL-2B-Thinking-F16.gguf',
-      sizeBytes: 819 * 1024 * 1024, // ~819 MB
+          'https://backend-ocula.finailabz.com/models/mmproj-Qwen3VL-2B-Thinking-Q8_0.gguf',
+      sizeBytes: 424 * 1024 * 1024, // ~424 MB
       tier: AITier.free,
       isVisionProjector: true,
     ),
