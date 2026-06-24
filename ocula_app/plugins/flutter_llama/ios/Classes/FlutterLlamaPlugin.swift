@@ -280,17 +280,17 @@ class FlutterLlamaMultimodalHandler: NSObject, FlutterPlugin, FlutterStreamHandl
     }
     
     // MARK: - Generate Stream
-    
+
     private func generateMultimodalStream(call: FlutterMethodCall, result: @escaping FlutterResult) {
         guard modelLoaded else {
             result(FlutterError(code: "MODEL_NOT_LOADED", message: "Multimodal model not loaded", details: nil))
             return
         }
-        guard let eventSink = self.eventSink else {
-            result(FlutterError(code: "NO_EVENT_SINK", message: "Event channel not initialized", details: nil))
-            return
-        }
-        
+
+        // Dart subscribes to the EventChannel before calling this method, so
+        // onListen (which sets eventSink) should already have been processed.
+        // We wait briefly in the background queue as a safety net.
+
         queue.async { [weak self] in
             guard let self = self else { return }
             guard let args = call.arguments as? [String: Any],
@@ -301,29 +301,42 @@ class FlutterLlamaMultimodalHandler: NSObject, FlutterPlugin, FlutterStreamHandl
                 }
                 return
             }
-            
-            let prompt = (paramsMap["prompt"] as? String) ?? (inputMap["text"] as? String) ?? ""
+
+            let promptStr = (paramsMap["prompt"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+                ?? (inputMap["text"] as? String) ?? ""
             let imagePath = inputMap["imagePath"] as? String
             let audioPath = inputMap["audioPath"] as? String
-            let inputType = inputMap["type"] as? String ?? "text"
-            
+
             let temperature = Float(paramsMap["temperature"] as? Double ?? 0.8)
             let topP = Float(paramsMap["topP"] as? Double ?? 0.95)
             let topK = Int32(paramsMap["topK"] as? Int ?? 40)
             let maxTokens = Int32(paramsMap["maxTokens"] as? Int ?? 512)
             let repeatPenalty = Float(paramsMap["repeatPenalty"] as? Double ?? 1.1)
-            
+
             self.shouldStop = false
-            
+
+            // Wait up to 500 ms for eventSink to be set by onListen.
+            var waited = 0
+            while self.eventSink == nil && waited < 25 {
+                Thread.sleep(forTimeInterval: 0.02)
+                waited += 1
+            }
+            guard let eventSink = self.eventSink else {
+                DispatchQueue.main.async {
+                    result(FlutterError(code: "NO_EVENT_SINK", message: "Event channel not initialized", details: nil))
+                }
+                return
+            }
+
             // Build prompt with media marker
-            var fullPrompt = prompt
+            var fullPrompt = promptStr
             if (imagePath != nil && !imagePath!.isEmpty) || (audioPath != nil && !audioPath!.isEmpty) {
                 let marker = "<__media__>"
                 if !fullPrompt.contains(marker) {
-                    fullPrompt = "\(marker)\n\(prompt)"
+                    fullPrompt = "\(marker)\n\(promptStr)"
                 }
             }
-            
+
             fullPrompt.withCString { promptPtr in
                 if let imagePath = imagePath, !imagePath.isEmpty {
                     imagePath.withCString { imgCStr in
@@ -347,7 +360,7 @@ class FlutterLlamaMultimodalHandler: NSObject, FlutterPlugin, FlutterStreamHandl
                                             temperature, topP, topK, maxTokens, repeatPenalty)
                 }
             }
-            
+
             var tokenBuffer = [CChar](repeating: 0, count: 256)
             while !self.shouldStop {
                 let hasMore = mtmd_bridge_stream_next(&tokenBuffer, Int32(tokenBuffer.count))
@@ -360,9 +373,9 @@ class FlutterLlamaMultimodalHandler: NSObject, FlutterPlugin, FlutterStreamHandl
                     break
                 }
             }
-            
+
             mtmd_bridge_stream_end()
-            
+
             DispatchQueue.main.async {
                 eventSink(FlutterEndOfEventStream)
                 result(nil)

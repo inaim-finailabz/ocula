@@ -142,40 +142,59 @@ class FlutterLlamaMultimodal {
       );
     }
 
+    // Subscribe to the EventChannel BEFORE calling invokeMethod.
+    // Flutter's binary messenger is FIFO on the main thread, so the "onListen"
+    // message reaches native before "generateMultimodalStream", guaranteeing
+    // that eventSink is non-nil when the Swift handler runs.
+    final eventChannel = EventChannel('flutter_llama_multimodal/stream');
+    final controller = StreamController<MultimodalResponse>();
+
+    final sub = eventChannel.receiveBroadcastStream().listen(
+      (data) {
+        if (controller.isClosed) return;
+        if (data is String) {
+          // Native sends each token as a plain String.
+          controller.add(MultimodalResponse.textOnly(
+            text: data,
+            generationTimeMs: 0,
+            tokensGenerated: 1,
+          ));
+        } else if (data is Map) {
+          try {
+            controller.add(
+              MultimodalResponse.fromMap(Map<String, dynamic>.from(data)),
+            );
+          } catch (_) {}
+        }
+      },
+      onDone: () { if (!controller.isClosed) controller.close(); },
+      onError: (e) { if (!controller.isClosed) controller.addError(e); },
+      cancelOnError: false,
+    );
+
     try {
       if (kDebugMode) {
-        print(
-          '[FlutterLlamaMultimodal] Streaming multimodal generation with input: $input',
-        );
+        print('[FlutterLlamaMultimodal] Streaming multimodal generation with input: $input');
         print('[FlutterLlamaMultimodal] Generation params: $params');
       }
 
-      // Set up event channel for streaming
-      final eventChannel = EventChannel('flutter_llama_multimodal/stream');
-
-      // Send generation request
+      // Now invoke — onListen has already been queued ahead of this message.
       await _channel.invokeMethod('generateMultimodalStream', {
         'input': input.toMap(),
         'params': params.toMap(),
       });
-
-      // Listen to response stream
-      await for (final responseData in eventChannel.receiveBroadcastStream()) {
-        if (responseData is Map) {
-          final response = MultimodalResponse.fromMap(
-            Map<String, dynamic>.from(responseData),
-          );
-          yield response;
-        }
-      }
     } catch (e) {
       if (kDebugMode) {
-        print(
-          '[FlutterLlamaMultimodal] Error in streaming multimodal generation: $e',
-        );
+        print('[FlutterLlamaMultimodal] Error in streaming multimodal generation: $e');
       }
+      sub.cancel();
+      controller.close();
       rethrow;
     }
+
+    // Yield all buffered + incoming tokens until the controller closes.
+    yield* controller.stream;
+    sub.cancel();
   }
 
   /// Process image and get description
