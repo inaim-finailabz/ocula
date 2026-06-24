@@ -761,50 +761,9 @@ class AIManager {
     }
   }
 
-  /// Auto-route: pick the right model based on hardware + intent.
-  ///
-  /// Routing order:
-  /// 1. HARDWARE CHECK — low-RAM devices stay on Ocula Lite (free).
-  /// 2. INTENT CHECK:
-  ///    - Reasoning (why, how, explain, analyze) → Ocula Pro (Qwen3-VL-2B)
-  ///    - Spatial  (where, count, find, point)   → Ocula Plus (Moondream 2)
-  ///    - Default                                → Ocula Lite (SmolVLM2-500M)
+  /// Auto-route: mono-model — always use the single Qwen3-VL-2B model.
   Future<void> autoRoute(String prompt, {bool hasImage = false}) async {
-    // 1. Hardware gate — don't crash low-end phones
-    final ram = await deviceRamMB;
-    if (ram < 4000) {
-      await switchEngine(AITier.free);
-      return;
-    }
-
-    final lower = prompt.toLowerCase();
-
-    // 2. Reasoning intent → Ocula Pro (Qwen3-VL-2B)
-    final isReasoning =
-        lower.contains('why') ||
-        lower.contains('how') ||
-        lower.contains('explain') ||
-        lower.contains('analyze') ||
-        lower.contains('compare') ||
-        lower.contains('summarize') ||
-        lower.contains('contract');
-
-    // 3. Spatial intent → Ocula Plus (Moondream 2)
-    final isSpatial =
-        lower.contains('where') ||
-        lower.contains('count') ||
-        lower.contains('find') ||
-        lower.contains('point') ||
-        lower.contains('total') ||
-        lower.contains('receipt') ||
-        lower.contains('label');
-
-    if (isReasoning) {
-      await switchEngine(AITier.pro);
-    } else if (isSpatial || hasImage) {
-      await switchEngine(AITier.plus);
-    }
-    // else: stay on free (Ocula Lite) — already loaded at startup
+    await switchEngine(AITier.free);
   }
 
   /// The main entry point. Full pipeline:

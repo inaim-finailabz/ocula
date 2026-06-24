@@ -6,12 +6,9 @@ framework module llama {
     header "ggml-metal.h"
     header "ggml-cpu.h"
     header "ggml-blas.h"
-    header "gguf.h"
-
     link "c++"
     link framework "Accelerate"
     link framework "Metal"
     link framework "Foundation"
-
     export *
 }

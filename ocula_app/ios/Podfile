@@ -1,4 +1,4 @@
-platform :ios, '15.0'
+platform :ios, '16.4'
 
 # CocoaPods analytics sends network stats synchronously affecting flutter build latency.
 ENV['COCOAPODS_DISABLE_STATS'] = 'true'
@@ -38,6 +38,40 @@ end
 post_install do |installer|
   installer.pods_project.targets.each do |target|
     flutter_additional_ios_build_settings(target)
+    target.build_configurations.each do |config|
+      config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '16.4'
+      # Exclude x86_64 from device builds to prevent App Store rejection
+      # for pre-built pods that carry simulator slices (e.g. objective_c.framework).
+      config.build_settings['EXCLUDED_ARCHS[sdk=iphoneos*]'] = 'x86_64'
+    end
+  end
+
+  # flutter_llama links llama.framework dynamically; embed correct slice from local plugin.
+  llama_xcfw = File.expand_path(
+    '../plugins/flutter_llama/ios/llama.xcframework',
+    File.dirname(__FILE__)
+  )
+  Dir.glob(File.join(installer.sandbox.root,
+                     'Target Support Files', 'Pods-Runner',
+                     'Pods-Runner-frameworks.sh')).each do |script|
+    content = File.read(script)
+    patch = <<~BASH
+
+      # flutter_llama patch: embed llama.framework from xcframework
+      LLAMA_XCFW="#{llama_xcfw}"
+      if [[ "$PLATFORM_NAME" == *"simulator"* ]]; then
+        install_framework "$LLAMA_XCFW/ios-arm64_x86_64-simulator/llama.framework"
+      else
+        install_framework "$LLAMA_XCFW/ios-arm64/llama.framework"
+      fi
+    BASH
+    content.gsub!(/\n\n\s*# flutter_llama patch:.*?fi\n/m, '')
+    content.gsub!(
+      /([ \t]+install_framework[^\n]*flutter_llama\.framework")/,
+      "\\1#{patch}"
+    )
+    File.write(script, content)
+    puts "patched Pods-Runner-frameworks.sh: llama.xcframework embedded"
   end
 
   # Patch speech_to_text: add locale fallback so SFSpeechRecognizer never returns nil.

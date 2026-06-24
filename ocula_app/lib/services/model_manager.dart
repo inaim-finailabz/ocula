@@ -137,79 +137,28 @@ class OculaModelManager {
     ),
   ];
 
-  // ── Model Registry ── 2026 Ocula Intelligence Stack
+  // ── Model Registry ── Mono-model stack
   //
-  // Ocula Lite (free)  – Qwen3-1.7B: text RAG — contacts, email, calendar, docs
-  //                      Delivered at install via iOS ODR / Android PAD fast-follow.
-  // Ocula Plus (plus)  – Qwen3-VL-2B-Thinking Q4: vision + multimodal queries
-  //                      Downloaded on-demand when user first needs image analysis.
-  // Ocula Pro  (pro)   – Qwen3-VL-4B-Thinking Q4: higher-quality VL — iPad / ≥6 GB RAM
-  //                      Same architecture as Plus, larger param count, fits mid-range devices.
-  //                      Downloaded from backend on demand.
-  // Embed              – Qwen3-Embedding-0.6B: sentence similarity for RAG (always on)
+  // Ocula uses a single Qwen3-VL-2B-Thinking model for all queries:
+  //   text chat, vision analysis, reasoning. Bundled in app assets.
+  // No separate embedding model — RAG uses the main model for embeddings.
   static const models = [
-    // ── OCULA LITE: Always-on text RAG ────────────────────────────────────
-    // iOS: ODR initial-install tags "ocula-lite-p1/p2/p3" (3×<400MB packs)
-    // Android: PAD fast-follow (monolithic file in models_pack asset pack)
-    // fileName is the first GGUF split part; llama.cpp auto-loads the rest.
-    ModelInfo(
-      fileName: 'qwen3-1.7b-q4_k_m-00001-of-00003.gguf',
-      displayName: 'Ocula Lite',
-      downloadUrl:
-          'https://backend-ocula.finailabz.com/models/qwen3-1.7b-q4_k_m-00001-of-00003.gguf',
-      sizeBytes: 1282439616, // actual total: 454,174,656 + 447,652,416 + 380,612,544 bytes (parts unequal — last part is smaller)
-      tier: AITier.free,
-    ),
-    // ── OCULA EMBED: Multilingual sentence similarity for RAG ─────────────
-    // Qwen3-Embedding-0.6B: 1024-dim, multilingual — far better than MiniLM
-    // for non-English content. Q8_0 used since embedding quality degrades with Q4.
-    ModelInfo(
-      fileName: 'Qwen3-Embedding-0.6B-Q8_0.gguf',
-      displayName: 'Ocula Embed',
-      downloadUrl:
-          'https://backend-ocula.finailabz.com/models/Qwen3-Embedding-0.6B-Q8_0.gguf',
-      sizeBytes: 639 * 1024 * 1024, // ~639 MB
-      tier: AITier.free,
-      isEmbeddingModel: true,
-    ),
-    // ── OCULA PLUS: Vision + multimodal queries ────────────────────────────
-    // Downloaded on-demand when user sends a photo or image query.
+    // ── MONO MODEL: Qwen3-VL-2B-Thinking — text + vision, bundled ─────────
     ModelInfo(
       fileName: 'Qwen3VL-2B-Thinking-Q4_K_M.gguf',
-      displayName: 'Ocula Plus',
+      displayName: 'Ocula AI',
       downloadUrl:
           'https://backend-ocula.finailabz.com/models/Qwen3VL-2B-Thinking-Q4_K_M.gguf',
       sizeBytes: 1110 * 1024 * 1024, // ~1.1 GB
-      tier: AITier.plus,
+      tier: AITier.free,
     ),
     ModelInfo(
       fileName: 'mmproj-Qwen3VL-2B-Thinking-F16.gguf',
-      displayName: 'Ocula Plus Vision',
+      displayName: 'Ocula AI Vision',
       downloadUrl:
           'https://backend-ocula.finailabz.com/models/mmproj-Qwen3VL-2B-Thinking-F16.gguf',
       sizeBytes: 819 * 1024 * 1024, // ~819 MB
-      tier: AITier.plus,
-      isVisionProjector: true,
-    ),
-    // ── OCULA PRO: Higher-quality VL — iPad / mid-high RAM devices (≥6 GB) ──
-    // Qwen3-VL-4B Q4: ~2.5 GB weights + ~836 MB mmproj ≈ 4–5 GB working set.
-    // Replaces Qwen2.5-VL-7B (was ~8 GB working set, iPad Pro only).
-    // Downloaded from backend on demand.
-    ModelInfo(
-      fileName: 'Qwen3VL-4B-Thinking-Q4_K_M.gguf',
-      displayName: 'Ocula Pro',
-      downloadUrl:
-          'https://backend-ocula.finailabz.com/models/Qwen3VL-4B-Thinking-Q4_K_M.gguf',
-      sizeBytes: 2500 * 1024 * 1024, // ~2.5 GB (HF: 2,500,000,000 bytes)
-      tier: AITier.pro,
-    ),
-    ModelInfo(
-      fileName: 'mmproj-Qwen3VL-4B-Thinking-F16.gguf',
-      displayName: 'Ocula Pro Vision',
-      downloadUrl:
-          'https://backend-ocula.finailabz.com/models/mmproj-Qwen3VL-4B-Thinking-F16.gguf',
-      sizeBytes: 836 * 1024 * 1024, // ~836 MB (HF: 836,000,000 bytes)
-      tier: AITier.pro,
+      tier: AITier.free,
       isVisionProjector: true,
     ),
   ];
