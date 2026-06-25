@@ -827,7 +827,9 @@ class AIManager {
 
     if (hasImage && imagePath != null) {
       systemMsg = '${rolePrefix}Describe this image. Be specific and brief.';
-      userMsg = prompt;
+      // <__media__> inside the user turn so the mtmd bridge injects vision
+      // embeddings at the right position — not prepended before the system block.
+      userMsg = '<__media__>\n$prompt';
     } else if (compactContext.isNotEmpty) {
       if (isSmallModel) {
         // Free tier: question-first format so the tiny model knows what to find
@@ -889,10 +891,12 @@ class AIManager {
       userMsg = prompt;
     }
 
+    // Prefill empty <think> block so Qwen3-VL skips chain-of-thought and
+    // responds directly — prevents thinking from exhausting the token budget.
     String fullPrompt =
         '<|im_start|>system\n$systemMsg<|im_end|>\n'
         '<|im_start|>user\n$userMsg<|im_end|>\n'
-        '<|im_start|>assistant\n';
+        '<|im_start|>assistant\n<think>\n\n</think>\n';
 
     // Hard guard: keep prompt within a safe range for native decode slots.
     // This protects against "failed to find a memory slot for batch".
@@ -915,7 +919,7 @@ class AIManager {
       fullPrompt =
           '<|im_start|>system\n$systemMsg<|im_end|>\n'
           '<|im_start|>user\n$userMsg<|im_end|>\n'
-          '<|im_start|>assistant\n';
+          '<|im_start|>assistant\n<think>\n\n</think>\n';
       debugPrint(
         '[AIManager] Prompt clamped: ${fullPrompt.length} chars (ctx=${compactContext.length})',
       );
@@ -1016,7 +1020,7 @@ class AIManager {
               if (loaded) {
                 final primaryParams = GenerationParams(
                   prompt: fullPrompt,
-                  maxTokens: 160,
+                  maxTokens: 512,
                   temperature: 0.2,
                   repeatPenalty: 1.15,
                   stopSequences: const ['<|im_end|>'],
@@ -1040,7 +1044,7 @@ class AIManager {
                       'User request: $prompt';
                   final fallbackParams = GenerationParams(
                     prompt: plainPrompt,
-                    maxTokens: 160,
+                    maxTokens: 512,
                     temperature: 0.2,
                     repeatPenalty: 1.15,
                   );
@@ -1142,7 +1146,7 @@ class AIManager {
       final retryPrompt =
           '<|im_start|>system\n$systemMsg<|im_end|>\n'
           '<|im_start|>user\n$retryUserMsg<|im_end|>\n'
-          '<|im_start|>assistant\n';
+          '<|im_start|>assistant\n<think>\n\n</think>\n';
 
       response = await _textEngine.generate(
         GenerationParams(
