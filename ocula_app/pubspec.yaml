@@ -1,7 +1,7 @@
 name: ocula_app
 description: "Multi-agent on-device AI app with vision, reasoning, and voice."
 publish_to: 'none'
-version: 1.2.0+58
+version: 1.2.0+59
 
 environment:
   sdk: '>=3.10.0 <4.0.0'
@@ -43,6 +43,7 @@ dependencies:
   receive_sharing_intent: ^1.8.1  # Receive shared content from other apps
   enough_mail: any               # IMAP email access (local)
   lottie: ^3.3.2
+  flutter_svg: ^2.0.0
   shared_preferences: ^2.5.4
   device_info_plus: ^11.0.0      # RAM detection for model routing
   syncfusion_flutter_pdf: any    # PDF text extraction for RAG indexing

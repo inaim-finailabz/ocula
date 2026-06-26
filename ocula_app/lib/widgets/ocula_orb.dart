@@ -1,21 +1,33 @@
 import 'dart:async';
+import 'dart:io';
 import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_svg/flutter_svg.dart';
 
 enum OrbState { idle, listening, thinking, speaking }
-enum AvatarStyle { orb, face }
+
+/// Three avatar styles available in the long-press picker.
+///
+/// • orb    — original animated energy sphere
+/// • face   — digitised wireframe 3-D head
+/// • custom — any PNG/JPG/SVG the user picks; file path stored in prefs
+enum AvatarStyle { orb, face, custom }
 
 class OculaOrb extends StatefulWidget {
   final OrbState state;
   final double size;
   final AvatarStyle avatarStyle;
+  /// Absolute path to the user's custom image (PNG/JPG/SVG).
+  /// Only used when [avatarStyle] == [AvatarStyle.custom].
+  final String? customImagePath;
 
   const OculaOrb({
     super.key,
     this.state = OrbState.idle,
     this.size = 120,
     this.avatarStyle = AvatarStyle.face,
+    this.customImagePath,
   });
 
   @override
@@ -215,37 +227,46 @@ class _OculaOrbState extends State<OculaOrb> with TickerProviderStateMixin {
                     ),
                   ),
 
-                  // Face or orb
+                  // Avatar: face / orb / custom image
                   Transform.scale(
                     scale: pulseScale,
-                    child: widget.avatarStyle == AvatarStyle.face
-                        ? CustomPaint(
-                            size: Size(widget.size, widget.size),
-                            painter: _FacePainter(
-                              wavePhase: _waveController.value * 2 * pi,
-                              pulseValue: _pulseController.value,
-                              glowValue: _glowController.value,
-                              blinkValue: _blinkController.value,
-                              primaryColor: primary,
-                              secondaryColor: secondary,
-                              state: widget.state,
-                              yaw: _yaw,
-                              pitch: _pitch,
-                              isMini: widget.size < 90,
-                            ),
-                          )
-                        : CustomPaint(
-                            size: Size(widget.size, widget.size),
-                            painter: _OrbPainter(
-                              wavePhase: _waveController.value * 2 * pi,
-                              waveIntensity: _waveIntensity(),
-                              primaryColor: primary,
-                              secondaryColor: secondary,
-                              glowValue: _glowController.value,
-                              yaw: _yaw,
-                              pitch: _pitch,
-                            ),
+                    child: switch (widget.avatarStyle) {
+                      AvatarStyle.face => CustomPaint(
+                          size: Size(widget.size, widget.size),
+                          painter: _FacePainter(
+                            wavePhase: _waveController.value * 2 * pi,
+                            pulseValue: _pulseController.value,
+                            glowValue: _glowController.value,
+                            blinkValue: _blinkController.value,
+                            primaryColor: primary,
+                            secondaryColor: secondary,
+                            state: widget.state,
+                            yaw: _yaw,
+                            pitch: _pitch,
+                            isMini: widget.size < 90,
                           ),
+                        ),
+                      AvatarStyle.orb => CustomPaint(
+                          size: Size(widget.size, widget.size),
+                          painter: _OrbPainter(
+                            wavePhase: _waveController.value * 2 * pi,
+                            waveIntensity: _waveIntensity(),
+                            primaryColor: primary,
+                            secondaryColor: secondary,
+                            glowValue: _glowController.value,
+                            yaw: _yaw,
+                            pitch: _pitch,
+                          ),
+                        ),
+                      AvatarStyle.custom => _CustomAvatarWidget(
+                          size: widget.size,
+                          imagePath: widget.customImagePath,
+                          state: widget.state,
+                          wavePhase: _waveController.value * 2 * pi,
+                          glowValue: _glowController.value,
+                          primaryColor: primary,
+                        ),
+                    },
                   ),
 
                   // State label (hidden in mini/idle mode)
@@ -296,7 +317,191 @@ class _OculaOrbState extends State<OculaOrb> with TickerProviderStateMixin {
 }
 
 extension _AvatarStyleExt on AvatarStyle {
-  bool isFaceMini(double size) => this == AvatarStyle.face && size < 90;
+  // Hide state label when in face/custom mini mode — too small to read.
+  bool isFaceMini(double size) =>
+      (this == AvatarStyle.face || this == AvatarStyle.custom) && size < 90;
+}
+
+// ─────────────────────────────────────────────────────────────────
+// Custom image avatar — PNG / JPG / SVG clipped to circle.
+// When speaking, animated equalizer bars appear at the bottom.
+// ─────────────────────────────────────────────────────────────────
+class _CustomAvatarWidget extends StatelessWidget {
+  final double size;
+  final String? imagePath;
+  final OrbState state;
+  final double wavePhase;
+  final double glowValue;
+  final Color primaryColor;
+
+  const _CustomAvatarWidget({
+    required this.size,
+    required this.imagePath,
+    required this.state,
+    required this.wavePhase,
+    required this.glowValue,
+    required this.primaryColor,
+  });
+
+  bool get _isSvg => imagePath != null &&
+      imagePath!.toLowerCase().endsWith('.svg');
+
+  @override
+  Widget build(BuildContext context) {
+    final path = imagePath;
+
+    Widget imageWidget;
+    if (path == null || !File(path).existsSync()) {
+      // Fallback placeholder when no image is set
+      imageWidget = Container(
+        width: size,
+        height: size,
+        decoration: BoxDecoration(
+          shape: BoxShape.circle,
+          border: Border.all(color: primaryColor.withAlpha(120), width: 2),
+        ),
+        child: Icon(Icons.person_outline, size: size * 0.5,
+            color: primaryColor.withAlpha(180)),
+      );
+    } else {
+      final clipped = ClipOval(
+        child: _isSvg
+            ? SvgPicture.file(
+                File(path),
+                width: size,
+                height: size,
+                fit: BoxFit.cover,
+              )
+            : Image.file(
+                File(path),
+                width: size,
+                height: size,
+                fit: BoxFit.cover,
+                gaplessPlayback: true,
+              ),
+      );
+      imageWidget = clipped;
+    }
+
+    return SizedBox(
+      width: size,
+      height: size,
+      child: Stack(
+        alignment: Alignment.center,
+        children: [
+          imageWidget,
+          // Talking equalizer overlay — only when speaking
+          if (state == OrbState.speaking)
+            Positioned(
+              bottom: size * 0.06,
+              child: _TalkingBars(
+                wavePhase: wavePhase,
+                color: primaryColor,
+                barWidth: size * 0.04,
+                maxHeight: size * 0.16,
+                count: 7,
+              ),
+            ),
+          // Subtle rim that matches state colour
+          CustomPaint(
+            size: Size(size, size),
+            painter: _RimPainter(
+              color: primaryColor,
+              glowValue: glowValue,
+              wavePhase: wavePhase,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Animated equalizer bars shown at the bottom of a custom avatar when speaking.
+class _TalkingBars extends StatelessWidget {
+  final double wavePhase;
+  final Color color;
+  final double barWidth;
+  final double maxHeight;
+  final int count;
+
+  const _TalkingBars({
+    required this.wavePhase,
+    required this.color,
+    required this.barWidth,
+    required this.maxHeight,
+    required this.count,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 3),
+      decoration: BoxDecoration(
+        color: Colors.black.withAlpha(140),
+        borderRadius: BorderRadius.circular(barWidth * 1.5),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.end,
+        children: List.generate(count, (i) {
+          // Each bar gets a different phase offset for a wave-like pattern
+          final phase = wavePhase + i * 0.55;
+          final h = maxHeight * (0.25 + 0.75 * ((sin(phase * 2.1) * 0.5 +
+              sin(phase * 3.3 + 1.0) * 0.3 +
+              sin(phase * 1.4 + 2.2) * 0.2 + 1.0) / 2.0).clamp(0.0, 1.0));
+          return Container(
+            width: barWidth,
+            height: h.clamp(barWidth * 0.4, maxHeight),
+            margin: EdgeInsets.symmetric(horizontal: barWidth * 0.2),
+            decoration: BoxDecoration(
+              color: color.withAlpha(220),
+              borderRadius: BorderRadius.circular(barWidth * 0.4),
+            ),
+          );
+        }),
+      ),
+    );
+  }
+}
+
+/// Thin rim circle — reused by custom avatar mode.
+class _RimPainter extends CustomPainter {
+  final Color color;
+  final double glowValue;
+  final double wavePhase;
+
+  const _RimPainter({
+    required this.color,
+    required this.glowValue,
+    required this.wavePhase,
+  });
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final cx = size.width / 2;
+    final cy = size.height / 2;
+    final r = size.width / 2 - 1;
+    canvas.drawCircle(
+      Offset(cx, cy),
+      r,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 2.0
+        ..shader = SweepGradient(
+          colors: [
+            color.withAlpha(0),
+            color.withAlpha((80 + glowValue * 50).toInt()),
+            color.withAlpha(0),
+          ],
+          stops: const [0.0, 0.5, 1.0],
+          transform: GradientRotation(wavePhase * 0.3),
+        ).createShader(Rect.fromCircle(center: Offset(cx, cy), radius: r)),
+    );
+  }
+
+  @override
+  bool shouldRepaint(_RimPainter old) => true;
 }
 
 // ─────────────────────────────────────────────────────────────────

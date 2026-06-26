@@ -208,6 +208,7 @@ class _AssistantScreenState extends State<AssistantScreen>
   Map<String, double> _activeDownloads = {};
   AITier? _backgroundDownloadFailed;
   AvatarStyle _avatarStyle = AvatarStyle.face;
+  String? _customAvatarPath;
 
   late final AnimationController _orbSizeController;
 
@@ -309,8 +310,12 @@ class _AssistantScreenState extends State<AssistantScreen>
         _startHelpTour();
       }
       final styleIndex = prefs.getInt('avatar_style') ?? AvatarStyle.face.index;
+      final customPath = prefs.getString('avatar_custom_path');
       if (mounted) {
-        setState(() => _avatarStyle = AvatarStyle.values[styleIndex.clamp(0, AvatarStyle.values.length - 1)]);
+        setState(() {
+          _avatarStyle = AvatarStyle.values[styleIndex.clamp(0, AvatarStyle.values.length - 1)];
+          _customAvatarPath = customPath;
+        });
       }
     });
   }
@@ -340,41 +345,91 @@ class _AssistantScreenState extends State<AssistantScreen>
                   ),
                 ),
                 const SizedBox(height: 16),
-                for (final style in AvatarStyle.values)
-                  ListTile(
-                    leading: Icon(
-                      style == AvatarStyle.face
-                          ? Icons.face_outlined
-                          : Icons.blur_circular_outlined,
-                      color: _avatarStyle == style ? colors.primary : colors.onSurface,
-                    ),
-                    title: Text(style == AvatarStyle.face ? 'AI Face' : 'Orb'),
-                    subtitle: Text(
-                      style == AvatarStyle.face
-                          ? 'Animated face with talking gestures'
-                          : 'Animated energy sphere',
-                      style: TextStyle(fontSize: 12, color: colors.onSurface.withAlpha(140)),
-                    ),
-                    trailing: _avatarStyle == style
-                        ? Icon(Icons.check_circle, color: colors.primary)
-                        : null,
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                    tileColor: _avatarStyle == style
-                        ? colors.primary.withAlpha(18)
-                        : Colors.transparent,
-                    onTap: () async {
-                      Navigator.pop(ctx);
-                      setState(() => _avatarStyle = style);
-                      final prefs = await SharedPreferences.getInstance();
-                      await prefs.setInt('avatar_style', style.index);
-                    },
-                  ),
+                _avatarTile(
+                  ctx: ctx,
+                  colors: colors,
+                  style: AvatarStyle.face,
+                  icon: Icons.grid_on_outlined,
+                  title: 'Wireframe Face',
+                  subtitle: '3D digital face, drag to rotate',
+                ),
+                _avatarTile(
+                  ctx: ctx,
+                  colors: colors,
+                  style: AvatarStyle.orb,
+                  icon: Icons.blur_circular_outlined,
+                  title: 'Orb',
+                  subtitle: 'Animated energy sphere',
+                ),
+                _avatarTile(
+                  ctx: ctx,
+                  colors: colors,
+                  style: AvatarStyle.custom,
+                  icon: Icons.image_outlined,
+                  title: 'Custom Image',
+                  subtitle: 'PNG, JPG or SVG — transparent backgrounds supported',
+                  onTap: () async {
+                    Navigator.pop(ctx);
+                    await _pickCustomAvatar();
+                  },
+                ),
               ],
             ),
           ),
         );
       },
     );
+  }
+
+  Widget _avatarTile({
+    required BuildContext ctx,
+    required ColorScheme colors,
+    required AvatarStyle style,
+    required IconData icon,
+    required String title,
+    required String subtitle,
+    VoidCallback? onTap,
+  }) {
+    final selected = _avatarStyle == style;
+    return ListTile(
+      leading: Icon(icon, color: selected ? colors.primary : colors.onSurface),
+      title: Text(title),
+      subtitle: Text(subtitle,
+          style: TextStyle(fontSize: 12, color: colors.onSurface.withAlpha(140))),
+      trailing: selected ? Icon(Icons.check_circle, color: colors.primary) : null,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      tileColor: selected ? colors.primary.withAlpha(18) : Colors.transparent,
+      onTap: onTap ?? () async {
+        Navigator.pop(ctx);
+        setState(() => _avatarStyle = style);
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setInt('avatar_style', style.index);
+      },
+    );
+  }
+
+  /// Pick a PNG/JPG/SVG file for the custom avatar.
+  Future<void> _pickCustomAvatar() async {
+    try {
+      final result = await FilePicker.platform.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: ['png', 'jpg', 'jpeg', 'webp', 'svg'],
+        allowMultiple: false,
+      );
+      if (result == null || result.files.single.path == null) return;
+      final path = result.files.single.path!;
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString('avatar_custom_path', path);
+      await prefs.setInt('avatar_style', AvatarStyle.custom.index);
+      if (mounted) {
+        setState(() {
+          _customAvatarPath = path;
+          _avatarStyle = AvatarStyle.custom;
+        });
+      }
+    } catch (e) {
+      if (mounted) _showSnackbar('Could not pick image: $e');
+    }
   }
 
   void _cancelBannerDownload() {
@@ -1694,6 +1749,7 @@ class _AssistantScreenState extends State<AssistantScreen>
                           state: _orbState,
                           size: _orbExpanded ? expandedSize : miniSize,
                           avatarStyle: _avatarStyle,
+                          customImagePath: _customAvatarPath,
                         ),
                       ),
                     ),
