@@ -344,15 +344,16 @@ class _FacePainter extends CustomPainter {
   // Output: 2-D canvas offset after yaw (Y-axis) + pitch (X-axis)
   // rotation and a tiny perspective divide.
   Offset _project(double x, double y, double z, double cx, double cy, double r) {
-    // Yaw (rotate around Y)
+    // Yaw (rotate around Y-axis)
     final x1 = x * cos(yaw) + z * sin(yaw);
     final z1 = -x * sin(yaw) + z * cos(yaw);
-    // Pitch (rotate around X)
+    // Pitch (rotate around X-axis)
     final y2 = y * cos(pitch) - z1 * sin(pitch);
     final z2 = y * sin(pitch) + z1 * cos(pitch);
-    // Perspective
-    final scale = 1.0 + z2 * 0.18;
-    return Offset(cx + x1 * r * scale, cy + y2 * r * scale);
+    // Perspective divide — deeper field (0.28) gives stronger 3-D look
+    final scale = 1.0 + z2 * 0.28;
+    // Canvas Y is inverted vs math Y, so negate y2
+    return Offset(cx + x1 * r * scale, cy - y2 * r * scale);
   }
 
   // Draw a polyline through a list of 3-D points.
