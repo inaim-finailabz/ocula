@@ -190,20 +190,6 @@ class _AssistantScreenState extends State<AssistantScreen>
     });
   }
 
-  /// Open the model picker bottom sheet from the tier badge or image suggestion.
-  void _showModelPickerSheet() {
-    showModalBottomSheet(
-      context: context,
-      isScrollControlled: true,
-      useSafeArea: true,
-      backgroundColor: Theme.of(context).colorScheme.surface,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
-      ),
-      builder: (_) => const _ModelPickerSheet(),
-    );
-  }
-
   void _startHelpTour() {
     if (mounted) setState(() => _showingHelpTour = true);
   }
@@ -216,6 +202,7 @@ class _AssistantScreenState extends State<AssistantScreen>
   bool _stopRequested = false;
   OrbState _orbState = OrbState.idle;
   RetrievalScope _retrievalScope = RetrievalScope.all;
+  bool _scopeExpanded = false;
   File? _attachedImage;
   File? _attachedDocument;
   String? _attachedDocName;
@@ -223,6 +210,7 @@ class _AssistantScreenState extends State<AssistantScreen>
   bool _orbExpanded = true;
   Map<String, double> _activeDownloads = {};
   AITier? _backgroundDownloadFailed;
+  AvatarStyle _avatarStyle = AvatarStyle.face;
 
   late final AnimationController _orbSizeController;
 
@@ -317,12 +305,79 @@ class _AssistantScreenState extends State<AssistantScreen>
     });
 
     // Check if we should show the help tour after first onboarding.
+    // Also restore avatar style preference.
     WidgetsBinding.instance.addPostFrameCallback((_) async {
       final prefs = await SharedPreferences.getInstance();
       if ((prefs.getBool('show_help_tour') ?? false) && mounted) {
         _startHelpTour();
       }
+      final styleIndex = prefs.getInt('avatar_style') ?? AvatarStyle.face.index;
+      if (mounted) {
+        setState(() => _avatarStyle = AvatarStyle.values[styleIndex.clamp(0, AvatarStyle.values.length - 1)]);
+      }
     });
+  }
+
+  void _showAvatarStylePicker() {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Theme.of(context).colorScheme.surfaceContainerHighest,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (ctx) {
+        final colors = Theme.of(ctx).colorScheme;
+        return SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.symmetric(vertical: 20, horizontal: 24),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Assistant Appearance',
+                  style: TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.w600,
+                    color: colors.onSurface,
+                  ),
+                ),
+                const SizedBox(height: 16),
+                for (final style in AvatarStyle.values)
+                  ListTile(
+                    leading: Icon(
+                      style == AvatarStyle.face
+                          ? Icons.face_outlined
+                          : Icons.blur_circular_outlined,
+                      color: _avatarStyle == style ? colors.primary : colors.onSurface,
+                    ),
+                    title: Text(style == AvatarStyle.face ? 'AI Face' : 'Orb'),
+                    subtitle: Text(
+                      style == AvatarStyle.face
+                          ? 'Animated face with talking gestures'
+                          : 'Animated energy sphere',
+                      style: TextStyle(fontSize: 12, color: colors.onSurface.withAlpha(140)),
+                    ),
+                    trailing: _avatarStyle == style
+                        ? Icon(Icons.check_circle, color: colors.primary)
+                        : null,
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                    tileColor: _avatarStyle == style
+                        ? colors.primary.withAlpha(18)
+                        : Colors.transparent,
+                    onTap: () async {
+                      Navigator.pop(ctx);
+                      setState(() => _avatarStyle = style);
+                      final prefs = await SharedPreferences.getInstance();
+                      await prefs.setInt('avatar_style', style.index);
+                    },
+                  ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
   }
 
   void _cancelBannerDownload() {
@@ -539,32 +594,6 @@ class _AssistantScreenState extends State<AssistantScreen>
       await notifService.scheduleDailyBriefing();
     } catch (e) {
       debugPrint('[Ocula] Notification init error: $e');
-    }
-  }
-
-  String _tierLabel(AITier tier) {
-    switch (tier) {
-      case AITier.free:
-        return 'Ocula Lite';
-      case AITier.plus:
-        return 'Ocula Plus';
-      case AITier.pro:
-        return 'Ocula Pro';
-      case AITier.enterprise:
-        return 'Enterprise';
-    }
-  }
-
-  Color _tierColor(AITier tier) {
-    switch (tier) {
-      case AITier.free:
-        return const Color(0xFF00CEC9);
-      case AITier.plus:
-        return const Color(0xFF6C5CE7);
-      case AITier.pro:
-        return const Color(0xFFFD79A8);
-      case AITier.enterprise:
-        return const Color(0xFFFDCB6E);
     }
   }
 
@@ -1247,47 +1276,29 @@ class _AssistantScreenState extends State<AssistantScreen>
                             ),
                           ),
                         ),
-                        const SizedBox(width: 10),
-                        // Active model badge — tappable to open model picker
-                        if (_ai.activeTier != null)
-                          GestureDetector(
-                            onTap: _showModelPickerSheet,
-                            child: Container(
-                              padding: const EdgeInsets.symmetric(
-                                horizontal: 8,
-                                vertical: 3,
+                        const SizedBox(width: 8),
+                        // Ready indicator dot — green when model loaded, amber while loading
+                        AnimatedContainer(
+                          duration: const Duration(milliseconds: 400),
+                          width: 7,
+                          height: 7,
+                          decoration: BoxDecoration(
+                            shape: BoxShape.circle,
+                            color: _ai.isModelLoaded
+                                ? const Color(0xFF00E676)
+                                : const Color(0xFFFFB300),
+                            boxShadow: [
+                              BoxShadow(
+                                color: (_ai.isModelLoaded
+                                        ? const Color(0xFF00E676)
+                                        : const Color(0xFFFFB300))
+                                    .withAlpha(120),
+                                blurRadius: 6,
+                                spreadRadius: 1,
                               ),
-                              decoration: BoxDecoration(
-                                color: _tierColor(_ai.activeTier!).withAlpha(40),
-                                borderRadius: BorderRadius.circular(8),
-                                border: Border.all(
-                                  color: _tierColor(
-                                    _ai.activeTier!,
-                                  ).withAlpha(80),
-                                  width: 0.5,
-                                ),
-                              ),
-                              child: Row(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  Text(
-                                    _tierLabel(_ai.activeTier!),
-                                    style: TextStyle(
-                                      fontSize: 10,
-                                      fontWeight: FontWeight.w600,
-                                      color: _tierColor(_ai.activeTier!),
-                                    ),
-                                  ),
-                                  const SizedBox(width: 2),
-                                  Icon(
-                                    Icons.expand_more,
-                                    size: 13,
-                                    color: _tierColor(_ai.activeTier!),
-                                  ),
-                                ],
-                              ),
-                            ),
+                            ],
                           ),
+                        ),
                         const Spacer(),
                         // Export button — visible in the top bar only on
                         // tablet/desktop where there is room; phones access it
@@ -1503,52 +1514,6 @@ class _AssistantScreenState extends State<AssistantScreen>
                               ),
                             ],
                           ),
-                          // Suggest upgrading to vision tier when on Lite
-                          if (_ai.activeTier == AITier.free)
-                            Padding(
-                              padding: const EdgeInsets.only(top: 6),
-                              child: GestureDetector(
-                                onTap: _showModelPickerSheet,
-                                child: Container(
-                                  padding: const EdgeInsets.symmetric(
-                                    horizontal: 10,
-                                    vertical: 5,
-                                  ),
-                                  decoration: BoxDecoration(
-                                    color: const Color(0xFF6C5CE7).withAlpha(30),
-                                    borderRadius: BorderRadius.circular(8),
-                                    border: Border.all(
-                                      color: const Color(0xFF6C5CE7).withAlpha(80),
-                                    ),
-                                  ),
-                                  child: Row(
-                                    mainAxisSize: MainAxisSize.min,
-                                    children: [
-                                      const Icon(
-                                        Icons.auto_awesome,
-                                        size: 13,
-                                        color: Color(0xFF6C5CE7),
-                                      ),
-                                      const SizedBox(width: 5),
-                                      Text(
-                                        'Switch to Plus for better image analysis',
-                                        style: const TextStyle(
-                                          fontSize: 11,
-                                          color: Color(0xFF6C5CE7),
-                                          fontWeight: FontWeight.w500,
-                                        ),
-                                      ),
-                                      const SizedBox(width: 4),
-                                      const Icon(
-                                        Icons.chevron_right,
-                                        size: 14,
-                                        color: Color(0xFF6C5CE7),
-                                      ),
-                                    ],
-                                  ),
-                                ),
-                              ),
-                            ),
                         ],
                       ),
                     ),
@@ -1594,75 +1559,112 @@ class _AssistantScreenState extends State<AssistantScreen>
                       ),
                     ),
 
-                  // ── Retrieval scope chips ──
-                  SizedBox(
+                  // ── Retrieval scope + quick actions (collapsed by default) ──
+                  AnimatedSize(
                     key: _scopeChipsKey,
-                    height: 40,
-                    child: ListView(
-                      scrollDirection: Axis.horizontal,
-                      padding: const EdgeInsets.symmetric(horizontal: 12),
-                      children: [
-                        _ScopeChip(
-                          label: 'All',
-                          icon: Icons.tune,
-                          selected: _retrievalScope == RetrievalScope.all,
-                          onTap: () => setState(
-                            () => _retrievalScope = RetrievalScope.all,
+                    duration: const Duration(milliseconds: 220),
+                    curve: Curves.easeInOut,
+                    alignment: Alignment.topLeft,
+                    child: _scopeExpanded
+                        ? Padding(
+                            padding: const EdgeInsets.symmetric(horizontal: 12),
+                            child: Wrap(
+                              spacing: 6,
+                              runSpacing: 6,
+                              children: [
+                                _ScopeChip(
+                                  label: 'All',
+                                  icon: Icons.tune,
+                                  selected: _retrievalScope == RetrievalScope.all,
+                                  onTap: () => setState(() {
+                                    _retrievalScope = RetrievalScope.all;
+                                    _scopeExpanded = false;
+                                  }),
+                                ),
+                                _ScopeChip(
+                                  label: 'Docs',
+                                  icon: Icons.description_outlined,
+                                  selected: _retrievalScope == RetrievalScope.docs,
+                                  onTap: () => setState(() {
+                                    _retrievalScope = RetrievalScope.docs;
+                                    _scopeExpanded = false;
+                                  }),
+                                ),
+                                _ScopeChip(
+                                  label: 'Images',
+                                  icon: Icons.photo_outlined,
+                                  selected: _retrievalScope == RetrievalScope.images,
+                                  onTap: () => setState(() {
+                                    _retrievalScope = RetrievalScope.images;
+                                    _scopeExpanded = false;
+                                  }),
+                                ),
+                                _ScopeChip(
+                                  label: 'Location',
+                                  icon: Icons.place_outlined,
+                                  selected: _retrievalScope == RetrievalScope.location,
+                                  onTap: () => setState(() {
+                                    _retrievalScope = RetrievalScope.location;
+                                    _scopeExpanded = false;
+                                  }),
+                                ),
+                                _QuickActionChip(
+                                  label: _isRecordingNotes
+                                      ? 'Stop Recording'
+                                      : 'Meeting Recap',
+                                  icon: _isRecordingNotes ? Icons.stop : Icons.mic,
+                                  selected: _isRecordingNotes,
+                                  onTap: () {
+                                    _startRecordingSummary(contextType: 'meeting');
+                                    setState(() => _scopeExpanded = false);
+                                  },
+                                ),
+                                _QuickActionChip(
+                                  label: 'Class Notes',
+                                  icon: Icons.school_outlined,
+                                  onTap: () {
+                                    _startRecordingSummary(contextType: 'college class');
+                                    setState(() => _scopeExpanded = false);
+                                  },
+                                ),
+                              ],
+                            ),
+                          )
+                        : Padding(
+                            padding: const EdgeInsets.symmetric(horizontal: 12),
+                            child: GestureDetector(
+                              onTap: () => setState(() => _scopeExpanded = true),
+                              child: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  _ScopeChip(
+                                    label: switch (_retrievalScope) {
+                                      RetrievalScope.all => 'All',
+                                      RetrievalScope.docs => 'Docs',
+                                      RetrievalScope.images => 'Images',
+                                      RetrievalScope.location => 'Location',
+                                      _ => 'All',
+                                    },
+                                    icon: switch (_retrievalScope) {
+                                      RetrievalScope.all => Icons.tune,
+                                      RetrievalScope.docs => Icons.description_outlined,
+                                      RetrievalScope.images => Icons.photo_outlined,
+                                      RetrievalScope.location => Icons.place_outlined,
+                                      _ => Icons.tune,
+                                    },
+                                    selected: true,
+                                    onTap: () => setState(() => _scopeExpanded = true),
+                                  ),
+                                  const SizedBox(width: 2),
+                                  Icon(
+                                    Icons.expand_more,
+                                    size: 14,
+                                    color: Theme.of(context).colorScheme.onSurface.withAlpha(100),
+                                  ),
+                                ],
+                              ),
+                            ),
                           ),
-                        ),
-                        _ScopeChip(
-                          label: 'Docs',
-                          icon: Icons.description_outlined,
-                          selected: _retrievalScope == RetrievalScope.docs,
-                          onTap: () => setState(
-                            () => _retrievalScope = RetrievalScope.docs,
-                          ),
-                        ),
-                        _ScopeChip(
-                          label: 'Images',
-                          icon: Icons.photo_outlined,
-                          selected: _retrievalScope == RetrievalScope.images,
-                          onTap: () => setState(
-                            () => _retrievalScope = RetrievalScope.images,
-                          ),
-                        ),
-                        _ScopeChip(
-                          label: 'Location',
-                          icon: Icons.place_outlined,
-                          selected: _retrievalScope == RetrievalScope.location,
-                          onTap: () => setState(
-                            () => _retrievalScope = RetrievalScope.location,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-
-                  // ── Quick voice-note actions ──
-                  SizedBox(
-                    height: 36,
-                    child: ListView(
-                      scrollDirection: Axis.horizontal,
-                      padding: const EdgeInsets.symmetric(horizontal: 12),
-                      children: [
-                        _QuickActionChip(
-                          label: _isRecordingNotes
-                              ? 'Stop Recording'
-                              : 'Meeting Recap',
-                          icon: _isRecordingNotes ? Icons.stop : Icons.mic,
-                          selected: _isRecordingNotes,
-                          onTap: () =>
-                              _startRecordingSummary(contextType: 'meeting'),
-                        ),
-                        _QuickActionChip(
-                          label: 'Class Notes',
-                          icon: Icons.school_outlined,
-                          onTap: () => _startRecordingSummary(
-                            contextType: 'college class',
-                          ),
-                        ),
-                      ],
-                    ),
                   ),
 
                   // ── Enhanced input bar ──
@@ -1789,6 +1791,7 @@ class _AssistantScreenState extends State<AssistantScreen>
                   onTap: _orbExpanded && hasMessages
                       ? _toggleOrb
                       : _toggleVoice,
+                  onLongPress: _showAvatarStylePicker,
                   child: AnimatedAlign(
                     duration: const Duration(milliseconds: 400),
                     curve: Curves.easeOutCubic,
@@ -1809,6 +1812,7 @@ class _AssistantScreenState extends State<AssistantScreen>
                         child: OculaOrb(
                           state: _orbState,
                           size: _orbExpanded ? expandedSize : miniSize,
+                          avatarStyle: _avatarStyle,
                         ),
                       ),
                     ),
@@ -2514,433 +2518,6 @@ class _SendButton extends StatelessWidget {
           ],
         ),
         child: const Icon(Icons.arrow_upward, size: 20, color: Colors.white),
-      ),
-    );
-  }
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Model Picker Sheet
-// ─────────────────────────────────────────────────────────────────────────────
-
-/// Bottom sheet that lets the user view and switch between AI model tiers.
-/// Shows download status, progress, RAM requirements, and device recommendation.
-class _ModelPickerSheet extends StatefulWidget {
-  const _ModelPickerSheet();
-
-  @override
-  State<_ModelPickerSheet> createState() => _ModelPickerSheetState();
-}
-
-class _ModelPickerSheetState extends State<_ModelPickerSheet> {
-  final _modelManager = OculaModelManager();
-  final _ai = AIManager();
-
-  AITier? _activeTier;
-  AITier? _downloadingTier;
-  AITier? _failedTier;
-  double _downloadProgress = 0.0;
-  String _downloadStatus = '';
-  AITier? _recommendedTier;
-  final Map<AITier, bool> _tierDownloaded = {};
-  bool _loading = true;
-
-  StreamSubscription<AITier>? _activeTierSub;
-  StreamSubscription<Map<String, double>>? _progressSub;
-
-  @override
-  void initState() {
-    super.initState();
-    _activeTier = _ai.activeTier;
-    _activeTierSub = _ai.activeTierStream.listen((tier) {
-      if (mounted) setState(() => _activeTier = tier);
-    });
-    _progressSub = _modelManager.downloadProgressStream.listen((progress) {
-      if (!mounted) return;
-      // Update overall download progress from the stream for any tier
-      if (_downloadingTier != null) {
-        final tierFiles = _modelManager
-            .modelsForTier(_downloadingTier!)
-            .map((m) => m.fileName)
-            .toSet();
-        final relevant = progress.entries
-            .where((e) => tierFiles.contains(e.key))
-            .toList();
-        if (relevant.isNotEmpty) {
-          final avg = relevant.map((e) => e.value).reduce((a, b) => a + b) /
-              relevant.length;
-          setState(() => _downloadProgress = avg);
-        }
-      }
-    });
-    _loadStatuses();
-    _loadRecommendedTier();
-  }
-
-  @override
-  void dispose() {
-    _activeTierSub?.cancel();
-    _progressSub?.cancel();
-    super.dispose();
-  }
-
-  Future<void> _loadStatuses() async {
-    final statuses = <AITier, bool>{};
-    for (final tier in [AITier.free, AITier.plus, AITier.pro]) {
-      statuses[tier] = await _ai.isTierDownloaded(tier);
-    }
-    if (mounted) {
-      setState(() {
-        _tierDownloaded.addAll(statuses);
-        _loading = false;
-      });
-    }
-  }
-
-  Future<void> _loadRecommendedTier() async {
-    AITier best = AITier.free;
-    for (final tier in [AITier.pro, AITier.plus, AITier.free]) {
-      if (await _ai.canDeviceRunTier(tier)) {
-        best = tier;
-        break;
-      }
-    }
-    if (mounted) setState(() => _recommendedTier = best);
-  }
-
-  Future<void> _cancelDownload(AITier tier) {
-    for (final model in _modelManager.modelsForTier(tier)) {
-      _modelManager.cancelDownload(model.fileName);
-    }
-    return Future.value();
-  }
-
-  Future<void> _downloadAndActivate(AITier tier) async {
-    setState(() {
-      _downloadingTier = tier;
-      _failedTier = null;
-      _downloadProgress = 0.0;
-      _downloadStatus = 'Starting download...';
-    });
-
-    final ok = await _modelManager.downloadTierWithProgress(
-      tier,
-      onProgress: (p, s) {
-        if (mounted) {
-          setState(() {
-            _downloadProgress = p;
-            _downloadStatus = s;
-          });
-        }
-      },
-    );
-
-    if (!mounted) return;
-
-    if (!ok) {
-      setState(() {
-        _downloadingTier = null;
-        _failedTier = tier;
-      });
-      return;
-    }
-
-    setState(() {
-      _tierDownloaded[tier] = true;
-      _downloadingTier = null;
-    });
-
-    await _activate(tier);
-  }
-
-  Future<void> _activate(AITier tier) async {
-    try {
-      await _ai.switchEngine(tier);
-      if (mounted) Navigator.pop(context);
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(
-              'Could not activate ${OculaModelManager.featureLabel(tier)}: $e',
-            ),
-          ),
-        );
-      }
-    }
-  }
-
-  Color _tierColor(AITier tier) {
-    switch (tier) {
-      case AITier.free:
-        return const Color(0xFF00CEC9);
-      case AITier.plus:
-        return const Color(0xFF6C5CE7);
-      case AITier.pro:
-        return const Color(0xFFFD79A8);
-      case AITier.enterprise:
-        return const Color(0xFFFDCB6E);
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final colors = Theme.of(context).colorScheme;
-
-    return DraggableScrollableSheet(
-      initialChildSize: 0.6,
-      minChildSize: 0.4,
-      maxChildSize: 0.88,
-      expand: false,
-      builder: (context, scrollController) => Column(
-        children: [
-          Center(
-            child: Container(
-              margin: const EdgeInsets.only(top: 12, bottom: 4),
-              width: 36,
-              height: 4,
-              decoration: BoxDecoration(
-                color: colors.onSurface.withAlpha(50),
-                borderRadius: BorderRadius.circular(2),
-              ),
-            ),
-          ),
-          Padding(
-            padding: const EdgeInsets.fromLTRB(20, 8, 20, 10),
-            child: Row(
-              children: [
-                const Text(
-                  'AI Model',
-                  style: TextStyle(fontSize: 17, fontWeight: FontWeight.bold),
-                ),
-                if (_recommendedTier != null) ...[
-                  const Spacer(),
-                  Text(
-                    'Device fit: ${OculaModelManager.featureLabel(_recommendedTier!)}',
-                    style: TextStyle(
-                      fontSize: 11,
-                      color: colors.primary.withAlpha(180),
-                    ),
-                  ),
-                ],
-              ],
-            ),
-          ),
-          const Divider(height: 1),
-          Expanded(
-            child: ListView(
-              controller: scrollController,
-              padding: const EdgeInsets.symmetric(vertical: 8),
-              children: [
-                for (final tier in [AITier.free, AITier.plus, AITier.pro])
-                  _buildTierCard(tier, colors),
-                const SizedBox(height: 16),
-              ],
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildTierCard(AITier tier, ColorScheme colors) {
-    final isActive = _activeTier == tier;
-    final isDownloaded = _tierDownloaded[tier] ?? false;
-    final isDownloading = _downloadingTier == tier;
-    final isFailed = _failedTier == tier;
-    final isRecommended = _recommendedTier == tier;
-    final tierColor = _tierColor(tier);
-    final label = OculaModelManager.featureLabel(tier);
-
-    final String description;
-    final String sizeLabel;
-    final String ramNote;
-    switch (tier) {
-      case AITier.free:
-        description = 'Text reasoning — contacts, email, calendar, documents';
-        sizeLabel = '~1.3 GB';
-        ramNote = 'Requires ~2 GB RAM';
-      case AITier.plus:
-        description = 'Vision + text — analyze images, photos, screenshots';
-        sizeLabel = '~1.9 GB';
-        ramNote = 'Requires ~4 GB RAM';
-      case AITier.pro:
-        description = 'Vision Pro — higher quality, larger model';
-        sizeLabel = '~3.3 GB';
-        ramNote = 'Requires ~6 GB RAM (iPhone 15+ / iPad)';
-      case AITier.enterprise:
-        return const SizedBox.shrink();
-    }
-
-    return Container(
-      margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
-      decoration: BoxDecoration(
-        color: isActive
-            ? tierColor.withAlpha(25)
-            : colors.surfaceContainerHighest,
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(
-          color: isActive
-              ? tierColor.withAlpha(120)
-              : colors.outline.withAlpha(50),
-        ),
-      ),
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                Text(
-                  label,
-                  style: TextStyle(
-                    fontSize: 15,
-                    fontWeight: FontWeight.bold,
-                    color: isActive ? tierColor : colors.onSurface,
-                  ),
-                ),
-                const SizedBox(width: 8),
-                if (isActive)
-                  _chip('Active', tierColor),
-                if (isRecommended && !isActive)
-                  _chip('Recommended', colors.primary),
-                const Spacer(),
-                Text(
-                  sizeLabel,
-                  style: TextStyle(
-                    fontSize: 12,
-                    color: colors.onSurface.withAlpha(120),
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 4),
-            Text(
-              description,
-              style: TextStyle(
-                fontSize: 12,
-                color: colors.onSurface.withAlpha(160),
-              ),
-            ),
-            Text(
-              ramNote,
-              style: TextStyle(
-                fontSize: 11,
-                color: colors.onSurface.withAlpha(100),
-              ),
-            ),
-
-            if (isDownloading) ...[
-              const SizedBox(height: 12),
-              Row(
-                children: [
-                  Expanded(
-                    child: Text(
-                      _downloadStatus,
-                      style: TextStyle(fontSize: 11, color: tierColor),
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                  ),
-                  Text(
-                    '${(_downloadProgress * 100).toStringAsFixed(0)}%',
-                    style: TextStyle(
-                      fontSize: 11,
-                      fontWeight: FontWeight.w600,
-                      color: tierColor,
-                    ),
-                  ),
-                  const SizedBox(width: 8),
-                  GestureDetector(
-                    onTap: () {
-                      _cancelDownload(tier);
-                      setState(() {
-                        _downloadingTier = null;
-                        _failedTier = null;
-                      });
-                    },
-                    child: Icon(
-                      Icons.cancel_outlined,
-                      size: 16,
-                      color: colors.onSurface.withAlpha(120),
-                    ),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 6),
-              ClipRRect(
-                borderRadius: BorderRadius.circular(3),
-                child: LinearProgressIndicator(
-                  value: _downloadProgress > 0 ? _downloadProgress : null,
-                  minHeight: 4,
-                  backgroundColor: tierColor.withAlpha(25),
-                  valueColor: AlwaysStoppedAnimation<Color>(tierColor),
-                ),
-              ),
-            ] else if (isFailed) ...[
-              const SizedBox(height: 12),
-              SizedBox(
-                width: double.infinity,
-                child: OutlinedButton.icon(
-                  onPressed: _downloadingTier != null
-                      ? null
-                      : () => _downloadAndActivate(tier),
-                  icon: const Icon(Icons.refresh, size: 16),
-                  label: Text('Resume Download ($sizeLabel)'),
-                  style: OutlinedButton.styleFrom(
-                    foregroundColor: colors.error,
-                    side: BorderSide(color: colors.error.withAlpha(120)),
-                  ),
-                ),
-              ),
-            ] else if (!isActive && !_loading) ...[
-              const SizedBox(height: 12),
-              SizedBox(
-                width: double.infinity,
-                child: isDownloaded
-                    ? FilledButton(
-                        onPressed: _downloadingTier != null
-                            ? null
-                            : () => _activate(tier),
-                        style: FilledButton.styleFrom(
-                          backgroundColor: tierColor,
-                        ),
-                        child: const Text('Activate'),
-                      )
-                    : OutlinedButton.icon(
-                        onPressed: _downloadingTier != null
-                            ? null
-                            : () => _downloadAndActivate(tier),
-                        icon: const Icon(Icons.download, size: 16),
-                        label: Text('Download & Switch ($sizeLabel)'),
-                        style: OutlinedButton.styleFrom(
-                          foregroundColor: tierColor,
-                          side: BorderSide(color: tierColor.withAlpha(120)),
-                        ),
-                      ),
-              ),
-            ],
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _chip(String label, Color color) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
-      decoration: BoxDecoration(
-        color: color.withAlpha(35),
-        borderRadius: BorderRadius.circular(6),
-        border: Border.all(color: color.withAlpha(100)),
-      ),
-      child: Text(
-        label,
-        style: TextStyle(
-          fontSize: 10,
-          fontWeight: FontWeight.w600,
-          color: color,
-        ),
       ),
     );
   }

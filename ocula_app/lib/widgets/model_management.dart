@@ -361,7 +361,8 @@ class _ModelManagementState extends State<ModelManagement> {
             ],
           ),
           const SizedBox(height: 8),
-          for (final model in tierModels)
+          for (final model in tierModels.where(
+                (m) => !m.isVisionProjector && !m.isEmbeddingModel))
             _buildModelTile(model, colors),
           // Activate button (show for any tier if it's ready but not active).
           if (fullyReady && !isActive) ...[
