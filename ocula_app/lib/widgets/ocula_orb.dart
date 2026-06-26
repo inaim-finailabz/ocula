@@ -300,7 +300,10 @@ extension _AvatarStyleExt on AvatarStyle {
 }
 
 // ─────────────────────────────────────────────────────────────────
-// Face painter — holographic AI face with talking mouth animation
+// Face painter — digitised wireframe face, white straight lines
+// Think: Apple Vision Pro persona / holographic grid head.
+// All features are drawn as line segments projected in 3-D via
+// yaw/pitch rotation so the face appears to turn in space.
 // ─────────────────────────────────────────────────────────────────
 class _FacePainter extends CustomPainter {
   final double wavePhase;
@@ -335,287 +338,267 @@ class _FacePainter extends CustomPainter {
     return ((a + b + c + 1.0) / 2.0).clamp(0.0, 1.0);
   }
 
+  // ── 3-D projection helpers ──────────────────────────────────────
+  // Input: 3-D point (x, y, z) in a coordinate space where the
+  // face is centred at origin and radius ~1.
+  // Output: 2-D canvas offset after yaw (Y-axis) + pitch (X-axis)
+  // rotation and a tiny perspective divide.
+  Offset _project(double x, double y, double z, double cx, double cy, double r) {
+    // Yaw (rotate around Y)
+    final x1 = x * cos(yaw) + z * sin(yaw);
+    final z1 = -x * sin(yaw) + z * cos(yaw);
+    // Pitch (rotate around X)
+    final y2 = y * cos(pitch) - z1 * sin(pitch);
+    final z2 = y * sin(pitch) + z1 * cos(pitch);
+    // Perspective
+    final scale = 1.0 + z2 * 0.18;
+    return Offset(cx + x1 * r * scale, cy + y2 * r * scale);
+  }
+
+  // Draw a polyline through a list of 3-D points.
+  void _polyline(Canvas canvas, Paint paint, List<(double, double, double)> pts,
+      double cx, double cy, double r) {
+    if (pts.isEmpty) return;
+    final path = Path();
+    final first = _project(pts[0].$1, pts[0].$2, pts[0].$3, cx, cy, r);
+    path.moveTo(first.dx, first.dy);
+    for (int i = 1; i < pts.length; i++) {
+      final p = _project(pts[i].$1, pts[i].$2, pts[i].$3, cx, cy, r);
+      path.lineTo(p.dx, p.dy);
+    }
+    canvas.drawPath(path, paint);
+  }
+
+  // Build a 3-D ellipse arc as a list of sample points.
+  // cx3/cy3/cz3 = centre; rx/ry = radii in local X/Y plane;
+  // from/to = angle range in radians; steps = segments.
+  List<(double, double, double)> _ellipseArc(
+      double cx3, double cy3, double cz3,
+      double rx, double ry,
+      double from, double to,
+      {int steps = 24}) {
+    final pts = <(double, double, double)>[];
+    for (int i = 0; i <= steps; i++) {
+      final t = from + (to - from) * i / steps;
+      pts.add((cx3 + rx * cos(t), cy3 + ry * sin(t), cz3));
+    }
+    return pts;
+  }
+
   @override
   void paint(Canvas canvas, Size size) {
     final cx = size.width / 2;
     final cy = size.height / 2;
     final r = size.width / 2;
 
-    // Clip to circle
     canvas.clipPath(
       Path()..addOval(Rect.fromCircle(center: Offset(cx, cy), radius: r)),
     );
 
+    // Background
+    canvas.drawCircle(Offset(cx, cy), r, Paint()..color = const Color(0xFF040410));
+
+    // Subtle inner glow matching state colour
+    canvas.drawCircle(
+      Offset(cx, cy),
+      r * 0.85,
+      Paint()
+        ..shader = RadialGradient(colors: [
+          primaryColor.withAlpha((18 + glowValue * 14).toInt()),
+          Colors.transparent,
+        ]).createShader(Rect.fromCircle(center: Offset(cx, cy), radius: r * 0.85)),
+    );
+
     if (isMini) {
-      _drawMiniPulse(canvas, cx, cy, r);
+      // Mini: just a pulsing cross-hair dot
+      final mp = Paint()
+        ..color = primaryColor.withAlpha((180 + glowValue * 60).toInt())
+        ..maskFilter = MaskFilter.blur(BlurStyle.normal, r * 0.2);
+      canvas.drawCircle(Offset(cx, cy), r * 0.40, mp);
+      canvas.drawCircle(Offset(cx, cy), r * 0.18,
+          Paint()..color = Colors.white.withAlpha(220));
       return;
     }
 
-    // Parallax offsets from head rotation
-    final px = sin(yaw) * r * 0.11;
-    final py = -sin(pitch) * r * 0.07;
+    // Face lives in a normalised [-1,1] coordinate system.
+    // The head oval sits between y = -0.88 (top) and y = 0.88 (bottom).
+    // z = 0 is the mid-plane; features have a small positive z (front).
 
-    // Face anchor (slightly above center — shows more face, less neck)
-    final faceCx = cx + px * 0.45;
-    final faceCy = cy - r * 0.04 + py * 0.45;
-
-    _drawBackground(canvas, cx, cy, r, faceCx, faceCy);
-    _drawHairShadow(canvas, faceCx, faceCy, r);
-    _drawFaceGlow(canvas, faceCx, faceCy, r);
-    _drawEyebrows(canvas, faceCx, faceCy, r, px, py);
-    _drawEyes(canvas, faceCx, faceCy, r, px, py);
-    _drawNose(canvas, faceCx, faceCy, r, px, py);
-    _drawMouth(canvas, faceCx, faceCy, r, px, py);
-    _drawRim(canvas, size, cx, cy, r);
-  }
-
-  // When tiny (56 px), just draw a glowing pulse dot
-  void _drawMiniPulse(Canvas canvas, double cx, double cy, double r) {
-    final paint = Paint()
-      ..color = primaryColor.withAlpha((180 + glowValue * 50).toInt())
-      ..maskFilter = MaskFilter.blur(BlurStyle.normal, r * 0.25);
-    canvas.drawCircle(Offset(cx, cy), r * 0.45, paint);
-    canvas.drawCircle(
-      Offset(cx, cy),
-      r * 0.22,
-      Paint()..color = Colors.white.withAlpha(200),
-    );
-  }
-
-  void _drawBackground(
-    Canvas canvas, double cx, double cy, double r, double fcx, double fcy) {
-    // Deep dark base
-    canvas.drawCircle(
-      Offset(cx, cy),
-      r,
-      Paint()..color = const Color(0xFF070714),
-    );
-    // Subtle ambient glow in state color
-    canvas.drawCircle(
-      Offset(fcx, fcy - r * 0.1),
-      r * 0.8,
-      Paint()
-        ..shader = RadialGradient(
-          colors: [
-            primaryColor.withAlpha(22),
-            Colors.transparent,
-          ],
-          radius: 1.0,
-        ).createShader(Rect.fromCircle(center: Offset(fcx, fcy), radius: r * 0.8)),
-    );
-  }
-
-  void _drawHairShadow(Canvas canvas, double fcx, double fcy, double r) {
-    // Dark oval at top simulating hair / crown shadow
-    final hairCenter = Offset(fcx, fcy - r * 0.62);
-    canvas.drawOval(
-      Rect.fromCenter(center: hairCenter, width: r * 1.28, height: r * 0.80),
-      Paint()
-        ..shader = RadialGradient(
-          colors: [
-            const Color(0xFF12082A).withAlpha(230),
-            Colors.transparent,
-          ],
-        ).createShader(
-          Rect.fromCenter(center: hairCenter, width: r * 1.28, height: r * 0.80),
-        ),
-    );
-  }
-
-  void _drawFaceGlow(Canvas canvas, double fcx, double fcy, double r) {
-    // Subtle face-area highlight (cheekbones / forehead)
-    canvas.drawOval(
-      Rect.fromCenter(center: Offset(fcx, fcy + r * 0.05), width: r * 1.10, height: r * 1.30),
-      Paint()
-        ..shader = RadialGradient(
-          center: const Alignment(0, -0.2),
-          radius: 0.75,
-          colors: [
-            Colors.white.withAlpha(10),
-            Colors.transparent,
-          ],
-        ).createShader(
-          Rect.fromCircle(center: Offset(fcx, fcy), radius: r * 0.8),
-        ),
-    );
-  }
-
-  void _drawEyebrows(
-      Canvas canvas, double fcx, double fcy, double r, double px, double py) {
-    final eyeY = fcy - r * 0.195 + py;
-    final spread = r * 0.265;
-    final browLift = r * 0.130;
-    final raise = state == OrbState.thinking ? r * 0.045 : 0.0;
-
-    final paint = Paint()
-      ..color = primaryColor.withAlpha(170)
+    final lineColor = Colors.white.withAlpha((180 + glowValue * 55).toInt());
+    final dimColor  = primaryColor.withAlpha((100 + glowValue * 60).toInt());
+    final bright    = Paint()
+      ..color = lineColor
       ..style = PaintingStyle.stroke
-      ..strokeWidth = r * 0.048
+      ..strokeWidth = size.width * 0.018
+      ..strokeCap = StrokeCap.round
+      ..strokeJoin = StrokeJoin.round;
+    final dim = Paint()
+      ..color = dimColor
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = size.width * 0.012
       ..strokeCap = StrokeCap.round;
 
-    for (final side in [-1.0, 1.0]) {
-      final bx = fcx + side * spread + px;
-      final by = eyeY - browLift - raise;
-      // Arc that curves slightly upward at outer edge
-      canvas.drawArc(
-        Rect.fromCenter(center: Offset(bx, by), width: r * 0.42, height: r * 0.20),
-        side < 0 ? pi + 0.25 : -0.25 - (pi - 0.5),
-        (pi - 0.5) * side < 0 ? 1 : -1,
-        false,
-        paint,
-      );
+    // ── Grid / topology lines on the head oval ──────────────────
+    // Horizontal latitude rings (chin → forehead).
+    const latitudes = [-0.75, -0.45, -0.10, 0.25, 0.58, 0.82];
+    for (final lat in latitudes) {
+      // At latitude y, the head oval has x-radius that varies elliptically.
+      // Head: rx ≈ 0.70, ry ≈ 0.90 (taller than wide).
+      final xR = 0.70 * sqrt(max(0.0, 1.0 - (lat / 0.90) * (lat / 0.90)));
+      // z follows a hemisphere: z = sqrt(max(0, 1 - xR²/0.70² - y²/0.90²)) * 0.40
+      // Approximate: z_front ≈ xR * 0.55
+      final zFront = xR * 0.55;
+      _polyline(canvas, dim,
+          _ellipseArc(0, lat, zFront * 0.5, xR, 0, 0, 2 * pi, steps: 32),
+          cx, cy, r * 0.92);
     }
-  }
 
-  void _drawEyes(
-      Canvas canvas, double fcx, double fcy, double r, double px, double py) {
-    final eyeY = fcy - r * 0.195 + py;
-    final spread = r * 0.265;
-    final eyeRx = r * 0.155;
-    final eyeRy = max(0.5, r * 0.105 * (1.0 - blinkValue * 0.96));
+    // Vertical meridian lines (left temple → right temple).
+    const meridians = [-0.55, -0.28, 0.0, 0.28, 0.55];
+    for (final mx3 in meridians) {
+      // For each x position, sweep y from bottom to top along the oval surface.
+      final pts = <(double, double, double)>[];
+      const steps = 20;
+      for (int i = 0; i <= steps; i++) {
+        final y3 = -0.90 + 1.80 * i / steps;
+        final xR2 = (mx3.abs() / 0.70);
+        final yR2 = (y3.abs() / 0.90);
+        if (xR2 * xR2 + yR2 * yR2 > 1.01) continue;
+        final zFront2 = 0.40 * sqrt(max(0.0, 1.0 - xR2 * xR2 - yR2 * yR2));
+        pts.add((mx3, y3, zFront2));
+      }
+      _polyline(canvas, dim, pts, cx, cy, r * 0.92);
+    }
 
-    // Pupil drift: look around gently when thinking
-    double pupilDx = 0.0;
+    // ── Eyebrow blink offset ─────────────────────────────────────
+    final browRaise = state == OrbState.thinking ? 0.055 : 0.0;
+
+    // ── Eyebrows (straight lines, slight tilt) ───────────────────
+    for (final side in [-1.0, 1.0]) {
+      final bx = side * 0.28;
+      final by = 0.22 + browRaise;
+      _polyline(canvas, bright, [
+        (bx - side * 0.16, by - 0.025, 0.30),
+        (bx + side * 0.06, by + 0.025, 0.30),
+      ], cx, cy, r * 0.92);
+    }
+
+    // ── Eyes ────────────────────────────────────────────────────
+    final eyeOpenY = max(0.004, 0.085 * (1.0 - blinkValue * 0.97));
+
+    // Pupil gaze drift when thinking
+    double gazeDx = 0.0;
     if (state == OrbState.thinking) {
-      pupilDx = sin(wavePhase * 0.38) * r * 0.045;
+      gazeDx = sin(wavePhase * 0.4) * 0.035;
     }
 
     for (final side in [-1.0, 1.0]) {
-      final ex = fcx + side * spread + px;
-      final ey = eyeY;
-      final eyeRect = Rect.fromCenter(
-        center: Offset(ex, ey), width: eyeRx * 2, height: eyeRy * 2);
+      final ex = side * 0.265;
+      final ey = 0.125;
+      final ez = 0.34;
 
-      // Sclera
-      canvas.drawOval(eyeRect, Paint()..color = const Color(0xFFE5E0F5));
+      // Outer eye outline — almond shape (top arc + bottom arc).
+      // Top arc (bright)
+      _polyline(canvas, bright,
+          _ellipseArc(ex, ey, ez, 0.155, eyeOpenY, pi, 2 * pi),
+          cx, cy, r * 0.92);
+      // Bottom arc (slightly dimmer)
+      _polyline(canvas, dim,
+          _ellipseArc(ex, ey, ez, 0.155, eyeOpenY, 0, pi),
+          cx, cy, r * 0.92);
 
-      // Iris
-      final irisR = min(eyeRx * 0.65, eyeRy * 0.92);
-      final irisRect = Rect.fromCenter(
-        center: Offset(ex + pupilDx, ey),
-        width: irisR * 2,
-        height: irisR * 2,
-      );
-      canvas.drawOval(irisRect, Paint()..color = primaryColor);
+      // Iris ring
+      final irisR = 0.085;
+      _polyline(canvas, bright,
+          _ellipseArc(ex + gazeDx, ey, ez + 0.01, irisR, min(irisR, eyeOpenY * 0.92), 0, 2 * pi),
+          cx, cy, r * 0.92);
 
-      // Pupil
-      final pupilR = irisR * 0.50;
-      canvas.drawOval(
-        Rect.fromCenter(
-          center: Offset(ex + pupilDx, ey),
-          width: pupilR * 2,
-          height: pupilR * 2,
-        ),
-        Paint()..color = const Color(0xFF06040F),
-      );
-
-      // Specular highlight
-      canvas.drawOval(
-        Rect.fromCenter(
-          center: Offset(ex + pupilDx - irisR * 0.30, ey - irisR * 0.30),
-          width: eyeRx * 0.28,
-          height: eyeRy * 0.40,
-        ),
-        Paint()..color = Colors.white.withAlpha(210),
-      );
-
-      // Eye glow (state color)
-      canvas.drawOval(
-        eyeRect.inflate(3 + glowValue * 2),
-        Paint()
-          ..color = primaryColor.withAlpha((25 + glowValue * 18).toInt())
-          ..maskFilter = const MaskFilter.blur(BlurStyle.outer, 5),
-      );
+      // Pupil dot (two crossing lines — looks like a crosshair)
+      final pd = _project(ex + gazeDx, ey, ez + 0.02, cx, cy, r * 0.92);
+      final pd2 = _project(ex + gazeDx + 0.022, ey, ez + 0.02, cx, cy, r * 0.92);
+      final pupilR2d = (pd2 - pd).distance;
+      canvas.drawCircle(pd, pupilR2d * 0.55,
+          Paint()..color = primaryColor.withAlpha((200 + glowValue * 55).toInt())
+            ..maskFilter = MaskFilter.blur(BlurStyle.normal, pupilR2d * 0.4));
+      canvas.drawCircle(pd, pupilR2d * 0.22,
+          Paint()..color = Colors.white.withAlpha(230));
     }
-  }
 
-  void _drawNose(
-      Canvas canvas, double fcx, double fcy, double r, double px, double py) {
-    final noseY = fcy + r * 0.075 + py * 0.5;
-    final nosePaint = Paint()
-      ..color = primaryColor.withAlpha(70);
-    final gap = r * 0.065;
-    canvas.drawCircle(Offset(fcx - gap + px * 0.6, noseY), r * 0.022, nosePaint);
-    canvas.drawCircle(Offset(fcx + gap + px * 0.6, noseY), r * 0.022, nosePaint);
-  }
+    // ── Nose bridge (two vertical lines + tip arc) ───────────────
+    _polyline(canvas, dim, [
+      (-0.055, 0.05, 0.36),
+      (-0.045, -0.12, 0.38),
+    ], cx, cy, r * 0.92);
+    _polyline(canvas, dim, [
+      (0.055, 0.05, 0.36),
+      (0.045, -0.12, 0.38),
+    ], cx, cy, r * 0.92);
+    // Nose tip arc
+    _polyline(canvas, dim,
+        _ellipseArc(0, -0.15, 0.40, 0.08, 0.04, 0, pi, steps: 12),
+        cx, cy, r * 0.92);
 
-  void _drawMouth(
-      Canvas canvas, double fcx, double fcy, double r, double px, double py) {
-    final mx = fcx + px * 0.70;
-    final my = fcy + r * 0.305 + py * 0.55;
-    final mw = r * 0.46;
+    // ── Mouth ────────────────────────────────────────────────────
     final open = _mouthOpenness;
-    final mh = max(r * 0.022, open * r * 0.185);
+    final mouthY = -0.335;
+    final mouthW = 0.230;
+    final openH  = open * 0.130;
 
-    if (open > 0.05) {
-      // ── Open mouth ──
-      // Outer lip shape
-      canvas.drawRRect(
-        RRect.fromRectAndRadius(
-          Rect.fromCenter(center: Offset(mx, my), width: mw, height: mh),
-          Radius.circular(mh * 0.5),
-        ),
-        Paint()..color = primaryColor.withAlpha(230),
-      );
-      // Dark interior
-      canvas.drawRRect(
-        RRect.fromRectAndRadius(
-          Rect.fromCenter(
-            center: Offset(mx, my + mh * 0.08),
-            width: mw * 0.82,
-            height: mh * 0.58,
-          ),
-          Radius.circular(mh * 0.45),
-        ),
-        Paint()..color = const Color(0xFF040310),
-      );
-      // Teeth hint (white strip at top of opening)
-      if (mh > r * 0.06) {
-        canvas.drawRRect(
-          RRect.fromRectAndRadius(
-            Rect.fromCenter(
-              center: Offset(mx, my - mh * 0.20),
-              width: mw * 0.62,
-              height: mh * 0.18,
-            ),
-            Radius.circular(r * 0.018),
-          ),
-          Paint()..color = Colors.white.withAlpha(180),
-        );
+    if (open > 0.04) {
+      // Upper lip
+      _polyline(canvas, bright, [
+        (-mouthW, mouthY + openH * 0.5, 0.34),
+        (-mouthW * 0.5, mouthY + openH * 0.6, 0.36),
+        (0.0, mouthY + openH * 0.5, 0.37),
+        (mouthW * 0.5, mouthY + openH * 0.6, 0.36),
+        (mouthW, mouthY + openH * 0.5, 0.34),
+      ], cx, cy, r * 0.92);
+      // Lower lip
+      _polyline(canvas, bright, [
+        (-mouthW, mouthY + openH * 0.5, 0.34),
+        (-mouthW * 0.5, mouthY - openH * 0.8, 0.36),
+        (0.0, mouthY - openH, 0.37),
+        (mouthW * 0.5, mouthY - openH * 0.8, 0.36),
+        (mouthW, mouthY + openH * 0.5, 0.34),
+      ], cx, cy, r * 0.92);
+      // Teeth lines (horizontal bars inside opening)
+      if (open > 0.25) {
+        final tY = mouthY - openH * 0.1;
+        _polyline(canvas, dim, [
+          (-mouthW * 0.7, tY, 0.365),
+          (mouthW * 0.7, tY, 0.365),
+        ], cx, cy, r * 0.92);
       }
     } else {
-      // ── Closed mouth — gentle smile ──
-      final smilePath = Path();
-      smilePath.moveTo(mx - mw / 2, my);
-      smilePath.quadraticBezierTo(
-        mx, my + r * 0.032, mx + mw / 2, my);
-      canvas.drawPath(
-        smilePath,
-        Paint()
-          ..color = primaryColor.withAlpha(190)
-          ..style = PaintingStyle.stroke
-          ..strokeWidth = r * 0.042
-          ..strokeCap = StrokeCap.round,
-      );
+      // Closed — gentle curved smile
+      _polyline(canvas, bright, [
+        (-mouthW, mouthY, 0.34),
+        (-mouthW * 0.4, mouthY - 0.022, 0.36),
+        (0.0, mouthY - 0.030, 0.37),
+        (mouthW * 0.4, mouthY - 0.022, 0.36),
+        (mouthW, mouthY, 0.34),
+      ], cx, cy, r * 0.92);
     }
 
-    // Mouth glow
-    canvas.drawRRect(
-      RRect.fromRectAndRadius(
-        Rect.fromCenter(
-          center: Offset(mx, my),
-          width: mw + 6,
-          height: max(mh, r * 0.04) + 6,
-        ),
-        Radius.circular(mh * 0.5 + 3),
-      ),
-      Paint()
-        ..color = primaryColor.withAlpha((35 + glowValue * 30).toInt())
-        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 5),
-    );
-  }
+    // ── Chin / jaw line ──────────────────────────────────────────
+    _polyline(canvas, dim, [
+      (-0.50, -0.50, 0.20),
+      (-0.35, -0.72, 0.28),
+      (0.0,   -0.82, 0.32),
+      (0.35,  -0.72, 0.28),
+      (0.50,  -0.50, 0.20),
+    ], cx, cy, r * 0.92);
 
-  void _drawRim(Canvas canvas, Size size, double cx, double cy, double r) {
+    // ── Cheekbones ───────────────────────────────────────────────
+    for (final side in [-1.0, 1.0]) {
+      _polyline(canvas, dim, [
+        (side * 0.62, -0.20, 0.18),
+        (side * 0.52, 0.05, 0.24),
+        (side * 0.36, 0.12, 0.32),
+      ], cx, cy, r * 0.92);
+    }
+
+    // ── Rim glow ─────────────────────────────────────────────────
     canvas.drawCircle(
       Offset(cx, cy),
       r - 1.0,
@@ -625,12 +608,12 @@ class _FacePainter extends CustomPainter {
         ..shader = SweepGradient(
           colors: [
             primaryColor.withAlpha(0),
-            primaryColor.withAlpha((75 + glowValue * 45).toInt()),
-            secondaryColor.withAlpha((55 + glowValue * 35).toInt()),
+            primaryColor.withAlpha((80 + glowValue * 50).toInt()),
+            secondaryColor.withAlpha((60 + glowValue * 40).toInt()),
             primaryColor.withAlpha(0),
           ],
           stops: const [0.0, 0.3, 0.7, 1.0],
-          transform: GradientRotation(wavePhase * 0.30),
+          transform: GradientRotation(wavePhase * 0.3),
         ).createShader(Rect.fromCircle(center: Offset(cx, cy), radius: r)),
     );
   }

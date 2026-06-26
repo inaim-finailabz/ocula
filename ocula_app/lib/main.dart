@@ -117,9 +117,7 @@ class _AssistantScreenState extends State<AssistantScreen>
   // ── Help Tour ──
   static final _orbKey = GlobalKey();
   static final _chatListKey = GlobalKey();
-  static final _scopeChipsKey = GlobalKey();
   static final _cameraButtonKey = GlobalKey();
-  static final _fileButtonKey = GlobalKey();
   static final _inputBarKey = GlobalKey();
   bool _showingHelpTour = false;
   String _sessionId = const Uuid().v4();
@@ -202,7 +200,6 @@ class _AssistantScreenState extends State<AssistantScreen>
   bool _stopRequested = false;
   OrbState _orbState = OrbState.idle;
   RetrievalScope _retrievalScope = RetrievalScope.all;
-  bool _scopeExpanded = false;
   File? _attachedImage;
   File? _attachedDocument;
   String? _attachedDocName;
@@ -683,7 +680,7 @@ class _AssistantScreenState extends State<AssistantScreen>
     }
   }
 
-  void _pickImage() {
+  void _showAttachmentPicker() {
     showModalBottomSheet(
       context: context,
       backgroundColor: Theme.of(context).colorScheme.surfaceContainerHighest,
@@ -697,50 +694,53 @@ class _AssistantScreenState extends State<AssistantScreen>
             mainAxisSize: MainAxisSize.min,
             children: [
               ListTile(
-                leading: const Icon(Icons.camera_alt),
-                title: const Text('Take Photo'),
-                onTap: () async {
-                  Navigator.pop(ctx);
-                  if (_isDesktop) {
-                    await _takeMacOSPhoto();
-                    return;
-                  }
-                  final picked = await ImagePicker().pickImage(
-                    source: ImageSource.camera,
-                    maxWidth: 1024,
-                    maxHeight: 1024,
-                    imageQuality: 85,
-                  );
-                  if (picked != null) {
-                    setState(() => _attachedImage = File(picked.path));
-                  }
-                },
+                leading: const Icon(Icons.camera_alt_outlined),
+                title: const Text('Camera'),
+                onTap: () { Navigator.pop(ctx); _pickImage(fromCamera: true); },
               ),
               ListTile(
-                leading: const Icon(Icons.photo_library),
-                title: const Text('Choose from Gallery'),
-                onTap: () async {
-                  Navigator.pop(ctx);
-                  if (_isDesktop) {
-                    await _pickImageDesktop();
-                    return;
-                  }
-                  final picked = await ImagePicker().pickImage(
-                    source: ImageSource.gallery,
-                    maxWidth: 1024,
-                    maxHeight: 1024,
-                    imageQuality: 85,
-                  );
-                  if (picked != null) {
-                    setState(() => _attachedImage = File(picked.path));
-                  }
-                },
+                leading: const Icon(Icons.photo_library_outlined),
+                title: const Text('Photo / Video'),
+                onTap: () { Navigator.pop(ctx); _pickImage(fromCamera: false); },
+              ),
+              ListTile(
+                leading: const Icon(Icons.description_outlined),
+                title: const Text('Document'),
+                onTap: () { Navigator.pop(ctx); _pickDocument(); },
               ),
             ],
           ),
         ),
       ),
     );
+  }
+
+  Future<void> _pickImage({bool fromCamera = false}) async {
+    if (fromCamera) {
+      if (_isDesktop) {
+        await _takeMacOSPhoto();
+        return;
+      }
+      final picked = await ImagePicker().pickImage(
+        source: ImageSource.camera,
+        maxWidth: 1024,
+        maxHeight: 1024,
+        imageQuality: 85,
+      );
+      if (picked != null && mounted) setState(() => _attachedImage = File(picked.path));
+    } else {
+      if (_isDesktop) {
+        await _pickImageDesktop();
+        return;
+      }
+      final picked = await ImagePicker().pickImage(
+        source: ImageSource.gallery,
+        maxWidth: 1024,
+        maxHeight: 1024,
+        imageQuality: 85,
+      );
+      if (picked != null && mounted) setState(() => _attachedImage = File(picked.path));
+    }
   }
 
   Future<void> _pickImageDesktop() async {
@@ -1300,6 +1300,13 @@ class _AssistantScreenState extends State<AssistantScreen>
                           ),
                         ),
                         const Spacer(),
+                        // Attach — photo, video, doc (was bottom-bar Camera+File)
+                        IconButton(
+                          key: _cameraButtonKey,
+                          icon: const Icon(Icons.folder_open_outlined, size: 20),
+                          tooltip: 'Attach file or photo',
+                          onPressed: _showAttachmentPicker,
+                        ),
                         // Export button — visible in the top bar only on
                         // tablet/desktop where there is room; phones access it
                         // via the overflow menu below.
@@ -1559,115 +1566,7 @@ class _AssistantScreenState extends State<AssistantScreen>
                       ),
                     ),
 
-                  // ── Retrieval scope + quick actions (collapsed by default) ──
-                  AnimatedSize(
-                    key: _scopeChipsKey,
-                    duration: const Duration(milliseconds: 220),
-                    curve: Curves.easeInOut,
-                    alignment: Alignment.topLeft,
-                    child: _scopeExpanded
-                        ? Padding(
-                            padding: const EdgeInsets.symmetric(horizontal: 12),
-                            child: Wrap(
-                              spacing: 6,
-                              runSpacing: 6,
-                              children: [
-                                _ScopeChip(
-                                  label: 'All',
-                                  icon: Icons.tune,
-                                  selected: _retrievalScope == RetrievalScope.all,
-                                  onTap: () => setState(() {
-                                    _retrievalScope = RetrievalScope.all;
-                                    _scopeExpanded = false;
-                                  }),
-                                ),
-                                _ScopeChip(
-                                  label: 'Docs',
-                                  icon: Icons.description_outlined,
-                                  selected: _retrievalScope == RetrievalScope.docs,
-                                  onTap: () => setState(() {
-                                    _retrievalScope = RetrievalScope.docs;
-                                    _scopeExpanded = false;
-                                  }),
-                                ),
-                                _ScopeChip(
-                                  label: 'Images',
-                                  icon: Icons.photo_outlined,
-                                  selected: _retrievalScope == RetrievalScope.images,
-                                  onTap: () => setState(() {
-                                    _retrievalScope = RetrievalScope.images;
-                                    _scopeExpanded = false;
-                                  }),
-                                ),
-                                _ScopeChip(
-                                  label: 'Location',
-                                  icon: Icons.place_outlined,
-                                  selected: _retrievalScope == RetrievalScope.location,
-                                  onTap: () => setState(() {
-                                    _retrievalScope = RetrievalScope.location;
-                                    _scopeExpanded = false;
-                                  }),
-                                ),
-                                _QuickActionChip(
-                                  label: _isRecordingNotes
-                                      ? 'Stop Recording'
-                                      : 'Meeting Recap',
-                                  icon: _isRecordingNotes ? Icons.stop : Icons.mic,
-                                  selected: _isRecordingNotes,
-                                  onTap: () {
-                                    _startRecordingSummary(contextType: 'meeting');
-                                    setState(() => _scopeExpanded = false);
-                                  },
-                                ),
-                                _QuickActionChip(
-                                  label: 'Class Notes',
-                                  icon: Icons.school_outlined,
-                                  onTap: () {
-                                    _startRecordingSummary(contextType: 'college class');
-                                    setState(() => _scopeExpanded = false);
-                                  },
-                                ),
-                              ],
-                            ),
-                          )
-                        : Padding(
-                            padding: const EdgeInsets.symmetric(horizontal: 12),
-                            child: GestureDetector(
-                              onTap: () => setState(() => _scopeExpanded = true),
-                              child: Row(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  _ScopeChip(
-                                    label: switch (_retrievalScope) {
-                                      RetrievalScope.all => 'All',
-                                      RetrievalScope.docs => 'Docs',
-                                      RetrievalScope.images => 'Images',
-                                      RetrievalScope.location => 'Location',
-                                      _ => 'All',
-                                    },
-                                    icon: switch (_retrievalScope) {
-                                      RetrievalScope.all => Icons.tune,
-                                      RetrievalScope.docs => Icons.description_outlined,
-                                      RetrievalScope.images => Icons.photo_outlined,
-                                      RetrievalScope.location => Icons.place_outlined,
-                                      _ => Icons.tune,
-                                    },
-                                    selected: true,
-                                    onTap: () => setState(() => _scopeExpanded = true),
-                                  ),
-                                  const SizedBox(width: 2),
-                                  Icon(
-                                    Icons.expand_more,
-                                    size: 14,
-                                    color: Theme.of(context).colorScheme.onSurface.withAlpha(100),
-                                  ),
-                                ],
-                              ),
-                            ),
-                          ),
-                  ),
-
-                  // ── Enhanced input bar ──
+                  // ── Input bar ──
                   Container(
                     key: _inputBarKey,
                     padding: const EdgeInsets.fromLTRB(6, 8, 6, 8),
@@ -1688,24 +1587,6 @@ class _AssistantScreenState extends State<AssistantScreen>
                       top: false,
                       child: Row(
                         children: [
-                          // Camera button
-                          SizedBox(
-                            key: _cameraButtonKey,
-                            child: _InputAction(
-                              icon: Icons.camera_alt_outlined,
-                              label: 'Camera',
-                              onTap: _pickImage,
-                            ),
-                          ),
-                          // Document attach button
-                          SizedBox(
-                            key: _fileButtonKey,
-                            child: _InputAction(
-                              icon: Icons.attach_file,
-                              label: 'File',
-                              onTap: _pickDocument,
-                            ),
-                          ),
                           // Text input
                           Expanded(
                             child: Container(
@@ -1881,28 +1762,16 @@ class _AssistantScreenState extends State<AssistantScreen>
                           'Your conversation appears here. Ocula runs fully on-device — no cloud.',
                     ),
                     HelpStep(
-                      targetKey: _scopeChipsKey,
-                      title: 'Focus Your Search',
-                      description:
-                          'Filter by All / Docs / Images / Location to narrow what Ocula searches.',
-                    ),
-                    HelpStep(
                       targetKey: _inputBarKey,
                       title: 'Type a Question',
                       description:
-                          'Type anything here. Use the buttons below to attach files or photos.',
+                          'Type anything here. Tap + to attach photos, documents, or files.',
                     ),
                     HelpStep(
                       targetKey: _cameraButtonKey,
-                      title: 'Analyze Images',
+                      title: 'Attach Assets',
                       description:
-                          'Take or pick a photo — Ocula describes and analyzes it on-device.',
-                    ),
-                    HelpStep(
-                      targetKey: _fileButtonKey,
-                      title: 'Attach Documents',
-                      description:
-                          'Attach PDF, Word, Excel, PowerPoint or text files. Ocula reads and answers questions about them.',
+                          'Tap + to attach a photo, video, PDF, Word or spreadsheet — Ocula reads and analyzes it on-device.',
                     ),
                   ],
                   onComplete: () {
@@ -2325,122 +2194,7 @@ class _ThinkingBubbleState extends State<_ThinkingBubble>
   }
 }
 
-class _ScopeChip extends StatelessWidget {
-  final String label;
-  final IconData icon;
-  final bool selected;
-  final VoidCallback onTap;
 
-  const _ScopeChip({
-    required this.label,
-    required this.icon,
-    required this.selected,
-    required this.onTap,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final colors = Theme.of(context).colorScheme;
-    return Padding(
-      padding: const EdgeInsets.only(right: 8),
-      child: InkWell(
-        borderRadius: BorderRadius.circular(20),
-        onTap: onTap,
-        child: AnimatedContainer(
-          duration: const Duration(milliseconds: 180),
-          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
-          decoration: BoxDecoration(
-            color: selected
-                ? colors.primary.withAlpha(40)
-                : colors.surfaceContainerHighest.withAlpha(120),
-            borderRadius: BorderRadius.circular(20),
-            border: Border.all(
-              color: selected
-                  ? colors.primary.withAlpha(110)
-                  : colors.outline.withAlpha(45),
-            ),
-          ),
-          child: Row(
-            children: [
-              Icon(
-                icon,
-                size: 14,
-                color: selected ? colors.primary : colors.onSurface,
-              ),
-              const SizedBox(width: 5),
-              Text(
-                label,
-                style: TextStyle(
-                  fontSize: 12,
-                  fontWeight: FontWeight.w600,
-                  color: selected ? colors.primary : colors.onSurface,
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class _QuickActionChip extends StatelessWidget {
-  final String label;
-  final IconData icon;
-  final bool selected;
-  final VoidCallback onTap;
-
-  const _QuickActionChip({
-    required this.label,
-    required this.icon,
-    required this.onTap,
-    this.selected = false,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final colors = Theme.of(context).colorScheme;
-    return Padding(
-      padding: const EdgeInsets.only(right: 8),
-      child: InkWell(
-        borderRadius: BorderRadius.circular(18),
-        onTap: onTap,
-        child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-          decoration: BoxDecoration(
-            color: selected
-                ? const Color(0xFFFF7675).withAlpha(35)
-                : colors.secondary.withAlpha(26),
-            borderRadius: BorderRadius.circular(18),
-            border: Border.all(
-              color: selected
-                  ? const Color(0xFFFF7675).withAlpha(110)
-                  : colors.secondary.withAlpha(90),
-            ),
-          ),
-          child: Row(
-            children: [
-              Icon(
-                icon,
-                size: 14,
-                color: selected ? const Color(0xFFFF7675) : colors.secondary,
-              ),
-              const SizedBox(width: 5),
-              Text(
-                label,
-                style: TextStyle(
-                  fontSize: 12,
-                  fontWeight: FontWeight.w600,
-                  color: selected ? const Color(0xFFFF7675) : colors.secondary,
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
 
 /// Labeled input action button (camera, mic).
 class _InputAction extends StatelessWidget {
