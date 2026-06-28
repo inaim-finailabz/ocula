@@ -792,8 +792,8 @@ class AIManager {
     // Ocula Pro (pro): 4096 ctx, ~2B params. Good instruction following.
     //   → Richer system prompt, full context, higher token budget.
     final langPrefix = _appLang.promptPrefix;
-    // Ocula Lite (free/Qwen2.5-1.5B): capable text model — not "small".
-    // Ocula Plus (plus/Qwen3-VL-2B) and Pro (pro/Qwen2.5-VL-7B): rich prompts + vision.
+    // Ocula Lite (free/Qwen3-1.7B): capable text model — not "small".
+    // Ocula Plus (plus/Qwen3VL-2B) and Pro (pro/Qwen3VL-4B): rich prompts + vision.
     const bool isSmallModel = false;
     final bool isProModel = (_activeTier == AITier.plus ||
         _activeTier == AITier.pro ||
@@ -814,6 +814,7 @@ class AIManager {
     final String systemMsg;
     String userMsg;
     final rolePrefix =
+        '/no_think\n'
         '${langPrefix}You are Ocula, an AI assistant with access to the user\'s phone assets via local RAG context. '
         'Use available phone data to help the user, and never invent missing phone data. '
         'When context is available, start with where you found the answer (document, image, contact, email, calendar). '
@@ -1096,17 +1097,17 @@ class AIManager {
     // ── Text path ──
     // Tier-tuned generation: small models need low temperature to stay coherent,
     // pro models can handle more creativity and longer output.
-    // 2026-02 update: increased token budgets, tightened temperatures.
-    //   free: 220 tokens max, temp 0.15, repPen 1.4  (was 150/0.1/1.8)
-    //   plus: 400 tokens max, temp 0.25, repPen 1.2  (was 300/0.3/1.3)
-    //   pro:  512 tokens max, temp 0.35, repPen 1.2  (was 384/0.5/1.3)
-    // Bigger budgets prevent answer truncation; lower temps improve accuracy.
+    // 2026-06 update: increased free-tier budget for Qwen3-1.7B (thinking model
+    //   needs headroom even when /no_think suppresses most reasoning).
+    //   free: 320 tokens max, temp 0.15, repPen 1.4  (was 220)
+    //   plus: 400 tokens max, temp 0.25, repPen 1.2
+    //   pro:  512 tokens max, temp 0.35, repPen 1.2
     final configMaxTok = ragConfig.maxResponseTokens;
     final int maxTok = isSmallModel
         ? (configMaxTok * 0.25).round().clamp(80, 220)
         : (isProModel
               ? (configMaxTok * 1.33).round().clamp(256, 512)
-              : (configMaxTok * 0.6).round().clamp(140, 400));
+              : (configMaxTok * 0.83).round().clamp(200, 320));
     final double temp = isSmallModel ? 0.15 : (isProModel ? 0.35 : 0.25);
     final double repPen = isSmallModel ? 1.4 : 1.2;
 
@@ -1258,6 +1259,7 @@ class AIManager {
     String systemMsg;
     String userMsg;
     final rolePrefix =
+        '/no_think\n'
         '${langPrefix}You are Ocula, an AI assistant with access to the user\'s phone assets via local RAG context. '
         'Use available phone data to help the user, and never invent missing phone data. '
         'When context is available, start with where you found the answer (document, image, contact, email, calendar). '
@@ -1323,7 +1325,7 @@ class AIManager {
     String fullPrompt =
         '<|im_start|>system\n$systemMsg<|im_end|>\n'
         '<|im_start|>user\n$userMsg<|im_end|>\n'
-        '<|im_start|>assistant\n';
+        '<|im_start|>assistant\n<think>\n\n</think>\n';
 
     final maxPromptChars = _safePromptCharBudget(
       isSmallModel: isSmallModel,
@@ -1345,7 +1347,7 @@ class AIManager {
       fullPrompt =
           '<|im_start|>system\n$systemMsg<|im_end|>\n'
           '<|im_start|>user\n$userMsg<|im_end|>\n'
-          '<|im_start|>assistant\n';
+          '<|im_start|>assistant\n<think>\n\n</think>\n';
       debugPrint(
         '[AIManager] Stream prompt clamped: ${fullPrompt.length} chars (ctx=${compactContext.length})',
       );
@@ -1356,7 +1358,7 @@ class AIManager {
         ? (configMaxTok * 0.25).round().clamp(80, 220)
         : (isProModel
               ? (configMaxTok * 1.33).round().clamp(256, 512)
-              : (configMaxTok * 0.6).round().clamp(140, 400));
+              : (configMaxTok * 0.83).round().clamp(200, 320));
     final double temp = isSmallModel ? 0.15 : (isProModel ? 0.35 : 0.25);
     final double repPen = isSmallModel ? 1.4 : 1.2;
 
@@ -1529,44 +1531,9 @@ class AIManager {
     return _stripReasoningArtifacts(text);
   }
 
-  /// Removes model reasoning/thinking traces so UI only shows the final answer.
-  /// Handles closed and unclosed tags used by different model families.
+  /// Delegates to the shared [stripReasoningArtifacts] in text_utils.dart.
   String _stripReasoningArtifacts(String text) {
-    var t = text
-        .replaceAll('<|im_end|>', '')
-        .replaceAll('<|im_start|>', '')
-        .trimLeft();
-
-    // Remove closed reasoning blocks first.
-    t = t.replaceAll(
-      RegExp(
-        r'<\s*(think|thinking|reasoning)\b[^>]*>.*?<\s*/\s*\1\s*>',
-        caseSensitive: false,
-        dotAll: true,
-      ),
-      '',
-    );
-
-    // Remove fenced reasoning blocks some models emit.
-    t = t.replaceAll(
-      RegExp(
-        r'```\s*(thinking|reasoning)\b[\s\S]*?```',
-        caseSensitive: false,
-        dotAll: true,
-      ),
-      '',
-    );
-
-    // Hide any unfinished reasoning block if generation stops mid-thought.
-    final openTag = RegExp(
-      r'<\s*(think|thinking|reasoning)\b[^>]*>',
-      caseSensitive: false,
-    ).firstMatch(t);
-    if (openTag != null) {
-      t = t.substring(0, openTag.start).trimRight();
-    }
-
-    return t.trim();
+    return stripReasoningArtifacts(text);
   }
 
   bool _isLowSignalVisionOutput(String text, String userPrompt) {

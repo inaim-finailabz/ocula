@@ -50,3 +50,48 @@ String stripLeakedContext(String text) {
 
   return cleaned.isEmpty ? text : cleaned;
 }
+
+/// Removes model reasoning/thinking traces so the UI only shows the final answer.
+///
+/// Handles:
+/// - Closed `<think>…</think>` blocks (and `<thinking>`, `<reasoning>` variants)
+/// - Fenced ` ```thinking … ``` ` blocks
+/// - Unclosed open tags (generation stopped mid-thought)
+/// - ChatML control tokens (`<|im_start|>`, `<|im_end|>`)
+String stripReasoningArtifacts(String text) {
+  var t = text
+      .replaceAll('<|im_end|>', '')
+      .replaceAll('<|im_start|>', '')
+      .trimLeft();
+
+  // Remove closed reasoning blocks.
+  t = t.replaceAll(
+    RegExp(
+      r'<\s*(think|thinking|reasoning)\b[^>]*>.*?<\s*/\s*\1\s*>',
+      caseSensitive: false,
+      dotAll: true,
+    ),
+    '',
+  );
+
+  // Remove fenced reasoning blocks some models emit.
+  t = t.replaceAll(
+    RegExp(
+      r'```\s*(thinking|reasoning)\b[\s\S]*?```',
+      caseSensitive: false,
+      dotAll: true,
+    ),
+    '',
+  );
+
+  // Hide any unfinished reasoning block (generation ran out of tokens mid-thought).
+  final openTag = RegExp(
+    r'<\s*(think|thinking|reasoning)\b[^>]*>',
+    caseSensitive: false,
+  ).firstMatch(t);
+  if (openTag != null) {
+    t = t.substring(0, openTag.start).trimRight();
+  }
+
+  return t.trim();
+}
