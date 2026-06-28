@@ -1,7 +1,7 @@
 name: ocula_app
 description: "Multi-agent on-device AI app with vision, reasoning, and voice."
 publish_to: 'none'
-version: 1.2.0+60
+version: 1.3.0+60
 
 environment:
   sdk: '>=3.10.0 <4.0.0'
