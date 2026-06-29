@@ -1,5 +1,6 @@
 import 'dart:io';
 import 'package:flutter/material.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -205,6 +206,22 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
                 const _SectionHeader(title: 'Enterprise Backend'),
                 const EnterpriseSettings(),
+                const SizedBox(height: 32),
+
+                // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+                // PERSONAL PREFERENCES
+                // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+                const _SectionHeader(title: 'Personal Preferences'),
+                const SizedBox(height: 4),
+                Text(
+                  'Help Ocula personalise your daily briefings and recommendations.',
+                  style: TextStyle(
+                    fontSize: 13,
+                    color: colors.onSurface.withAlpha(120),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                const _UserPreferences(),
                 const SizedBox(height: 32),
 
                 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -2083,6 +2100,116 @@ class _IndexStatsCardState extends State<_IndexStatsCard> {
           ),
         ],
       ),
+    );
+  }
+}
+
+// ── User Preferences ──
+
+class _UserPreferences extends StatefulWidget {
+  const _UserPreferences();
+
+  @override
+  State<_UserPreferences> createState() => _UserPreferencesState();
+}
+
+class _UserPreferencesState extends State<_UserPreferences> {
+  final _teams = TextEditingController();
+  final _music = TextEditingController();
+  final _movies = TextEditingController();
+  final _shopping = TextEditingController();
+  final _other = TextEditingController();
+  bool _loaded = false;
+
+  static const _kTeams = 'pref_sports_teams';
+  static const _kMusic = 'pref_music_artists';
+  static const _kMovies = 'pref_movies_actors';
+  static const _kShopping = 'pref_shopping_interests';
+  static const _kOther = 'pref_other_interests';
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    final p = await SharedPreferences.getInstance();
+    setState(() {
+      _teams.text = p.getString(_kTeams) ?? '';
+      _music.text = p.getString(_kMusic) ?? '';
+      _movies.text = p.getString(_kMovies) ?? '';
+      _shopping.text = p.getString(_kShopping) ?? '';
+      _other.text = p.getString(_kOther) ?? '';
+      _loaded = true;
+    });
+  }
+
+  Future<void> _save() async {
+    final p = await SharedPreferences.getInstance();
+    await p.setString(_kTeams, _teams.text.trim());
+    await p.setString(_kMusic, _music.text.trim());
+    await p.setString(_kMovies, _movies.text.trim());
+    await p.setString(_kShopping, _shopping.text.trim());
+    await p.setString(_kOther, _other.text.trim());
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Preferences saved'), duration: Duration(seconds: 2)),
+      );
+    }
+  }
+
+  @override
+  void dispose() {
+    _teams.dispose();
+    _music.dispose();
+    _movies.dispose();
+    _shopping.dispose();
+    _other.dispose();
+    super.dispose();
+  }
+
+  Widget _field(String label, TextEditingController ctrl, String hint) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 12),
+      child: TextField(
+        controller: ctrl,
+        decoration: InputDecoration(
+          labelText: label,
+          hintText: hint,
+          hintStyle: const TextStyle(fontSize: 13),
+          border: const OutlineInputBorder(),
+          isDense: true,
+          contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+        ),
+        style: const TextStyle(fontSize: 14),
+        maxLines: 1,
+        textCapitalization: TextCapitalization.sentences,
+        onEditingComplete: _save,
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (!_loaded) return const SizedBox.shrink();
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        _field('Sports teams', _teams, 'e.g. Arsenal, Lakers, All Blacks'),
+        _field('Favourite artists / music', _music, 'e.g. Taylor Swift, Drake, The Beatles'),
+        _field('Favourite actors / movies', _movies, 'e.g. Tom Hanks, Marvel films, Thriller'),
+        _field('Shopping interests', _shopping, 'e.g. trainers, tech gadgets, cooking gear'),
+        _field('Other interests', _other, 'e.g. hiking, photography, DIY, cooking'),
+        Align(
+          alignment: Alignment.centerRight,
+          child: TextButton.icon(
+            onPressed: _save,
+            icon: const Icon(Icons.save_outlined, size: 16),
+            label: const Text('Save preferences'),
+          ),
+        ),
+      ],
     );
   }
 }

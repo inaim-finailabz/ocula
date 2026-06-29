@@ -188,6 +188,158 @@ class _AssistantScreenState extends State<AssistantScreen>
     });
   }
 
+  /// Proactively send a morning briefing as the first AI message of the day.
+  /// Pulls calendar context via the orchestrator; no user turn is shown.
+  /// Load user preferences from SharedPreferences and return a context snippet.
+  static Future<String> _loadUserPrefsContext() async {
+    final p = await SharedPreferences.getInstance();
+    final parts = <String>[];
+    final teams = p.getString('pref_sports_teams') ?? '';
+    final music = p.getString('pref_music_artists') ?? '';
+    final movies = p.getString('pref_movies_actors') ?? '';
+    final shopping = p.getString('pref_shopping_interests') ?? '';
+    final other = p.getString('pref_other_interests') ?? '';
+    if (teams.isNotEmpty) parts.add('sports teams: $teams');
+    if (music.isNotEmpty) parts.add('music: $music');
+    if (movies.isNotEmpty) parts.add('films/actors: $movies');
+    if (shopping.isNotEmpty) parts.add('shopping interests: $shopping');
+    if (other.isNotEmpty) parts.add('other interests: $other');
+    if (parts.isEmpty) return '';
+    return 'User preferences — ${parts.join('; ')}.';
+  }
+
+  /// Build the contextual briefing prompt based on time of day and day type.
+  static String _briefingPrompt(DateTime now) {
+    final day = _weekdayName(now.weekday);
+    final month = _monthName(now.month);
+    final date = '${day}, ${month} ${now.day}';
+    final isWeekend =
+        now.weekday == DateTime.saturday || now.weekday == DateTime.sunday;
+    final hour = now.hour;
+
+    if (hour >= 6 && hour < 12) {
+      // Morning
+      if (isWeekend) {
+        return 'Good morning! Today is $date (weekend). '
+            'Check my calendar for any plans today. '
+            'Then suggest one relaxing or fun activity — a walk, hobby, sport, home project, or outing — '
+            'based on the season (${month}). Keep it friendly and brief.';
+      } else {
+        return 'Morning briefing — today is $date. '
+            'Summarise my schedule: meetings, events, and calendar reminders '
+            '(medication, school drop-off, pickups, appointments). '
+            'Recommend a good breakfast if it is still early. '
+            'Add one short uplifting thought. Be concise and friendly.';
+      }
+    } else if (hour >= 12 && hour < 17) {
+      // Afternoon
+      if (isWeekend) {
+        return 'Afternoon check-in — today is $date (weekend). '
+            'Any plans left on the calendar? '
+            'Suggest a fun afternoon activity for the season (${month}): '
+            'a sport, game, outing, picnic, DIY project, or similar. '
+            'Recommend a light lunch or afternoon snack. Keep it short and upbeat.';
+      } else {
+        return 'Afternoon check-in — today is $date. '
+            'What events are still ahead today? '
+            'Is there anything to prepare for the commute home? '
+            'Suggest a good lunch or afternoon snack if around midday. '
+            'Keep it brief and practical.';
+      }
+    } else {
+      // Evening / fallback
+      if (isWeekend) {
+        return 'Evening check-in — today is $date (weekend). '
+            'Any evening plans on the calendar? '
+            'Suggest a relaxing activity: a film, book, game, or gentle walk. '
+            'Keep it short and friendly.';
+      } else {
+        return 'Evening wrap-up — today is $date. '
+            'Any remaining events tonight? '
+            'Highlight anything to prepare for tomorrow from the calendar. '
+            'Suggest a light dinner or wind-down activity. Keep it brief.';
+      }
+    }
+  }
+
+  /// Fire a contextual briefing as a proactive AI message (no user turn shown).
+  Future<void> _triggerMorningBriefing() async {
+    if (!mounted || _isThinking || !_ai.isModelLoaded) return;
+
+    final now = DateTime.now();
+    final today =
+        '${now.year}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')}';
+    final prefs = await SharedPreferences.getInstance();
+    final prefKey = (now.hour >= 12 && now.hour < 17)
+        ? 'last_afternoon_briefing_date'
+        : 'last_morning_briefing_date';
+    await prefs.setString(prefKey, today);
+
+    setState(() {
+      _isThinking = true;
+      _orbState = OrbState.thinking;
+      _orbExpanded = true;
+    });
+    _orbSizeController.forward();
+
+    try {
+      final prefsCtx = await _loadUserPrefsContext();
+      final prompt = prefsCtx.isEmpty
+          ? _briefingPrompt(now)
+          : '${_briefingPrompt(now)}\n\n$prefsCtx\nUse these preferences to enrich activity suggestions.';
+      final result = await _orchestrator
+          .run(
+            prompt,
+            retrievalScope: RetrievalScope.calendar,
+            sessionId: _sessionId,
+          )
+          .timeout(
+            const Duration(seconds: 45),
+            onTimeout: () => OrchestratorResult(''),
+          );
+
+      if (!mounted) return;
+      if (result.response.isNotEmpty) {
+        setState(() {
+          _messages.add(_Message(
+            text: result.response,
+            isUser: false,
+            linkedAssets: result.linkedAssets,
+          ));
+          _isThinking = false;
+          _orbState = OrbState.idle;
+          _orbExpanded = false;
+        });
+        _scrollToBottom();
+      } else {
+        setState(() {
+          _isThinking = false;
+          _orbState = OrbState.idle;
+          _orbExpanded = false;
+        });
+      }
+    } catch (e) {
+      debugPrint('[Ocula] Briefing error: $e');
+      if (mounted) {
+        setState(() {
+          _isThinking = false;
+          _orbState = OrbState.idle;
+          _orbExpanded = false;
+        });
+      }
+    }
+    _orbSizeController.reverse();
+  }
+
+  static String _weekdayName(int weekday) => const [
+        '', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'
+      ][weekday];
+
+  static String _monthName(int month) => const [
+        '', 'January', 'February', 'March', 'April', 'May', 'June',
+        'July', 'August', 'September', 'October', 'November', 'December'
+      ][month];
+
   void _startHelpTour() {
     if (mounted) setState(() => _showingHelpTour = true);
   }
@@ -200,6 +352,8 @@ class _AssistantScreenState extends State<AssistantScreen>
   bool _stopRequested = false;
   OrbState _orbState = OrbState.idle;
   RetrievalScope _retrievalScope = RetrievalScope.all;
+  bool _morningBriefingPending = false;
+  bool _showDataSourcesBanner = false;
   File? _attachedImage;
   File? _attachedDocument;
   String? _attachedDocName;
@@ -223,7 +377,12 @@ class _AssistantScreenState extends State<AssistantScreen>
       if (!mounted) return;
       if (ok) {
         setState(() => _freeModelFailed = false);
-        _ensureLiteActivatedIfReady();
+        _ensureLiteActivatedIfReady().then((_) {
+          if (_morningBriefingPending && mounted) {
+            _morningBriefingPending = false;
+            _triggerMorningBriefing();
+          }
+        });
         // On tablet/desktop, auto-download Plus after Lite is ready.
         // Plus is the default tier for these form factors (better quality,
         // vision support). On phones this stays strictly on-demand.
@@ -303,7 +462,7 @@ class _AssistantScreenState extends State<AssistantScreen>
     });
 
     // Check if we should show the help tour after first onboarding.
-    // Also restore avatar style preference.
+    // Also restore avatar style preference and check for morning briefing.
     WidgetsBinding.instance.addPostFrameCallback((_) async {
       final prefs = await SharedPreferences.getInstance();
       if ((prefs.getBool('show_help_tour') ?? false) && mounted) {
@@ -316,6 +475,32 @@ class _AssistantScreenState extends State<AssistantScreen>
           _avatarStyle = AvatarStyle.values[styleIndex.clamp(0, AvatarStyle.values.length - 1)];
           _customAvatarPath = customPath;
         });
+      }
+
+      // Data-sources banner: shown once until dismissed when email is not yet set up.
+      final emailConfigured = await LocalData().isEmailConfigured;
+      final bannerDismissed = prefs.getBool('data_sources_banner_dismissed') ?? false;
+      if (!emailConfigured && !bannerDismissed && mounted) {
+        setState(() => _showDataSourcesBanner = true);
+      }
+
+      // Contextual briefing: morning (6–11) or afternoon (12–17), once per window.
+      final now = DateTime.now();
+      final today = '${now.year}-${now.month.toString().padLeft(2,'0')}-${now.day.toString().padLeft(2,'0')}';
+      final isMorningWindow = now.hour >= 6 && now.hour < 11;
+      final isAfternoonWindow = now.hour >= 12 && now.hour < 17;
+      if (isMorningWindow || isAfternoonWindow) {
+        final prefKey = isMorningWindow
+            ? 'last_morning_briefing_date'
+            : 'last_afternoon_briefing_date';
+        final lastBriefing = prefs.getString(prefKey) ?? '';
+        if (lastBriefing != today) {
+          if (_ai.isModelLoaded && mounted) {
+            _triggerMorningBriefing();
+          } else {
+            setState(() => _morningBriefingPending = true);
+          }
+        }
       }
     });
   }
@@ -641,12 +826,66 @@ class _AssistantScreenState extends State<AssistantScreen>
           _send(query);
         }
       };
-      // Schedule initial reminders + daily briefing
+      // Schedule initial reminders + morning and afternoon briefings
       await notifService.scheduleCalendarReminders();
       await notifService.scheduleDailyBriefing();
+      await notifService.scheduleAfternoonBriefing();
     } catch (e) {
       debugPrint('[Ocula] Notification init error: $e');
     }
+  }
+
+  Widget _buildDataSourcesBanner(ColorScheme colors) {
+    return Container(
+      padding: const EdgeInsets.fromLTRB(16, 8, 8, 8),
+      decoration: BoxDecoration(
+        color: colors.primaryContainer.withAlpha(60),
+        border: Border(
+          bottom: BorderSide(color: colors.primary.withAlpha(30), width: 0.5),
+        ),
+      ),
+      child: Row(
+        children: [
+          Icon(Icons.hub_outlined, size: 14, color: colors.primary),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              'Connect email & messaging to unlock more context',
+              style: TextStyle(fontSize: 11, color: colors.onSurface.withAlpha(180)),
+            ),
+          ),
+          TextButton(
+            onPressed: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (_) => SettingsScreen(speech: _speech),
+                ),
+              );
+            },
+            style: TextButton.styleFrom(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+              minimumSize: Size.zero,
+              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+              foregroundColor: colors.primary,
+            ),
+            child: const Text('Set up', style: TextStyle(fontSize: 11)),
+          ),
+          IconButton(
+            icon: Icon(Icons.close, size: 14, color: colors.onSurface.withAlpha(120)),
+            padding: const EdgeInsets.all(6),
+            constraints: const BoxConstraints(),
+            style: IconButton.styleFrom(tapTargetSize: MaterialTapTargetSize.shrinkWrap),
+            tooltip: 'Dismiss',
+            onPressed: () async {
+              setState(() => _showDataSourcesBanner = false);
+              final prefs = await SharedPreferences.getInstance();
+              await prefs.setBool('data_sources_banner_dismissed', true);
+            },
+          ),
+        ],
+      ),
+    );
   }
 
   void _showSnackbar(String message, {Duration? duration}) {
@@ -736,37 +975,163 @@ class _AssistantScreenState extends State<AssistantScreen>
   }
 
   void _showAttachmentPicker() {
+    final colors = Theme.of(context).colorScheme;
+
+    void pick(BuildContext ctx, VoidCallback action) {
+      Navigator.pop(ctx);
+      action();
+    }
+
+    final items = [
+      (Icons.camera_alt_rounded, colors.primary, 'Camera',
+          () => _pickImage(fromCamera: true)),
+      (Icons.photo_library_rounded, Colors.green, 'Photos',
+          () => _pickImage(fromCamera: false)),
+      (Icons.videocam_rounded, Colors.deepOrange, 'Video',
+          () => _pickVideo()),
+      (Icons.description_rounded, Colors.blueGrey, 'Document',
+          () => _pickDocument()),
+    ];
+
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: colors.surfaceContainerHighest,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (ctx) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(20, 20, 20, 8),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'Attach',
+                style: TextStyle(
+                  fontSize: 13,
+                  fontWeight: FontWeight.w600,
+                  color: colors.onSurface.withAlpha(140),
+                  letterSpacing: 0.5,
+                ),
+              ),
+              const SizedBox(height: 16),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.start,
+                children: items.map((item) {
+                  final (icon, color, label, action) = item;
+                  return Padding(
+                    padding: const EdgeInsets.only(right: 20),
+                    child: GestureDetector(
+                      onTap: () => pick(ctx, action),
+                      behavior: HitTestBehavior.opaque,
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Container(
+                            width: 60,
+                            height: 60,
+                            decoration: BoxDecoration(
+                              color: color.withAlpha(30),
+                              borderRadius: BorderRadius.circular(16),
+                              border: Border.all(
+                                color: color.withAlpha(60),
+                                width: 1,
+                              ),
+                            ),
+                            child: Icon(icon, color: color, size: 28),
+                          ),
+                          const SizedBox(height: 8),
+                          Text(
+                            label,
+                            style: TextStyle(
+                              fontSize: 12,
+                              color: colors.onSurface.withAlpha(180),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  );
+                }).toList(),
+              ),
+              const SizedBox(height: 16),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  void _showScopeFilter() {
+    final options = [
+      (RetrievalScope.all, Icons.all_inclusive, 'All sources', 'Search everything'),
+      (RetrievalScope.contacts, Icons.contacts_outlined, 'Contacts', 'People & phone numbers'),
+      (RetrievalScope.calendar, Icons.calendar_today_outlined, 'Calendar', 'Events & schedule'),
+      (RetrievalScope.email, Icons.email_outlined, 'Email', 'Messages & inbox'),
+      (RetrievalScope.docs, Icons.description_outlined, 'Documents', 'Files, PDFs & notes'),
+      (RetrievalScope.images, Icons.photo_library_outlined, 'Photos', 'Images on your device'),
+    ];
     showModalBottomSheet(
       context: context,
       backgroundColor: Theme.of(context).colorScheme.surfaceContainerHighest,
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
       ),
-      builder: (ctx) => SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.symmetric(vertical: 12),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              ListTile(
-                leading: const Icon(Icons.camera_alt_outlined),
-                title: const Text('Camera'),
-                onTap: () { Navigator.pop(ctx); _pickImage(fromCamera: true); },
-              ),
-              ListTile(
-                leading: const Icon(Icons.photo_library_outlined),
-                title: const Text('Photo / Video'),
-                onTap: () { Navigator.pop(ctx); _pickImage(fromCamera: false); },
-              ),
-              ListTile(
-                leading: const Icon(Icons.description_outlined),
-                title: const Text('Document'),
-                onTap: () { Navigator.pop(ctx); _pickDocument(); },
-              ),
-            ],
+      builder: (ctx) {
+        final colors = Theme.of(ctx).colorScheme;
+        return SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.symmetric(vertical: 8),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(20, 8, 20, 4),
+                  child: Text(
+                    'Ask about',
+                    style: TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w600,
+                      color: colors.onSurface.withAlpha(140),
+                      letterSpacing: 0.5,
+                    ),
+                  ),
+                ),
+                ...options.map((opt) {
+                  final (scope, icon, label, subtitle) = opt;
+                  final selected = _retrievalScope == scope;
+                  return ListTile(
+                    leading: Icon(
+                      icon,
+                      color: selected ? colors.primary : colors.onSurface.withAlpha(180),
+                    ),
+                    title: Text(label,
+                        style: TextStyle(
+                            fontWeight: selected ? FontWeight.w600 : FontWeight.normal)),
+                    subtitle: Text(subtitle,
+                        style: TextStyle(
+                            fontSize: 12, color: colors.onSurface.withAlpha(120))),
+                    trailing: selected
+                        ? Icon(Icons.check_circle, color: colors.primary, size: 20)
+                        : null,
+                    tileColor: selected ? colors.primary.withAlpha(18) : Colors.transparent,
+                    shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12)),
+                    contentPadding:
+                        const EdgeInsets.symmetric(horizontal: 20, vertical: 2),
+                    onTap: () {
+                      Navigator.pop(ctx);
+                      setState(() => _retrievalScope = scope);
+                    },
+                  );
+                }),
+              ],
+            ),
           ),
-        ),
-      ),
+        );
+      },
     );
   }
 
@@ -809,6 +1174,35 @@ class _AssistantScreenState extends State<AssistantScreen>
       }
     } catch (e) {
       if (mounted) _showSnackbar('Could not pick image: $e');
+    }
+  }
+
+  Future<void> _pickVideo() async {
+    try {
+      if (_isDesktop) {
+        // Desktop: pick via file picker
+        final result = await FilePicker.platform.pickFiles(
+          type: FileType.video,
+          allowMultiple: false,
+        );
+        if (result != null && result.files.single.path != null) {
+          final name = result.files.single.name;
+          setState(() {
+            _attachedDocument = File(result.files.single.path!);
+            _attachedDocName = name;
+          });
+        }
+        return;
+      }
+      final picked = await ImagePicker().pickVideo(source: ImageSource.gallery);
+      if (picked != null && mounted) {
+        setState(() {
+          _attachedDocument = File(picked.path);
+          _attachedDocName = picked.name;
+        });
+      }
+    } catch (e) {
+      if (mounted) _showSnackbar('Could not pick video: $e');
     }
   }
 
@@ -1355,12 +1749,30 @@ class _AssistantScreenState extends State<AssistantScreen>
                           ),
                         ),
                         const Spacer(),
-                        // Attach — photo, video, doc (was bottom-bar Camera+File)
-                        IconButton(
-                          key: _cameraButtonKey,
-                          icon: const Icon(Icons.folder_open_outlined, size: 20),
-                          tooltip: 'Attach file or photo',
-                          onPressed: _showAttachmentPicker,
+                        // Source filter — tap to narrow RAG scope
+                        Stack(
+                          clipBehavior: Clip.none,
+                          children: [
+                            IconButton(
+                              key: _cameraButtonKey,
+                              icon: const Icon(Icons.filter_list_rounded, size: 20),
+                              tooltip: 'Filter source',
+                              onPressed: _showScopeFilter,
+                            ),
+                            if (_retrievalScope != RetrievalScope.all)
+                              Positioned(
+                                right: 6,
+                                top: 6,
+                                child: Container(
+                                  width: 8,
+                                  height: 8,
+                                  decoration: BoxDecoration(
+                                    color: Theme.of(context).colorScheme.primary,
+                                    shape: BoxShape.circle,
+                                  ),
+                                ),
+                              ),
+                          ],
                         ),
                         // Export button — visible in the top bar only on
                         // tablet/desktop where there is room; phones access it
@@ -1496,6 +1908,7 @@ class _AssistantScreenState extends State<AssistantScreen>
                                             m.tier == AITier.pro),
                                   )))))
                     _buildDownloadBanner(colors),
+                  if (_showDataSourcesBanner) _buildDataSourcesBanner(colors),
 
                   // Chat messages
                   Expanded(
@@ -1642,6 +2055,13 @@ class _AssistantScreenState extends State<AssistantScreen>
                       top: false,
                       child: Row(
                         children: [
+                          // Attach — camera, photo/video, document
+                          IconButton(
+                            icon: const Icon(Icons.add_circle_outline, size: 24),
+                            tooltip: 'Attach file, photo or video',
+                            padding: const EdgeInsets.symmetric(horizontal: 4),
+                            onPressed: _showAttachmentPicker,
+                          ),
                           // Text input
                           Expanded(
                             child: Container(

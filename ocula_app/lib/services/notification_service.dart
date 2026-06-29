@@ -228,6 +228,67 @@ class NotificationService {
 
   // ── Daily Briefing ──
 
+  static const _upliftingMessages = [
+    'You\'ve got this — make today count.',
+    'Small steps forward are still steps forward.',
+    'Today is full of possibility.',
+    'Every morning is a fresh start.',
+    'Your best work happens one moment at a time.',
+    'Focus on what matters most today.',
+    'Breathe, you\'re ready for this.',
+    'A good day starts with intention.',
+  ];
+
+  /// Build a rich morning briefing body from today's calendar events.
+  /// Detects medication, school, and errand keywords for extra emphasis.
+  Future<String> _buildBriefingBody() async {
+    try {
+      final localData = LocalData();
+      final now = DateTime.now();
+      final todayStart = DateTime(now.year, now.month, now.day);
+      final todayEnd = todayStart.add(const Duration(days: 1));
+      final events = await localData.getEvents(todayStart, todayEnd);
+
+      final parts = <String>[];
+
+      if (events.isEmpty) {
+        parts.add('No events today — enjoy the free time!');
+      } else {
+        final next = events.first;
+        parts.add('${events.length} event${events.length > 1 ? 's' : ''} today. '
+            'Next: ${next.title} at ${_formatTime(next.start)}.');
+
+        // Surface high-priority reminders (medication, school, errands)
+        final reminders = events.where((e) {
+          final t = e.title.toLowerCase();
+          return t.contains('medic') ||
+              t.contains('pill') ||
+              t.contains('tablet') ||
+              t.contains('school') ||
+              t.contains('drop') ||
+              t.contains('pickup') ||
+              t.contains('collect') ||
+              t.contains('dentist') ||
+              t.contains('doctor') ||
+              t.contains('appoint');
+        }).toList();
+
+        if (reminders.isNotEmpty) {
+          final labels = reminders.map((e) => e.title).join(', ');
+          parts.add('Reminders: $labels.');
+        }
+      }
+
+      // Append an uplifting thought
+      final idx = now.day % _upliftingMessages.length;
+      parts.add(_upliftingMessages[idx]);
+
+      return parts.join(' ');
+    } catch (_) {
+      return 'Tap to see your schedule and start the day strong.';
+    }
+  }
+
   /// Show a daily briefing notification summarizing today's events.
   Future<void> _showDailyBriefing() async {
     final prefs = await SharedPreferences.getInstance();
@@ -235,26 +296,10 @@ class NotificationService {
     if (!enabled) return;
 
     try {
-      final localData = LocalData();
-      final now = DateTime.now();
-      final todayStart = DateTime(now.year, now.month, now.day);
-      final todayEnd = todayStart.add(const Duration(days: 1));
-
-      final events = await localData.getEvents(todayStart, todayEnd);
-
-      String body;
-      if (events.isEmpty) {
-        body = 'No events scheduled today. Enjoy your free day!';
-      } else if (events.length == 1) {
-        body = '1 event today: ${events.first.title} at ${_formatTime(events.first.start)}';
-      } else {
-        body = '${events.length} events today. '
-            'First: ${events.first.title} at ${_formatTime(events.first.start)}';
-      }
-
+      final body = await _buildBriefingBody();
       await _plugin.show(
-        0, // Fixed ID for daily briefing
-        'Good morning! Here\'s your day',
+        0,
+        'Good morning!',
         body,
         NotificationDetails(
           android: AndroidNotificationDetails(
@@ -270,7 +315,7 @@ class NotificationService {
             presentSound: true,
           ),
         ),
-        payload: 'What\'s on my schedule today?',
+        payload: 'Morning briefing: summarise my schedule for today, any reminders, and an uplifting thought.',
       );
     } catch (e) {
       debugPrint('[NotificationService] Daily briefing error: $e');
@@ -292,9 +337,9 @@ class NotificationService {
     }
 
     await _plugin.zonedSchedule(
-      1, // Fixed ID for recurring briefing
-      'Good morning! Here\'s your day',
-      'Tap to see your schedule',
+      1,
+      'Good morning!',
+      'Tap for your schedule, reminders, and a thought to start the day.',
       briefingTime,
       NotificationDetails(
         android: AndroidNotificationDetails(
@@ -313,8 +358,121 @@ class NotificationService {
       uiLocalNotificationDateInterpretation:
           UILocalNotificationDateInterpretation.absoluteTime,
       androidScheduleMode: AndroidScheduleMode.inexactAllowWhileIdle,
-      payload: 'What\'s on my schedule today?',
-      matchDateTimeComponents: DateTimeComponents.time, // Repeat daily
+      payload: 'Morning briefing: summarise my schedule for today, any reminders, and an uplifting thought.',
+      matchDateTimeComponents: DateTimeComponents.time,
+    );
+  }
+
+  // ── Afternoon briefing ──
+
+  /// Build the afternoon briefing body: remaining events + practical reminders.
+  Future<String> _buildAfternoonBriefingBody() async {
+    try {
+      final localData = LocalData();
+      final now = DateTime.now();
+      final isWeekend = now.weekday == DateTime.saturday || now.weekday == DateTime.sunday;
+      final remaining = await localData.getEvents(
+        now,
+        DateTime(now.year, now.month, now.day, 23, 59),
+      );
+
+      final parts = <String>[];
+
+      if (isWeekend) {
+        parts.add('Afternoon check-in!');
+        if (remaining.isEmpty) {
+          parts.add('No more plans today — perfect time for a walk, hobby, or just relaxing.');
+        } else {
+          parts.add('${remaining.length} thing${remaining.length > 1 ? 's' : ''} left today: ${remaining.first.title}.');
+        }
+      } else {
+        parts.add('Afternoon check-in!');
+        if (remaining.isEmpty) {
+          parts.add('Nothing left on the calendar — wrap up and head home when ready.');
+        } else {
+          parts.add('${remaining.length} event${remaining.length > 1 ? 's' : ''} remaining. '
+              'Next: ${remaining.first.title} at ${_formatTime(remaining.first.start)}.');
+        }
+        parts.add('Plan your commute if heading out soon.');
+      }
+
+      return parts.join(' ');
+    } catch (_) {
+      return 'Tap for your afternoon summary and what\'s coming up.';
+    }
+  }
+
+  /// Show an afternoon check-in notification (around 1 PM on weekdays, noon on weekends).
+  Future<void> _showAfternoonBriefing() async {
+    final prefs = await SharedPreferences.getInstance();
+    final enabled = prefs.getBool(_kBriefingEnabled) ?? true;
+    if (!enabled) return;
+
+    try {
+      final body = await _buildAfternoonBriefingBody();
+      await _plugin.show(
+        2,
+        'Afternoon check-in',
+        body,
+        NotificationDetails(
+          android: AndroidNotificationDetails(
+            _briefingChannelId,
+            'Daily Briefing',
+            channelDescription: 'Your daily schedule overview',
+            importance: Importance.defaultImportance,
+            priority: Priority.defaultPriority,
+          ),
+          iOS: const DarwinNotificationDetails(
+            presentAlert: true,
+            presentBadge: false,
+            presentSound: false,
+          ),
+        ),
+        payload: 'Afternoon briefing: what\'s left on my schedule today? Any traffic or commute heads-up? '
+            'If weekend, suggest a relaxing or fun activity based on the time of year.',
+      );
+    } catch (e) {
+      debugPrint('[NotificationService] Afternoon briefing error: $e');
+    }
+  }
+
+  /// Schedule the afternoon check-in notification (daily at 13:00).
+  Future<void> scheduleAfternoonBriefing() async {
+    final prefs = await SharedPreferences.getInstance();
+    final enabled = prefs.getBool(_kBriefingEnabled) ?? true;
+    if (!enabled) return;
+
+    final now = tz.TZDateTime.now(tz.local);
+    var briefingTime = tz.TZDateTime(tz.local, now.year, now.month, now.day, 13);
+    if (briefingTime.isBefore(now)) {
+      briefingTime = briefingTime.add(const Duration(days: 1));
+    }
+
+    await _plugin.zonedSchedule(
+      3,
+      'Afternoon check-in',
+      'Tap for your afternoon summary and what\'s coming up.',
+      briefingTime,
+      NotificationDetails(
+        android: AndroidNotificationDetails(
+          _briefingChannelId,
+          'Daily Briefing',
+          channelDescription: 'Your daily schedule overview',
+          importance: Importance.defaultImportance,
+          priority: Priority.defaultPriority,
+        ),
+        iOS: const DarwinNotificationDetails(
+          presentAlert: true,
+          presentBadge: false,
+          presentSound: false,
+        ),
+      ),
+      uiLocalNotificationDateInterpretation:
+          UILocalNotificationDateInterpretation.absoluteTime,
+      androidScheduleMode: AndroidScheduleMode.inexactAllowWhileIdle,
+      payload: 'Afternoon briefing: what\'s left on my schedule today? Any traffic or commute heads-up? '
+          'If weekend, suggest a relaxing or fun activity based on the time of year.',
+      matchDateTimeComponents: DateTimeComponents.time,
     );
   }
 
@@ -331,6 +489,7 @@ class NotificationService {
     } else {
       await scheduleCalendarReminders();
       await scheduleDailyBriefing();
+      await scheduleAfternoonBriefing();
     }
   }
 
