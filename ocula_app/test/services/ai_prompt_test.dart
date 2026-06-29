@@ -4,8 +4,23 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:ocula_app/services/text_utils.dart';
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Helpers — mirrors ai_manager.dart prompt construction exactly.
+// Keep in sync with ask() / askStream() when the template changes.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Builds the full ChatML prompt as ai_manager.dart does.
+/// /no_think goes in the USER turn (Qwen3 spec), NOT the system message.
+String buildChatMLPrompt(String systemMsg, String userMsg) {
+  // Append /no_think to user message exactly as ai_manager does
+  final userMsgWithFlag = '$userMsg /no_think';
+  return '<|im_start|>system\n$systemMsg<|im_end|>\n'
+      '<|im_start|>user\n$userMsgWithFlag<|im_end|>\n'
+      '<|im_start|>assistant\n<think>\n\n</think>\n';
+}
+
 void main() {
-  // ── stripReasoningArtifacts ────────────────────────────────────────────────
+  // ── stripReasoningArtifacts — closed think blocks ─────────────────────────
 
   group('stripReasoningArtifacts — closed think blocks', () {
     test('strips <think>…</think> leaving the actual answer', () {
@@ -20,10 +35,7 @@ void main() {
           'I have no data so I should say so.\n'
           '</think>\n'
           'I don\'t have weather data on your device.';
-      expect(
-        stripReasoningArtifacts(raw),
-        'I don\'t have weather data on your device.',
-      );
+      expect(stripReasoningArtifacts(raw), 'I don\'t have weather data on your device.');
     });
 
     test('strips <thinking>…</thinking> variant', () {
@@ -54,6 +66,8 @@ void main() {
     });
   });
 
+  // ── stripReasoningArtifacts — unclosed think blocks ───────────────────────
+
   group('stripReasoningArtifacts — unclosed think blocks', () {
     test('strips from open <think> to end when no closing tag', () {
       const raw = 'Preamble.\n<think>\nReasoning that never ends...';
@@ -71,6 +85,8 @@ void main() {
     });
   });
 
+  // ── stripReasoningArtifacts — fenced blocks ───────────────────────────────
+
   group('stripReasoningArtifacts — fenced blocks', () {
     test('strips ```thinking fenced block', () {
       final raw = '```thinking\nSome internal analysis\n```\nActual answer.';
@@ -83,17 +99,16 @@ void main() {
     });
   });
 
+  // ── stripReasoningArtifacts — ChatML control tokens ──────────────────────
+
   group('stripReasoningArtifacts — ChatML control tokens', () {
-    test('strips <|im_end|> token', () {
+    test('strips <|im_end|> token that leaks into response', () {
       const raw = 'Good answer.<|im_end|>';
       expect(stripReasoningArtifacts(raw), 'Good answer.');
     });
 
     test('strips <|im_start|> token', () {
       const raw = '<|im_start|>assistant\nHello!';
-      // <|im_start|> removed, then trimLeft removes "assistant\n"? No —
-      // trimLeft only removes leading whitespace. "assistant\nHello!" remains.
-      // What matters is that the control token itself is gone.
       final result = stripReasoningArtifacts(raw);
       expect(result.contains('<|im_start|>'), isFalse);
     });
@@ -105,11 +120,27 @@ void main() {
       expect(result.contains('<|im_end|>'), isFalse);
       expect(result, contains('Hello!'));
     });
+
+    test('strips multi-turn bleed-through (model generated past <|im_end|>)', () {
+      // Happens when native bridge does not stop at <|im_end|>.
+      // After the fix in llama_cpp_bridge.mm, the native layer strips it —
+      // but the Dart layer must also handle any remnant.
+      const raw =
+          'Here is the answer.<|im_end|>\n'
+          '<|im_start|>user\nWhat else?<|im_end|>\n'
+          '<|im_start|>assistant\n<think>\nMore thinking.</think>\nExtra.';
+      final result = stripReasoningArtifacts(raw);
+      expect(result.contains('<|im_end|>'), isFalse);
+      expect(result.contains('<|im_start|>'), isFalse);
+      expect(result.contains('<think>'), isFalse);
+      expect(result, contains('Here is the answer.'));
+    });
   });
+
+  // ── stripReasoningArtifacts — real Qwen3 output patterns ─────────────────
 
   group('stripReasoningArtifacts — real Qwen3 output patterns', () {
     test('prefill did not suppress thinking — strips full block before answer', () {
-      // Qwen3-1.7B emits a new <think> block despite the empty prefill.
       const raw =
           '<think>\n'
           'The user said hello. I should respond in a friendly manner.\n'
@@ -136,56 +167,151 @@ void main() {
       const raw = '< think >\nSome thinking.\n< /think >\nAnswer here.';
       expect(stripReasoningArtifacts(raw), 'Answer here.');
     });
+
+    test('second think block generated after <|im_end|> bleed-through is stripped', () {
+      // This is the exact bug pattern: model generates a good answer, then
+      // <|im_end|> is not caught by native EOG check, model continues and
+      // generates a second <think> block. Both layers must strip it.
+      const raw =
+          'Your next meeting is at 2pm.<|im_end|>\n'
+          '<|im_start|>assistant\n'
+          '<think>\n'
+          'Let me reconsider...\n'
+          '</think>\n'
+          'Actually, you have two meetings.';
+      final result = stripReasoningArtifacts(raw);
+      // The <|im_end|> and <|im_start|> are stripped first
+      expect(result.contains('<|im_end|>'), isFalse);
+      expect(result.contains('<think>'), isFalse);
+      // First real answer should be present
+      expect(result, contains('Your next meeting is at 2pm.'));
+    });
   });
 
-  // ── Prompt format contract ─────────────────────────────────────────────────
-  // These tests encode the expected prompt structure so CI catches regressions
-  // when someone changes the template (e.g. removes /no_think or the prefill).
+  // ── Prompt format contract ────────────────────────────────────────────────
+  // These tests encode the correct Qwen3 prompt structure.
+  // /no_think MUST be in the USER turn, NOT the system message.
+  // The empty <think></think> prefill in the assistant turn provides
+  // a second layer of suppression.
 
-  group('Prompt format contract', () {
-    String buildPrompt(String systemMsg, String userMsg) {
-      return '<|im_start|>system\n$systemMsg<|im_end|>\n'
-          '<|im_start|>user\n$userMsg<|im_end|>\n'
-          '<|im_start|>assistant\n<think>\n\n</think>\n';
-    }
+  group('Prompt format contract — /no_think in USER turn (Qwen3 spec)', () {
+    const systemMsg = 'You are Ocula, an AI assistant.';
+    const userMsg = 'What meetings do I have today?';
 
-    test('prompt contains /no_think directive', () {
-      const systemMsg = '/no_think\nYou are Ocula, an AI assistant.';
-      final prompt = buildPrompt(systemMsg, 'Hello');
-      expect(prompt, contains('/no_think'));
+    test('/no_think is NOT in the system message', () {
+      final prompt = buildChatMLPrompt(systemMsg, userMsg);
+      final systemStart = prompt.indexOf('<|im_start|>system\n');
+      final systemEnd = prompt.indexOf('<|im_end|>', systemStart);
+      final systemTurn = prompt.substring(systemStart, systemEnd);
+      expect(systemTurn.contains('/no_think'), isFalse,
+          reason: '/no_think must be in the user turn for Qwen3 to honour it');
     });
 
-    test('prompt uses ChatML <|im_start|> / <|im_end|> template', () {
-      const systemMsg = '/no_think\nYou are Ocula.';
-      final prompt = buildPrompt(systemMsg, 'Hi');
+    test('/no_think IS in the user turn', () {
+      final prompt = buildChatMLPrompt(systemMsg, userMsg);
+      final userStart = prompt.indexOf('<|im_start|>user\n');
+      final userEnd = prompt.indexOf('<|im_end|>', userStart);
+      final userTurn = prompt.substring(userStart, userEnd);
+      expect(userTurn, contains('/no_think'));
+    });
+
+    test('/no_think appears after the user query text', () {
+      final prompt = buildChatMLPrompt(systemMsg, userMsg);
+      final queryIdx = prompt.indexOf(userMsg);
+      final noThinkIdx = prompt.indexOf('/no_think');
+      expect(noThinkIdx, greaterThan(queryIdx));
+    });
+
+    test('prompt uses ChatML structure', () {
+      final prompt = buildChatMLPrompt(systemMsg, userMsg);
       expect(prompt, contains('<|im_start|>system\n'));
       expect(prompt, contains('<|im_start|>user\n'));
       expect(prompt, contains('<|im_start|>assistant\n'));
       expect(prompt, contains('<|im_end|>'));
     });
 
-    test('prompt ends with empty think prefill to suppress Qwen3 reasoning', () {
-      const systemMsg = '/no_think\nYou are Ocula.';
-      final prompt = buildPrompt(systemMsg, 'Hi');
+    test('prompt ends with empty think prefill', () {
+      final prompt = buildChatMLPrompt(systemMsg, userMsg);
       expect(prompt, endsWith('<think>\n\n</think>\n'));
     });
 
-    test('/no_think appears before the assistant role content', () {
-      const systemMsg = '/no_think\nYou are Ocula.';
-      final prompt = buildPrompt(systemMsg, 'Hi');
+    test('/no_think is before the assistant turn', () {
+      final prompt = buildChatMLPrompt(systemMsg, userMsg);
       final noThinkIdx = prompt.indexOf('/no_think');
       final assistantIdx = prompt.indexOf('<|im_start|>assistant');
       expect(noThinkIdx, lessThan(assistantIdx));
     });
 
-    test('user message is placed in the user turn', () {
-      const systemMsg = '/no_think\nYou are Ocula.';
-      const userMsg = 'What meetings do I have today?';
-      final prompt = buildPrompt(systemMsg, userMsg);
+    test('user query text is inside the user turn', () {
+      final prompt = buildChatMLPrompt(systemMsg, userMsg);
       final userTurnStart = prompt.indexOf('<|im_start|>user\n');
       final userTurnEnd = prompt.indexOf('<|im_end|>', userTurnStart);
       final userTurn = prompt.substring(userTurnStart, userTurnEnd);
       expect(userTurn, contains(userMsg));
+    });
+
+    test('system message does not contain user query or /no_think', () {
+      final prompt = buildChatMLPrompt(systemMsg, 'Tell me about my contacts.');
+      final systemStart = prompt.indexOf('<|im_start|>system\n');
+      final systemEnd = prompt.indexOf('<|im_end|>', systemStart);
+      final system = prompt.substring(systemStart, systemEnd);
+      expect(system.contains('/no_think'), isFalse);
+      expect(system.contains('Tell me about my contacts.'), isFalse);
+    });
+  });
+
+  // ── Stop sequence stripping ───────────────────────────────────────────────
+  // These tests verify the Dart-layer defence against <|im_end|> leaking in
+  // (in case the native bridge doesn't strip it before returning).
+
+  group('Stop sequence stripping via stripReasoningArtifacts', () {
+    test('strips trailing <|im_end|> from clean response', () {
+      const raw = 'You have no events today.<|im_end|>';
+      expect(stripReasoningArtifacts(raw), 'You have no events today.');
+    });
+
+    test('strips mid-response <|im_end|> and everything after', () {
+      // If native didn't stop at <|im_end|>, extra content may follow.
+      // The Dart layer strips all control tokens, leaving first-answer text.
+      const raw = 'Meeting at 3pm.<|im_end|>\n<|im_start|>user\nFollowup?';
+      final result = stripReasoningArtifacts(raw);
+      expect(result.contains('<|im_end|>'), isFalse);
+      expect(result.contains('<|im_start|>'), isFalse);
+    });
+
+    test('clean response without stop token passes through unchanged', () {
+      const raw = 'Your contact John has phone 555-1234.';
+      expect(stripReasoningArtifacts(raw), raw);
+    });
+  });
+
+  // ── Double-suppression contract ───────────────────────────────────────────
+  // Verifies that BOTH suppression layers are present simultaneously.
+
+  group('Double-suppression contract (/no_think + think prefill)', () {
+    test('prompt has both /no_think in user turn AND think prefill', () {
+      const sysMsg = 'You are Ocula.';
+      const usrMsg = 'Hello';
+      final prompt = buildChatMLPrompt(sysMsg, usrMsg);
+      // /no_think in user turn
+      final userStart = prompt.indexOf('<|im_start|>user\n');
+      final userEnd = prompt.indexOf('<|im_end|>', userStart);
+      expect(prompt.substring(userStart, userEnd), contains('/no_think'));
+      // think prefill in assistant turn
+      expect(prompt, contains('<|im_start|>assistant\n<think>\n\n</think>\n'));
+    });
+
+    test('even if model ignores /no_think, stripReasoningArtifacts catches output', () {
+      // Simulate: model ignored both suppressors and emitted a think block
+      const modelOutput =
+          '<think>\nLet me reason about this carefully.\n</think>\n'
+          'You have 2 events today.';
+      expect(stripReasoningArtifacts(modelOutput), 'You have 2 events today.');
+    });
+
+    test('even if model emits unclosed think (token budget hit mid-thought)', () {
+      const modelOutput = '<think>\nStarting to reason about';
+      expect(stripReasoningArtifacts(modelOutput), '');
     });
   });
 }

@@ -9,6 +9,7 @@ import 'package:file_picker/file_picker.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:url_launcher/url_launcher.dart';
+import 'package:share_plus/share_plus.dart';
 import 'services/ai_manager.dart';
 import 'services/speech_service.dart';
 import 'services/export_service.dart';
@@ -2521,20 +2522,61 @@ class _AssetChip extends StatelessWidget {
   }
 
   Future<void> _onTap(BuildContext context) async {
-    final uri = _uriForAsset();
-    if (uri == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('This source cannot be opened yet.')),
-      );
+    // Files and photos: share via system sheet (iOS sandbox blocks file:// in
+    // external apps; share_plus correctly uses UIActivityViewController).
+    if (asset.assetType == 'file' || asset.assetType == 'photo') {
+      final path = asset.assetRef.startsWith('file://')
+          ? Uri.parse(asset.assetRef).toFilePath()
+          : asset.assetRef;
+      final file = File(path);
+      if (await file.exists()) {
+        await Share.shareXFiles(
+          [XFile(path)],
+          subject: asset.label ?? asset.assetRef.split('/').last,
+        );
+      } else if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('File not found: ${asset.label ?? path.split('/').last}')),
+        );
+      }
       return;
     }
-    final launched = await launchUrl(uri, mode: LaunchMode.externalApplication);
+
+    final uri = _uriForAsset();
+    if (uri == null) {
+      // Contact with name-only ref: open Contacts search via URL scheme
+      if (asset.assetType == 'contact') {
+        final query = Uri.encodeComponent(asset.assetRef.trim());
+        final contactsUri = Uri.parse('mobilecontact://contacts?search=$query');
+        final fallback = Uri.parse('contacts://');
+        if (!await launchUrl(contactsUri, mode: LaunchMode.externalApplication)) {
+          if (context.mounted) {
+            await launchUrl(fallback, mode: LaunchMode.externalApplication);
+          }
+        }
+      } else if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('This source cannot be opened yet.')),
+        );
+      }
+      return;
+    }
+
+    // tel:, mailto:, https: links
+    bool launched = false;
+    try {
+      launched = await launchUrl(uri, mode: LaunchMode.externalApplication);
+    } catch (_) {}
+    if (!launched && context.mounted) {
+      // tel/mailto fallback: try platformDefault
+      try {
+        launched = await launchUrl(uri, mode: LaunchMode.platformDefault);
+      } catch (_) {}
+    }
     if (!launched && context.mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text(
-            'Could not open source: ${asset.label ?? asset.assetRef}',
-          ),
+          content: Text('Could not open: ${asset.label ?? asset.assetRef}'),
         ),
       );
     }

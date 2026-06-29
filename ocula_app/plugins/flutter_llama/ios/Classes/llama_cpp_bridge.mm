@@ -244,21 +244,26 @@ bool llama_generate(
     
     g_should_stop = false;
     
+    // Stop sequences: <|im_end|> may not be registered as EOG in all Qwen3 GGUFs.
+    // Check the last 12 characters of accumulated text after every token append.
+    static const std::string kStopSeqs[] = {"<|im_end|>", "<|endoftext|>"};
+    static const int kNumStopSeqs = 2;
+
     for (int i = 0; i < max_tokens; i++) {
         if (g_should_stop) {
             NSLog(@"[llama_cpp_bridge] Generation stopped by user");
             break;
         }
-        
+
         // Sample next token
         llama_token new_token = llama_sampler_sample(g_sampler, g_context, -1);
-        
-        // Check for EOS
+
+        // Check for EOS via vocab
         if (llama_vocab_is_eog(g_vocab, new_token)) {
             NSLog(@"[llama_cpp_bridge] EOS token reached");
             break;
         }
-        
+
         // Convert token to text
         char token_str[256] = {0};
         int n = llama_token_to_piece(g_vocab, new_token, token_str, sizeof(token_str) - 1, 0, true);
@@ -266,19 +271,36 @@ bool llama_generate(
             token_str[n] = '\0';
             result.append(token_str);
         }
-        
+
+        // Check stop sequences in accumulated text (covers models where <|im_end|>
+        // is not marked EOG but is still emitted as plain text).
+        bool hit_stop = false;
+        for (int s = 0; s < kNumStopSeqs; s++) {
+            const std::string& seq = kStopSeqs[s];
+            if (result.size() >= seq.size()) {
+                size_t off = result.size() - seq.size();
+                if (result.compare(off, seq.size(), seq) == 0) {
+                    result.erase(off);
+                    NSLog(@"[llama_cpp_bridge] Stop sequence matched: %s", seq.c_str());
+                    hit_stop = true;
+                    break;
+                }
+            }
+        }
+        if (hit_stop) break;
+
         // Prepare for next iteration
         batch = llama_batch_get_one(&new_token, 1);
         n_pos++;
-        
+
         if (llama_decode(g_context, batch) != 0) {
             NSLog(@"[llama_cpp_bridge] Failed to decode token");
             break;
         }
-        
+
         n_gen++;
     }
-    
+
     // Copy result
     size_t copy_len = std::min(result.length(), (size_t)(output_size - 1));
     memcpy(output, result.c_str(), copy_len);
@@ -350,33 +372,62 @@ void llama_generate_stream_init(
     llama_sampler_chain_add(g_sampler, llama_sampler_init_top_k(top_k));
     llama_sampler_chain_add(g_sampler, llama_sampler_init_dist(1234));
     
-    // Pre-generate tokens and convert to strings
+    // Pre-generate tokens and convert to strings.
+    // Same stop-sequence logic as non-streaming generate.
+    static const std::string kStreamStopSeqs[] = {"<|im_end|>", "<|endoftext|>"};
+    static const int kNumStreamStopSeqs = 2;
+
+    std::string accumulated;
     int n_pos = prompt_tokens.size();
     for (int i = 0; i < max_tokens; i++) {
         if (g_should_stop) break;
-        
+
         llama_token new_token = llama_sampler_sample(g_sampler, g_context, -1);
-        
+
         if (llama_vocab_is_eog(g_vocab, new_token)) {
             break;
         }
-        
+
         // Convert token to text and store
         char token_str[256] = {0};
         int n = llama_token_to_piece(g_vocab, new_token, token_str, sizeof(token_str) - 1, 0, true);
         if (n > 0) {
             token_str[n] = '\0';
+            accumulated.append(token_str);
             g_stream_tokens.push_back(std::string(token_str));
         }
-        
+
+        // Check stop sequences
+        bool hit_stop = false;
+        for (int s = 0; s < kNumStreamStopSeqs; s++) {
+            const std::string& seq = kStreamStopSeqs[s];
+            if (accumulated.size() >= seq.size()) {
+                size_t off = accumulated.size() - seq.size();
+                if (accumulated.compare(off, seq.size(), seq) == 0) {
+                    // Remove the stop sequence from the last token(s)
+                    if (!g_stream_tokens.empty()) {
+                        std::string& last = g_stream_tokens.back();
+                        if (last.size() >= seq.size()) {
+                            last.erase(last.size() - seq.size());
+                            if (last.empty()) g_stream_tokens.pop_back();
+                        }
+                    }
+                    NSLog(@"[llama_cpp_bridge] Stream stop sequence matched: %s", seq.c_str());
+                    hit_stop = true;
+                    break;
+                }
+            }
+        }
+        if (hit_stop) break;
+
         batch = llama_batch_get_one(&new_token, 1);
         n_pos++;
-        
+
         if (llama_decode(g_context, batch) != 0) {
             break;
         }
     }
-    
+
     NSLog(@"[llama_cpp_bridge] Pre-generated %zu tokens for streaming", g_stream_tokens.size());
 }
 

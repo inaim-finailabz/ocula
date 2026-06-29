@@ -813,8 +813,9 @@ class AIManager {
 
     final String systemMsg;
     String userMsg;
+    // NOTE: /no_think goes in the USER message (Qwen3 spec), not system.
+    // The rolePrefix is the system-message portion only.
     final rolePrefix =
-        '/no_think\n'
         '${langPrefix}You are Ocula, an AI assistant with access to the user\'s phone assets via local RAG context. '
         'Use available phone data to help the user, and never invent missing phone data. '
         'When context is available, start with where you found the answer (document, image, contact, email, calendar). '
@@ -892,8 +893,10 @@ class AIManager {
       userMsg = prompt;
     }
 
-    // Prefill empty <think> block so Qwen3-VL skips chain-of-thought and
-    // responds directly — prevents thinking from exhausting the token budget.
+    // Qwen3: /no_think must be in the USER turn (not system) to suppress CoT.
+    // Combined with the empty <think></think> prefill, this reliably disables
+    // chain-of-thought output and keeps the token budget for the actual answer.
+    userMsg = '$userMsg /no_think';
     String fullPrompt =
         '<|im_start|>system\n$systemMsg<|im_end|>\n'
         '<|im_start|>user\n$userMsg<|im_end|>\n'
@@ -1139,11 +1142,12 @@ class AIManager {
         compactContext,
         maxChars: isProModel ? 1200 : 800,
       );
-      final retryUserMsg = tighterContext.isNotEmpty
+      final retryUserMsgBase = tighterContext.isNotEmpty
           ? (isSmallModel
               ? 'QUESTION: $prompt\n\nDATA:\n$tighterContext\n\nANSWER:'
               : '${_intentDataLabel(intent)}:\n$tighterContext\n\nQ: $prompt')
           : prompt;
+      final retryUserMsg = '$retryUserMsgBase /no_think';
       final retryPrompt =
           '<|im_start|>system\n$systemMsg<|im_end|>\n'
           '<|im_start|>user\n$retryUserMsg<|im_end|>\n'
@@ -1180,7 +1184,7 @@ class AIManager {
         '[AIManager] Empty generation detected; retrying with plain prompt format',
       );
       final fallbackPrompt =
-          'System: $systemMsg\n\nUser: $userMsg\n\nAssistant:';
+          'System: $systemMsg\n\nUser: $userMsg /no_think\n\nAssistant:<think>\n\n</think>\n';
       final retry = await _textEngine.generate(
         GenerationParams(
           prompt: fallbackPrompt,
@@ -1258,8 +1262,8 @@ class AIManager {
     // Build system/user messages (same logic as ask())
     String systemMsg;
     String userMsg;
+    // NOTE: /no_think in user message per Qwen3 spec (not system).
     final rolePrefix =
-        '/no_think\n'
         '${langPrefix}You are Ocula, an AI assistant with access to the user\'s phone assets via local RAG context. '
         'Use available phone data to help the user, and never invent missing phone data. '
         'When context is available, start with where you found the answer (document, image, contact, email, calendar). '
@@ -1322,6 +1326,8 @@ class AIManager {
       userMsg = prompt;
     }
 
+    // /no_think in user turn (Qwen3 spec) + empty think prefill = double suppression
+    userMsg = '$userMsg /no_think';
     String fullPrompt =
         '<|im_start|>system\n$systemMsg<|im_end|>\n'
         '<|im_start|>user\n$userMsg<|im_end|>\n'
