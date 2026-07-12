@@ -247,19 +247,29 @@ class _ModelManagementState extends State<ModelManagement> {
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
+
+    // Collect models that are either active-tier or currently downloading
+    final relevantModels = OculaModelManager.models.where((m) {
+      if (m.isVisionProjector || m.isEmbeddingModel) return false;
+      final isActiveTierModel = m.tier == (_activeTier ?? AITier.free);
+      final isDownloading =
+          _modelStatuses[m.fileName] == ModelStatus.downloading;
+      return isActiveTierModel || isDownloading;
+    }).toList();
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Row(
           children: [
             const Text(
-              'AI Models',
+              'AI Engine',
               style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
             ),
             const Spacer(),
             IconButton(
               icon: const Icon(Icons.refresh, size: 18),
-              tooltip: 'Refresh model status',
+              tooltip: 'Refresh status',
               visualDensity: VisualDensity.compact,
               padding: EdgeInsets.zero,
               onPressed: _loadModelStatuses,
@@ -267,122 +277,18 @@ class _ModelManagementState extends State<ModelManagement> {
           ],
         ),
         const SizedBox(height: 10),
-
-        // Recommended tier for this device
-        if (_recommendedTierLabel != null)
-          Container(
-            margin: const EdgeInsets.only(bottom: 14),
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
-            decoration: BoxDecoration(
-              color: colors.primaryContainer.withAlpha(70),
-              borderRadius: BorderRadius.circular(10),
-              border: Border.all(color: colors.primary.withAlpha(50)),
+        if (relevantModels.isEmpty)
+          Text(
+            'Preparing AI engine...',
+            style: TextStyle(
+              fontSize: 13,
+              color: colors.onSurface.withAlpha(140),
             ),
-            child: Row(
-              children: [
-                Icon(Icons.memory_outlined, size: 16, color: colors.primary),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: Text(
-                    _recommendedTier != null &&
-                            _isTierFullyReady(_recommendedTier!) &&
-                            _activeTier != _recommendedTier
-                        ? '$_recommendedTierLabel is ready — tap Activate to switch'
-                        : 'Recommended for your device: $_recommendedTierLabel',
-                    style: TextStyle(
-                      fontSize: 13,
-                      fontWeight: FontWeight.w500,
-                      color: colors.primary,
-                    ),
-                  ),
-                ),
-              ],
-            ),
-          ),
-
-        for (final tier in AITier.values)
-          _buildTierSection(tier, colors),
-      ],
-    );
-  }
-
-  Widget _buildTierSection(AITier tier, ColorScheme colors) {
-    final tierModels = _modelManager.modelsForTier(tier);
-    if (tierModels.isEmpty) return const SizedBox.shrink();
-
-    final isActive = _activeTier == tier;
-    final isFree = tier == AITier.free;
-    final fullyReady = _isTierFullyReady(tier);
-    final isActivating = _activatingTier == tier;
-
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 16.0),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Text(
-                OculaModelManager.featureLabel(tier),
-                style: TextStyle(
-                  fontSize: 14,
-                  fontWeight: FontWeight.bold,
-                  color: colors.primary,
-                ),
-              ),
-              const SizedBox(width: 8),
-              // Active / Default chip
-              if (isActive || isFree)
-                Container(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 8,
-                    vertical: 2,
-                  ),
-                  decoration: BoxDecoration(
-                    color: isActive
-                        ? Colors.green.withAlpha(40)
-                        : colors.surfaceContainerHighest,
-                    borderRadius: BorderRadius.circular(10),
-                    border: Border.all(
-                      color: isActive
-                          ? Colors.green
-                          : colors.outline.withAlpha(80),
-                    ),
-                  ),
-                  child: Text(
-                    isFree && !isActive ? 'Default' : 'Active',
-                    style: TextStyle(
-                      fontSize: 11,
-                      color: isActive ? Colors.green : colors.onSurface.withAlpha(160),
-                      fontWeight: FontWeight.w600,
-                    ),
-                  ),
-                ),
-            ],
-          ),
-          const SizedBox(height: 8),
-          for (final model in tierModels.where(
-                (m) => !m.isVisionProjector && !m.isEmbeddingModel))
+          )
+        else
+          for (final model in relevantModels)
             _buildModelTile(model, colors),
-          // Activate button (show for any tier if it's ready but not active).
-          if (fullyReady && !isActive) ...[
-            const SizedBox(height: 4),
-            SizedBox(
-              width: double.infinity,
-              child: FilledButton(
-                onPressed: isActivating ? null : () => _activateTier(tier),
-                child: isActivating
-                    ? const SizedBox(
-                        width: 18,
-                        height: 18,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      )
-                    : const Text('Activate'),
-              ),
-            ),
-          ],
-        ],
-      ),
+      ],
     );
   }
 

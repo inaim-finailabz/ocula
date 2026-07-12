@@ -349,7 +349,6 @@ class _AssistantScreenState extends State<AssistantScreen>
   bool _isThinking = false;
   bool _isListening = false;
   bool _isSpeaking = false;
-  bool _isRecordingNotes = false;
   bool _stopRequested = false;
   OrbState _orbState = OrbState.idle;
   RetrievalScope _retrievalScope = RetrievalScope.all;
@@ -1273,109 +1272,6 @@ class _AssistantScreenState extends State<AssistantScreen>
         _isThinking = false;
         _isListening = false;
         _isSpeaking = false;
-        _isRecordingNotes = false;
-        _orbState = OrbState.idle;
-      });
-    }
-  }
-
-  String _recordingSummaryPrompt({
-    required String transcript,
-    required String contextType,
-  }) {
-    return 'You are an expert note-taking assistant. Summarize this '
-        '$contextType recording into clear, structured notes.\n\n'
-        'Required format:\n'
-        '1) One-line summary\n'
-        '2) Key points (bullets)\n'
-        '3) Decisions (if any)\n'
-        '4) Action items with owner and due date if mentioned\n'
-        '5) Follow-up questions / unclear points\n\n'
-        'If something is missing, write "Not mentioned". Keep it concise.\n\n'
-        'Transcript:\n'
-        '$transcript';
-  }
-
-  Future<void> _startRecordingSummary({required String contextType}) async {
-    if (_isThinking || _isSpeaking) {
-      await _stopEverything();
-    }
-    if (_isListening) {
-      await _speech.stopListening();
-      if (!mounted) return;
-      setState(() {
-        _isListening = false;
-        _isRecordingNotes = false;
-        _orbState = OrbState.idle;
-      });
-      return;
-    }
-
-    if (mounted) {
-      setState(() {
-        _isListening = true;
-        _isRecordingNotes = true;
-        _orbState = OrbState.listening;
-        _orbExpanded = true;
-      });
-      _textController.clear();
-      _orbSizeController.forward();
-    }
-
-    try {
-      _speech.startListening(
-        onResult: (text) {
-          _textController.text = text;
-        },
-        onFinalText: (transcript) {
-          final cleaned = transcript.trim();
-          if (!mounted) return;
-          setState(() {
-            _isListening = false;
-            _isRecordingNotes = false;
-            _orbState = OrbState.idle;
-            _textController.clear();
-          });
-          if (cleaned.isEmpty) {
-            _showSnackbar('No speech captured. Try recording again.');
-            return;
-          }
-          _send(
-            'Summarize my $contextType recording',
-            queryOverride: _recordingSummaryPrompt(
-              transcript: cleaned,
-              contextType: contextType,
-            ),
-            displayTextOverride: 'Recorded $contextType notes',
-            forcedTier: AITier.pro,
-          );
-        },
-        onError: () {
-          if (!mounted) return;
-          setState(() {
-            _isListening = false;
-            _isRecordingNotes = false;
-            _orbState = OrbState.idle;
-          });
-          _showSnackbar(
-            'Could not start listening. Please check microphone permissions.',
-          );
-        },
-      );
-    } on ModelNotReadyException catch (e) {
-      _showSnackbar(e.toString());
-      if (!mounted) return;
-      setState(() {
-        _isListening = false;
-        _isRecordingNotes = false;
-        _orbState = OrbState.idle;
-      });
-    } catch (e) {
-      _showSnackbar('An error occurred: $e');
-      if (!mounted) return;
-      setState(() {
-        _isListening = false;
-        _isRecordingNotes = false;
         _orbState = OrbState.idle;
       });
     }
@@ -1549,13 +1445,11 @@ class _AssistantScreenState extends State<AssistantScreen>
       _speech.stopListening();
       setState(() {
         _isListening = false;
-        _isRecordingNotes = false;
         _orbState = OrbState.idle;
       });
     } else {
       setState(() {
         _isListening = true;
-        _isRecordingNotes = false;
         _orbState = OrbState.listening;
         _orbExpanded = true;
       });
@@ -1570,8 +1464,7 @@ class _AssistantScreenState extends State<AssistantScreen>
               _messages.add(_Message(text: _textController.text, isUser: true));
               _messages.add(_Message(text: response, isUser: false));
               _isListening = false;
-              _isRecordingNotes = false;
-              _orbState = OrbState.idle;
+                    _orbState = OrbState.idle;
               _textController.clear();
               _orbExpanded = false;
             });
@@ -1584,8 +1477,7 @@ class _AssistantScreenState extends State<AssistantScreen>
             );
             setState(() {
               _isListening = false;
-              _isRecordingNotes = false;
-              _orbState = OrbState.idle;
+                    _orbState = OrbState.idle;
             });
           },
         );
@@ -1593,15 +1485,13 @@ class _AssistantScreenState extends State<AssistantScreen>
         _showSnackbar(e.toString());
         setState(() {
           _isListening = false;
-          _isRecordingNotes = false;
-          _orbState = OrbState.idle;
+            _orbState = OrbState.idle;
         });
       } catch (e) {
         _showSnackbar('An error occurred: $e');
         setState(() {
           _isListening = false;
-          _isRecordingNotes = false;
-          _orbState = OrbState.idle;
+            _orbState = OrbState.idle;
         });
       }
     }
@@ -2355,20 +2245,10 @@ class _MessageBubble extends StatelessWidget {
                   height: 1.45,
                 ),
               ),
-              // Linked asset chips
+              // Linked sources list
               if (!isUser && message.linkedAssets.isNotEmpty) ...[
-                const SizedBox(height: 8),
-                Wrap(
-                  spacing: 6,
-                  runSpacing: 4,
-                  children: [
-                    ...message.linkedAssets.take(12).map((asset) {
-                      return _AssetChip(asset: asset);
-                    }),
-                    if (message.linkedAssets.length > 12)
-                      _OverflowChip(extra: message.linkedAssets.length - 12),
-                  ],
-                ),
+                const SizedBox(height: 10),
+                _SourcesList(assets: message.linkedAssets),
               ],
               // "Search Web" offer — shown when local data was insufficient
               if (!isUser && onSearchWeb != null && _isNoDataResponse(message.text)) ...[
@@ -2424,40 +2304,21 @@ bool _isNoDataResponse(String text) {
       lower.contains("not found in your");
 }
 
-class _OverflowChip extends StatelessWidget {
-  final int extra;
-
-  const _OverflowChip({required this.extra});
+/// Expandable list of linked RAG sources shown below an AI response.
+/// Each row shows an icon, source name, and an open/share action button.
+class _SourcesList extends StatefulWidget {
+  final List<LinkedAsset> assets;
+  const _SourcesList({required this.assets});
 
   @override
-  Widget build(BuildContext context) {
-    final colors = Theme.of(context).colorScheme;
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-      decoration: BoxDecoration(
-        color: colors.surfaceContainerHighest,
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: colors.outline.withAlpha(40)),
-      ),
-      child: Text(
-        '+$extra more',
-        style: TextStyle(
-          color: colors.onSurface,
-          fontSize: 12,
-          fontWeight: FontWeight.w500,
-        ),
-      ),
-    );
-  }
+  State<_SourcesList> createState() => _SourcesListState();
 }
 
-/// Tappable chip for a linked asset (file, photo, email, contact, calendar, URL).
-class _AssetChip extends StatelessWidget {
-  final LinkedAsset asset;
+class _SourcesListState extends State<_SourcesList> {
+  static const _initialCount = 4;
+  bool _expanded = false;
 
-  const _AssetChip({required this.asset});
-
-  IconData get _icon {
+  static IconData _iconForAsset(LinkedAsset asset) {
     switch (asset.assetType) {
       case 'file':
         final ext = asset.assetRef.contains('.')
@@ -2467,6 +2328,8 @@ class _AssetChip extends StatelessWidget {
         return Icons.insert_drive_file_outlined;
       case 'photo':
         return Icons.photo_outlined;
+      case 'video':
+        return Icons.videocam_outlined;
       case 'email':
         return Icons.email_outlined;
       case 'contact':
@@ -2482,35 +2345,27 @@ class _AssetChip extends StatelessWidget {
     }
   }
 
-  Uri? _uriForAsset() {
+  static Uri? _uriForAsset(LinkedAsset asset) {
     switch (asset.assetType) {
       case 'file':
       case 'photo':
-        if (asset.assetRef.startsWith('file://')) {
-          return Uri.tryParse(asset.assetRef);
-        }
+      case 'video':
+        if (asset.assetRef.startsWith('file://')) return Uri.tryParse(asset.assetRef);
         return Uri.file(asset.assetRef);
       case 'email':
-        if (asset.assetRef.startsWith('mailto:')) {
-          return Uri.tryParse(asset.assetRef);
-        }
+        if (asset.assetRef.startsWith('mailto:')) return Uri.tryParse(asset.assetRef);
         return Uri(scheme: 'mailto', path: asset.assetRef.trim());
       case 'phone':
-        if (asset.assetRef.startsWith('tel:')) {
-          return Uri.tryParse(asset.assetRef);
-        }
+        if (asset.assetRef.startsWith('tel:')) return Uri.tryParse(asset.assetRef);
         final digits = asset.assetRef.replaceAll(RegExp(r'[^0-9+]'), '');
         return digits.isEmpty ? null : Uri(scheme: 'tel', path: digits);
       case 'contact':
-        if (asset.assetRef.startsWith('tel:') ||
-            asset.assetRef.startsWith('mailto:')) {
+        if (asset.assetRef.startsWith('tel:') || asset.assetRef.startsWith('mailto:')) {
           return Uri.tryParse(asset.assetRef);
         }
-        if (asset.assetRef.contains('@')) {
-          return Uri(scheme: 'mailto', path: asset.assetRef.trim());
-        }
-        final digits = asset.assetRef.replaceAll(RegExp(r'[^0-9+]'), '');
-        return digits.isEmpty ? null : Uri(scheme: 'tel', path: digits);
+        if (asset.assetRef.contains('@')) return Uri(scheme: 'mailto', path: asset.assetRef.trim());
+        final digs = asset.assetRef.replaceAll(RegExp(r'[^0-9+]'), '');
+        return digs.isEmpty ? null : Uri(scheme: 'tel', path: digs);
       case 'link':
         final raw = asset.assetRef.trim();
         final parsed = Uri.tryParse(raw);
@@ -2521,10 +2376,9 @@ class _AssetChip extends StatelessWidget {
     }
   }
 
-  Future<void> _onTap(BuildContext context) async {
-    // Files and photos: share via system sheet (iOS sandbox blocks file:// in
-    // external apps; share_plus correctly uses UIActivityViewController).
-    if (asset.assetType == 'file' || asset.assetType == 'photo') {
+  Future<void> _open(LinkedAsset asset) async {
+    // Files and photos: use share sheet (iOS sandbox blocks file:// in external apps).
+    if (asset.assetType == 'file' || asset.assetType == 'photo' || asset.assetType == 'video') {
       final path = asset.assetRef.startsWith('file://')
           ? Uri.parse(asset.assetRef).toFilePath()
           : asset.assetRef;
@@ -2534,7 +2388,7 @@ class _AssetChip extends StatelessWidget {
           [XFile(path)],
           subject: asset.label ?? asset.assetRef.split('/').last,
         );
-      } else if (context.mounted) {
+      } else if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('File not found: ${asset.label ?? path.split('/').last}')),
         );
@@ -2542,77 +2396,128 @@ class _AssetChip extends StatelessWidget {
       return;
     }
 
-    final uri = _uriForAsset();
+    final uri = _uriForAsset(asset);
     if (uri == null) {
-      // Contact with name-only ref: open Contacts search via URL scheme
       if (asset.assetType == 'contact') {
         final query = Uri.encodeComponent(asset.assetRef.trim());
         final contactsUri = Uri.parse('mobilecontact://contacts?search=$query');
         final fallback = Uri.parse('contacts://');
         if (!await launchUrl(contactsUri, mode: LaunchMode.externalApplication)) {
-          if (context.mounted) {
-            await launchUrl(fallback, mode: LaunchMode.externalApplication);
-          }
+          if (mounted) await launchUrl(fallback, mode: LaunchMode.externalApplication);
         }
-      } else if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('This source cannot be opened yet.')),
-        );
+      } else if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(const SnackBar(content: Text('This source cannot be opened yet.')));
       }
       return;
     }
 
-    // tel:, mailto:, https: links
     bool launched = false;
     try {
       launched = await launchUrl(uri, mode: LaunchMode.externalApplication);
     } catch (_) {}
-    if (!launched && context.mounted) {
-      // tel/mailto fallback: try platformDefault
+    if (!launched && mounted) {
       try {
         launched = await launchUrl(uri, mode: LaunchMode.platformDefault);
       } catch (_) {}
     }
-    if (!launched && context.mounted) {
+    if (!launched && mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Could not open: ${asset.label ?? asset.assetRef}'),
-        ),
+        SnackBar(content: Text('Could not open: ${asset.label ?? asset.assetRef}')),
       );
     }
+  }
+
+  String _displayLabel(LinkedAsset asset) {
+    if (asset.label != null && asset.label!.isNotEmpty) return asset.label!;
+    if (asset.assetRef.contains('/')) return asset.assetRef.split('/').last;
+    return asset.assetRef;
   }
 
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
-    return GestureDetector(
-      onTap: () => _onTap(context),
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-        decoration: BoxDecoration(
-          color: colors.primaryContainer.withAlpha(80),
-          borderRadius: BorderRadius.circular(12),
-          border: Border.all(color: colors.primary.withAlpha(40)),
+    final total = widget.assets.length;
+    final visible = _expanded ? total : total.clamp(0, _initialCount);
+    final hidden = total - visible;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          'Sources',
+          style: TextStyle(
+            fontSize: 11,
+            fontWeight: FontWeight.w600,
+            color: colors.onSurface.withAlpha(110),
+            letterSpacing: 0.4,
+          ),
         ),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(_icon, size: 14, color: colors.primary),
-            const SizedBox(width: 4),
-            Flexible(
+        const SizedBox(height: 4),
+        for (int i = 0; i < visible; i++) _buildRow(widget.assets[i], colors),
+        if (hidden > 0)
+          GestureDetector(
+            onTap: () => setState(() => _expanded = true),
+            child: Padding(
+              padding: const EdgeInsets.only(top: 4, left: 2),
               child: Text(
-                asset.label ?? asset.assetRef.split('/').last,
+                'Show $hidden more',
                 style: TextStyle(
-                  color: colors.primary,
                   fontSize: 12,
+                  color: colors.primary,
                   fontWeight: FontWeight.w500,
                 ),
-                overflow: TextOverflow.ellipsis,
-                maxLines: 1,
               ),
             ),
-          ],
-        ),
+          ),
+      ],
+    );
+  }
+
+  Widget _buildRow(LinkedAsset asset, ColorScheme colors) {
+    final actionLabel = (asset.assetType == 'file' ||
+            asset.assetType == 'photo' ||
+            asset.assetType == 'video')
+        ? 'Share'
+        : 'Open';
+
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 3),
+      child: Row(
+        children: [
+          Icon(_iconForAsset(asset), size: 15, color: colors.primary.withAlpha(180)),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              _displayLabel(asset),
+              style: TextStyle(
+                fontSize: 13,
+                color: colors.onSurface.withAlpha(200),
+              ),
+              overflow: TextOverflow.ellipsis,
+              maxLines: 1,
+            ),
+          ),
+          const SizedBox(width: 8),
+          GestureDetector(
+            onTap: () => _open(asset),
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
+              decoration: BoxDecoration(
+                color: colors.primaryContainer.withAlpha(100),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Text(
+                actionLabel,
+                style: TextStyle(
+                  fontSize: 11,
+                  fontWeight: FontWeight.w600,
+                  color: colors.primary,
+                ),
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }
