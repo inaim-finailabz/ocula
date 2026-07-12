@@ -365,77 +365,6 @@ class NotificationService {
 
   // ── Afternoon briefing ──
 
-  /// Build the afternoon briefing body: remaining events + practical reminders.
-  Future<String> _buildAfternoonBriefingBody() async {
-    try {
-      final localData = LocalData();
-      final now = DateTime.now();
-      final isWeekend = now.weekday == DateTime.saturday || now.weekday == DateTime.sunday;
-      final remaining = await localData.getEvents(
-        now,
-        DateTime(now.year, now.month, now.day, 23, 59),
-      );
-
-      final parts = <String>[];
-
-      if (isWeekend) {
-        parts.add('Afternoon check-in!');
-        if (remaining.isEmpty) {
-          parts.add('No more plans today — perfect time for a walk, hobby, or just relaxing.');
-        } else {
-          parts.add('${remaining.length} thing${remaining.length > 1 ? 's' : ''} left today: ${remaining.first.title}.');
-        }
-      } else {
-        parts.add('Afternoon check-in!');
-        if (remaining.isEmpty) {
-          parts.add('Nothing left on the calendar — wrap up and head home when ready.');
-        } else {
-          parts.add('${remaining.length} event${remaining.length > 1 ? 's' : ''} remaining. '
-              'Next: ${remaining.first.title} at ${_formatTime(remaining.first.start)}.');
-        }
-        parts.add('Plan your commute if heading out soon.');
-      }
-
-      return parts.join(' ');
-    } catch (_) {
-      return 'Tap for your afternoon summary and what\'s coming up.';
-    }
-  }
-
-  /// Show an afternoon check-in notification (around 1 PM on weekdays, noon on weekends).
-  Future<void> _showAfternoonBriefing() async {
-    final prefs = await SharedPreferences.getInstance();
-    final enabled = prefs.getBool(_kBriefingEnabled) ?? true;
-    if (!enabled) return;
-
-    try {
-      final body = await _buildAfternoonBriefingBody();
-      await _plugin.show(
-        2,
-        'Afternoon check-in',
-        body,
-        NotificationDetails(
-          android: AndroidNotificationDetails(
-            _briefingChannelId,
-            'Daily Briefing',
-            channelDescription: 'Your daily schedule overview',
-            importance: Importance.defaultImportance,
-            priority: Priority.defaultPriority,
-          ),
-          iOS: const DarwinNotificationDetails(
-            presentAlert: true,
-            presentBadge: false,
-            presentSound: false,
-          ),
-        ),
-        payload: 'Afternoon briefing: what\'s left on my schedule today? Any traffic or commute heads-up? '
-            'If weekend, suggest a relaxing or fun activity based on the time of year.',
-      );
-    } catch (e) {
-      debugPrint('[NotificationService] Afternoon briefing error: $e');
-    }
-  }
-
   /// Schedule the afternoon check-in notification (daily at 13:00).
   Future<void> scheduleAfternoonBriefing() async {
     final prefs = await SharedPreferences.getInstance();
@@ -526,6 +455,54 @@ class NotificationService {
     await prefs.setInt(_kBriefingHour, hour);
     await _plugin.cancel(1);
     await scheduleDailyBriefing();
+  }
+
+  // ── One-shot user reminders (created via proactive actions) ──
+
+  /// Schedule a single notification at [when] with the given [title].
+  /// Returns true on success.
+  Future<bool> scheduleReminder({
+    required String title,
+    required DateTime when,
+  }) async {
+    if (!_initialized) await _initPlugin();
+    try {
+      // Derive a stable ID from the scheduled timestamp to avoid collisions.
+      final id = (when.millisecondsSinceEpoch ~/ 1000).abs() % 2000000000;
+      await _plugin.zonedSchedule(
+        id,
+        'Ocula Reminder',
+        title,
+        tz.TZDateTime.from(when, tz.local),
+        NotificationDetails(
+          android: AndroidNotificationDetails(
+            'ocula_reminders',
+            'Reminders',
+            channelDescription: 'Reminders you asked Ocula to create',
+            importance: Importance.high,
+            priority: Priority.high,
+          ),
+          iOS: const DarwinNotificationDetails(
+            presentAlert: true,
+            presentBadge: true,
+            presentSound: true,
+          ),
+          macOS: const DarwinNotificationDetails(
+            presentAlert: true,
+            presentBadge: false,
+            presentSound: true,
+          ),
+        ),
+        uiLocalNotificationDateInterpretation:
+            UILocalNotificationDateInterpretation.absoluteTime,
+        androidScheduleMode: AndroidScheduleMode.exactAllowWhileIdle,
+        payload: title,
+      );
+      return true;
+    } catch (e) {
+      debugPrint('[NotificationService] scheduleReminder error: $e');
+      return false;
+    }
   }
 
   // ── Helpers ──

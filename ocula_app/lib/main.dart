@@ -26,8 +26,10 @@ import 'screens/recorder_screen.dart';
 import 'widgets/ocula_orb.dart';
 import 'widgets/help_tour.dart';
 import 'services/env_config.dart';
+import 'services/action_service.dart';
 import 'services/notification_service.dart';
 import 'services/tray_service.dart';
+import 'widgets/action_card.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -1348,6 +1350,12 @@ class _AssistantScreenState extends State<AssistantScreen>
             ? 'Analyze this image'
             : text);
 
+    // Check for action intent before going to the RAG pipeline.
+    // Only detect on plain text queries (no image, no doc attachment).
+    final actionReq = (image == null && doc == null)
+        ? ActionService.detect(queryText)
+        : null;
+
     // Reset stop flag — this new query is intentional
     _stopRequested = false;
 
@@ -1356,10 +1364,22 @@ class _AssistantScreenState extends State<AssistantScreen>
       _attachedImage = null;
       _attachedDocument = null;
       _attachedDocName = null;
-      _isThinking = true;
-      _orbState = OrbState.thinking;
-      _orbExpanded = true;
+      _isThinking = actionReq == null;
+      _orbState = actionReq == null ? OrbState.thinking : OrbState.idle;
+      _orbExpanded = actionReq == null;
     });
+
+    if (actionReq != null) {
+      // Add the action card immediately — contact resolution happens inside ActionCard.
+      if (mounted) {
+        setState(() {
+          _messages.add(_Message(text: '', isUser: false, actionRequest: actionReq));
+        });
+        _scrollToBottom();
+      }
+      return;
+    }
+
     _orbSizeController.forward();
     _scrollToBottom();
 
@@ -2163,12 +2183,14 @@ class _Message {
   final bool isUser;
   final File? image;
   final List<LinkedAsset> linkedAssets;
+  final ActionRequest? actionRequest;
 
   _Message({
     required this.text,
     required this.isUser,
     this.image,
     this.linkedAssets = const [],
+    this.actionRequest,
   });
 }
 
@@ -2226,6 +2248,10 @@ class _MessageBubble extends StatelessWidget {
             crossAxisAlignment: CrossAxisAlignment.start,
             mainAxisSize: MainAxisSize.min,
             children: [
+              // Action confirmation card replaces the normal text body
+              if (!isUser && message.actionRequest != null) ...[
+                ActionCard(request: message.actionRequest!),
+              ] else ...[
               if (message.image != null) ...[
                 ClipRRect(
                   borderRadius: BorderRadius.circular(12),
@@ -2280,6 +2306,7 @@ class _MessageBubble extends StatelessWidget {
                   ),
                 ),
               ],
+              ], // end else (non-action messages)
             ],
           ),
         ),
