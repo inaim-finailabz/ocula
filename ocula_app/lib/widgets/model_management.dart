@@ -21,16 +21,9 @@ class _ModelManagementState extends State<ModelManagement> {
   /// Verified models: true = GGUF header + size OK, false = failed, null = not checked
   Map<String, bool?> _verified = {};
 
-  /// Best tier the device can run (null while loading)
-  String? _recommendedTierLabel;
-  AITier? _recommendedTier;
-
   /// Currently active AI tier (from AIManager stream)
   AITier? _activeTier;
   StreamSubscription<AITier>? _activeTierSub;
-
-  /// Tier being activated right now (for loading state)
-  AITier? _activatingTier;
 
   StreamSubscription<Map<String, double>>? _globalProgressSub;
   StreamSubscription<bool>? _freeModelStatusSub;
@@ -61,7 +54,6 @@ class _ModelManagementState extends State<ModelManagement> {
       if (mounted) _loadModelStatuses();
     });
     _loadModelStatuses();
-    _loadRecommendedTier();
   }
 
   @override
@@ -70,67 +62,6 @@ class _ModelManagementState extends State<ModelManagement> {
     _globalProgressSub?.cancel();
     _freeModelStatusSub?.cancel();
     super.dispose();
-  }
-
-  Future<void> _loadRecommendedTier() async {
-    final ai = AIManager();
-    AITier best = AITier.free;
-    for (final tier in [AITier.pro, AITier.plus, AITier.free]) {
-      if (await ai.canDeviceRunTier(tier)) {
-        best = tier;
-        break;
-      }
-    }
-    if (mounted) {
-      setState(() {
-        _recommendedTier = best;
-        _recommendedTierLabel = OculaModelManager.featureLabel(best);
-      });
-    }
-  }
-
-  Future<void> _activateTier(AITier tier) async {
-    if (_activatingTier != null) return;
-    setState(() => _activatingTier = tier);
-    try {
-      await AIManager().switchEngine(tier);
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(
-              '${OculaModelManager.featureLabel(tier)} is now active',
-            ),
-            duration: const Duration(seconds: 2),
-          ),
-        );
-      }
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Could not activate ${OculaModelManager.featureLabel(tier)}: $e'),
-            duration: const Duration(seconds: 3),
-          ),
-        );
-      }
-    } finally {
-      if (mounted) setState(() => _activatingTier = null);
-    }
-  }
-
-  /// Returns true if all main (non-projector, non-embed) models for a tier
-  /// are downloaded and verified.
-  bool _isTierFullyReady(AITier tier) {
-    final tierModels = _modelManager
-        .modelsForTier(tier)
-        .where((m) => !m.isVisionProjector && !m.isEmbeddingModel)
-        .toList();
-    if (tierModels.isEmpty) return false;
-    return tierModels.every(
-      (m) =>
-          _modelStatuses[m.fileName] == ModelStatus.ready &&
-          _verified[m.fileName] == true,
-    );
   }
 
   Future<void> _loadModelStatuses() async {

@@ -86,12 +86,10 @@ class TrayService with TrayListener, WindowListener {
     _hideWindow();
   }
 
-  @override
   void onWindowShow() {
     _rebuildMenu();
   }
 
-  @override
   void onWindowHide() {
     _rebuildMenu();
   }

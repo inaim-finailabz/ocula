@@ -771,7 +771,7 @@ class OculaModelManager {
           if (name.startsWith('free_shard_manifest_v') &&
               name !=
                   'free_shard_manifest_v$_freeModelDirVersion.json') {
-            await entity.delete().catchError((_) {});
+            try { await entity.delete(); } catch (_) {}
             debugPrint('[ModelManager] Purged old shard manifest: $name');
           }
         }
@@ -849,7 +849,7 @@ class OculaModelManager {
       for (final path in [dest, '$dest.tmp']) {
         final f = File(path);
         if (f.existsSync()) {
-          await f.delete().catchError((_) {});
+          try { await f.delete(); } catch (_) {}
           debugPrint('[ModelManager] wipe_shard: $path');
         }
       }
@@ -910,7 +910,7 @@ class OculaModelManager {
     } catch (e) {
       // Clean up tmp — never leave a partial final file
       if (tmpFile.existsSync()) {
-        await tmpFile.delete().catchError((_) {});
+        try { await tmpFile.delete(); } catch (_) {}
       }
       rethrow;
     }
@@ -967,7 +967,7 @@ class OculaModelManager {
         // Manifest present but validation failed — delete it and force re-copy
         debugPrint('[ModelManager] Manifest validation failed — forcing re-copy');
         final mf = await _freeShardManifestFile;
-        await mf.delete().catchError((_) {});
+        try { await mf.delete(); } catch (_) {}
       } catch (e) {
         debugPrint('[ModelManager] Manifest parse error: $e — forcing re-copy');
       }
@@ -1010,7 +1010,7 @@ class OculaModelManager {
               '[ModelManager] Shard $part mismatch '
               '(size=$destSize expected=$srcSize header=$headerOk) — deleting',
             );
-            await destFile.delete().catchError((_) {});
+            try { await destFile.delete(); } catch (_) {}
           }
 
           // Up to 3 attempts per shard before failing the whole copy
@@ -1019,7 +1019,7 @@ class OculaModelManager {
             if (attempt > 0) {
               debugPrint(
                   '[ModelManager] copy_retry: $part attempt ${attempt + 1}');
-              await File('$dest.tmp').delete().catchError((_) {});
+              try { await File('$dest.tmp').delete(); } catch (_) {}
               await Future<void>.delayed(const Duration(milliseconds: 500));
             }
             onProgress?.call(
@@ -1040,7 +1040,7 @@ class OculaModelManager {
               if (!_hasGGUFHeaderSync(dest)) {
                 debugPrint(
                     '[ModelManager] copy_failed: $part invalid GGUF header after copy');
-                await File(dest).delete().catchError((_) {});
+                try { await File(dest).delete(); } catch (_) {}
                 continue;
               }
               copiedShards.add({'name': part, 'bytes': finalSize});
@@ -1128,7 +1128,7 @@ class OculaModelManager {
             '[ModelManager] Shard $part mismatch '
             '(size=$destSize expected=$srcSize header=$headerOk) — deleting',
           );
-          await destFile.delete().catchError((_) {});
+          try { await destFile.delete(); } catch (_) {}
         }
 
         // Up to 3 attempts per shard before failing the whole copy
@@ -1137,7 +1137,7 @@ class OculaModelManager {
           if (attempt > 0) {
             debugPrint(
                 '[ModelManager] copy_retry: $part attempt ${attempt + 1}');
-            await File('$dest.tmp').delete().catchError((_) {});
+            try { await File('$dest.tmp').delete(); } catch (_) {}
             await Future<void>.delayed(const Duration(milliseconds: 500));
           }
           onProgress?.call(
@@ -1158,7 +1158,7 @@ class OculaModelManager {
             if (!_hasGGUFHeaderSync(dest)) {
               debugPrint(
                   '[ModelManager] copy_failed: $part invalid GGUF header after copy');
-              await File(dest).delete().catchError((_) {});
+              try { await File(dest).delete(); } catch (_) {}
               continue;
             }
             copiedShards.add({'name': part, 'bytes': finalSize});
@@ -1322,54 +1322,6 @@ class OculaModelManager {
     } catch (e) {
       debugPrint('[ModelManager] Error finding bundled asset path: $e');
       return null;
-    }
-  }
-
-  /// Check if a valid model is bundled as an asset with the app.
-  /// Uses physical file path to avoid loading entire model into RAM.
-  /// On Android (no physical path), we check if the asset exists at all
-  /// by loading only the first few KB via rootBundle.
-  Future<bool> _isValidBundledModel(String fileName) async {
-    try {
-      // Strategy 1: zero-copy physical path check (iOS/macOS)
-      final physicalPath = await _findBundledAssetPath(
-        'assets/models/$fileName',
-      );
-      if (physicalPath != null) {
-        final file = File(physicalPath);
-        final size = await file.length();
-        if (size < 1024 * 1024) return false;
-
-        // Read just the first 4 bytes to check GGUF header
-        final raf = await file.open(mode: FileMode.read);
-        try {
-          final header = await raf.read(4);
-          final magic = String.fromCharCodes(header);
-          return magic == 'GGUF';
-        } finally {
-          await raf.close();
-        }
-      }
-
-      // Strategy 2 (Android / other): rootBundle.load loads everything into RAM.
-      // Instead, just try to load the asset — if it throws, it doesn't exist.
-      // We accept the OOM risk here only for the *check* call; the actual
-      // copy (_ensureBundledModelCopied) uses chunked writing.
-      // On Android the asset exists inside the APK; rootBundle is the only way.
-      debugPrint('[ModelManager] Falling back to rootBundle for $fileName');
-      final bundledData = await rootBundle.load('assets/models/$fileName');
-      final bytes = bundledData.buffer.asUint8List();
-      if (bytes.length < 1024 * 1024) return false;
-      if (bytes.length > 4) {
-        final header = String.fromCharCodes(bytes.take(4));
-        return header == 'GGUF';
-      }
-      return false;
-    } catch (e) {
-      debugPrint(
-        '[ModelManager] _isValidBundledModel failed for $fileName: $e',
-      );
-      return false;
     }
   }
 
@@ -2025,7 +1977,6 @@ class OculaModelManager {
           int.parse(splitMatch.group(1)!) == 1 &&
           int.parse(splitMatch.group(2)!) > 1) {
         final allParts = _allSplitParts(model.fileName);
-        final partSizeBytes = model.sizeBytes ~/ allParts.length;
         final urlPartPattern = RegExp(r'-\d{5}-of-\d{5}\.gguf$');
         for (int i = 1; i < allParts.length; i++) {
           final partNum = (i + 1).toString().padLeft(5, '0');

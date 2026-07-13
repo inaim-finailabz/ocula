@@ -792,21 +792,16 @@ class AIManager {
     // Ocula Pro (pro): 4096 ctx, ~2B params. Good instruction following.
     //   → Richer system prompt, full context, higher token budget.
     final langPrefix = _appLang.promptPrefix;
-    // Ocula Lite (free/Qwen3-1.7B): capable text model — not "small".
-    // Ocula Plus (plus/Qwen3VL-2B) and Pro (pro/Qwen3VL-4B): rich prompts + vision.
-    const bool isSmallModel = false;
     final bool isProModel = (_activeTier == AITier.plus ||
         _activeTier == AITier.pro ||
         _activeTier == AITier.enterprise);
 
-    // Pre-summarize context for small models: keep only the most relevant lines
-    // to avoid overwhelming the tiny context window.
     final ragConfig = RagConfig();
     final budgetChars = ragConfig.contextBudgetChars;
     String compactContext = _compactContextForTier(
       context,
       query: prompt,
-      isSmallModel: isSmallModel,
+      isSmallModel: false,
       isProModel: isProModel,
       budgetChars: budgetChars,
     );
@@ -833,17 +828,7 @@ class AIManager {
       // embeddings at the right position — not prepended before the system block.
       userMsg = '<__media__>\n$prompt';
     } else if (compactContext.isNotEmpty) {
-      if (isSmallModel) {
-        // Free tier: question-first format so the tiny model knows what to find
-        // BEFORE reading the data — dramatically improves relevance on <1B models.
-        systemMsg =
-            '${rolePrefix}'
-            'Answer ONLY from DATA — never invent names, numbers, dates or details. '
-            'Check: does DATA answer the QUESTION? '
-            'If yes, give the direct factual answer from DATA. '
-            'If no, name the source you found (file name, contact, etc.) and say what specific detail is missing.';
-        userMsg = 'QUESTION: $prompt\n\nDATA:\n$compactContext\n\nANSWER:';
-      } else if (isProModel) {
+      if (isProModel) {
         // Ocula Pro: can handle richer instructions and structured output
         systemMsg =
             '$rolePrefix'
@@ -905,7 +890,7 @@ class AIManager {
     // Hard guard: keep prompt within a safe range for native decode slots.
     // This protects against "failed to find a memory slot for batch".
     final maxPromptChars = _safePromptCharBudget(
-      isSmallModel: isSmallModel,
+      isSmallModel: false,
       isProModel: isProModel,
     );
     if (fullPrompt.length > maxPromptChars && compactContext.isNotEmpty) {
@@ -917,8 +902,6 @@ class AIManager {
       compactContext = _summarizeContext(compactContext, maxChars: targetCtx);
       userMsg = isProModel
           ? '$dataLabel:\n$compactContext\n\nQuestion: $prompt'
-          : isSmallModel
-          ? 'QUESTION: $prompt\n\nDATA:\n$compactContext\n\nANSWER:'
           : '$dataLabel:\n$compactContext\n\nQ: $prompt';
       fullPrompt =
           '<|im_start|>system\n$systemMsg<|im_end|>\n'
@@ -1106,13 +1089,11 @@ class AIManager {
     //   plus: 400 tokens max, temp 0.25, repPen 1.2
     //   pro:  512 tokens max, temp 0.35, repPen 1.2
     final configMaxTok = ragConfig.maxResponseTokens;
-    final int maxTok = isSmallModel
-        ? (configMaxTok * 0.25).round().clamp(80, 220)
-        : (isProModel
-              ? (configMaxTok * 1.33).round().clamp(256, 512)
-              : (configMaxTok * 0.83).round().clamp(200, 320));
-    final double temp = isSmallModel ? 0.15 : (isProModel ? 0.35 : 0.25);
-    final double repPen = isSmallModel ? 1.4 : 1.2;
+    final int maxTok = isProModel
+        ? (configMaxTok * 1.33).round().clamp(256, 512)
+        : (configMaxTok * 0.83).round().clamp(200, 320);
+    final double temp = isProModel ? 0.35 : 0.25;
+    const double repPen = 1.2;
 
     LlamaResponse response;
     try {
@@ -1143,9 +1124,7 @@ class AIManager {
         maxChars: isProModel ? 1200 : 800,
       );
       final retryUserMsgBase = tighterContext.isNotEmpty
-          ? (isSmallModel
-              ? 'QUESTION: $prompt\n\nDATA:\n$tighterContext\n\nANSWER:'
-              : '${_intentDataLabel(intent)}:\n$tighterContext\n\nQ: $prompt')
+          ? '${_intentDataLabel(intent)}:\n$tighterContext\n\nQ: $prompt'
           : prompt;
       final retryUserMsg = '$retryUserMsgBase /no_think';
       final retryPrompt =
@@ -1199,19 +1178,14 @@ class AIManager {
     }
 
     // Post-process: truncate rambling output.
-    // Small models: aggressive truncation at 150 chars.
-    // Plus models: truncate at 300 chars.
-    // Pro models: truncate at 800 chars.
-    if (isSmallModel && text.length > 320) {
-      text = _truncateToFirstParagraph(text, maxChars: 320);
-    } else if (!isProModel && text.length > 560) {
+    if (!isProModel && text.length > 560) {
       text = _truncateToFirstParagraph(text, maxChars: 560);
     } else if (isProModel && text.length > 1200) {
       text = _truncateToFirstParagraph(text, maxChars: 1200);
     }
 
     // Anti-hallucination: detect and reject off-topic or nonsensical output.
-    text = _guardHallucination(text, prompt, compactContext, isSmallModel);
+    text = _guardHallucination(text, prompt, compactContext, false);
     text = _enforceFactGrounding(text, prompt, compactContext);
 
     return text;
@@ -1240,9 +1214,6 @@ class AIManager {
       return;
     }
 
-    // Build the prompt identically to ask()
-    // Ocula Lite (free): standard prompts. Plus/Pro: rich prompts + think block stripping.
-    const bool isSmallModel = false;
     final bool isProModel = (_activeTier == AITier.plus ||
         _activeTier == AITier.pro ||
         _activeTier == AITier.enterprise);
@@ -1250,19 +1221,16 @@ class AIManager {
     final langPrefix = _appLang.promptPrefix;
     final budgetChars = ragConfig.contextBudgetChars;
 
-    // Compact context (same logic as ask())
     String compactContext = _compactContextForTier(
       context,
       query: prompt,
-      isSmallModel: isSmallModel,
+      isSmallModel: false,
       isProModel: isProModel,
       budgetChars: budgetChars,
     );
 
-    // Build system/user messages (same logic as ask())
     String systemMsg;
     String userMsg;
-    // NOTE: /no_think in user message per Qwen3 spec (not system).
     final rolePrefix =
         '${langPrefix}You are Ocula, an AI assistant with access to the user\'s phone assets via local RAG context. '
         'Use available phone data to help the user, and never invent missing phone data. '
@@ -1273,16 +1241,7 @@ class AIManager {
         'If context contains [Ambiguity], ask one clarifying question instead of guessing. ';
     if (compactContext.isNotEmpty) {
       final dataLabel = _intentDataLabel(intent);
-      if (isSmallModel) {
-        // Same question-first format as non-streaming path for consistency
-        systemMsg =
-            '${rolePrefix}'
-            'Answer ONLY from DATA — never invent names, numbers, dates or details. '
-            'Check: does DATA answer the QUESTION? '
-            'If yes, give the direct factual answer from DATA. '
-            'If no, name the source you found (file name, contact, etc.) and say what specific detail is missing.';
-        userMsg = 'QUESTION: $prompt\n\nDATA:\n$compactContext\n\nANSWER:';
-      } else if (isProModel) {
+      if (isProModel) {
         systemMsg =
             '$rolePrefix'
             'Answer using ONLY the user\'s phone data provided below. '
@@ -1334,7 +1293,7 @@ class AIManager {
         '<|im_start|>assistant\n<think>\n\n</think>\n';
 
     final maxPromptChars = _safePromptCharBudget(
-      isSmallModel: isSmallModel,
+      isSmallModel: false,
       isProModel: isProModel,
     );
     if (fullPrompt.length > maxPromptChars && compactContext.isNotEmpty) {
@@ -1347,8 +1306,6 @@ class AIManager {
       compactContext = _summarizeContext(compactContext, maxChars: targetCtx);
       userMsg = isProModel
           ? '$dataLabel:\n$compactContext\n\nQuestion: $prompt'
-          : isSmallModel
-          ? 'QUESTION: $prompt\n\nDATA:\n$compactContext\n\nANSWER:'
           : '$dataLabel:\n$compactContext\n\nQ: $prompt';
       fullPrompt =
           '<|im_start|>system\n$systemMsg<|im_end|>\n'
@@ -1360,13 +1317,11 @@ class AIManager {
     }
 
     final configMaxTok = ragConfig.maxResponseTokens;
-    final int maxTok = isSmallModel
-        ? (configMaxTok * 0.25).round().clamp(80, 220)
-        : (isProModel
-              ? (configMaxTok * 1.33).round().clamp(256, 512)
-              : (configMaxTok * 0.83).round().clamp(200, 320));
-    final double temp = isSmallModel ? 0.15 : (isProModel ? 0.35 : 0.25);
-    final double repPen = isSmallModel ? 1.4 : 1.2;
+    final int maxTok = isProModel
+        ? (configMaxTok * 1.33).round().clamp(256, 512)
+        : (configMaxTok * 0.83).round().clamp(200, 320);
+    final double temp = isProModel ? 0.35 : 0.25;
+    const double repPen = 1.2;
 
     final buffer = StringBuffer();
     await for (final token in _textEngine.generateStream(
@@ -1391,11 +1346,11 @@ class AIManager {
     text = text.replaceFirst(RegExp(r'^Q:\s*', caseSensitive: false), '');
     text = stripLeakedContext(text);
 
-    final int maxChars = isSmallModel ? 320 : (isProModel ? 1200 : 560);
+    final int maxChars = isProModel ? 1200 : 560;
     if (text.length > maxChars) {
       text = _truncateToFirstParagraph(text, maxChars: maxChars);
     }
-    text = _guardHallucination(text, prompt, compactContext, isSmallModel);
+    text = _guardHallucination(text, prompt, compactContext, false);
     text = _enforceFactGrounding(text, prompt, compactContext);
     yield text;
   }

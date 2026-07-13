@@ -259,6 +259,7 @@ class _OculaSplashScreenState extends State<OculaSplashScreen>
         _logStep('ENSURE-MODEL', 'Firing ensureFreeModelReady in background...');
         modelManager.ensureFreeModelReady().catchError((e) {
           debugPrint('[Splash] Background model install error: $e');
+          return false;
         });
       }
 
