@@ -1,9 +1,7 @@
 // Local data layer — accesses everything on the user's device.
-// NOTHING leaves the phone. All processing is on-device.
-//
-// v3: Real platform integrations for photos, contacts, calendar.
-// All TODO stubs replaced with working implementations.
+// Web search (DuckDuckGo Instant Answers) is the only outbound call — user-gated.
 
+import 'dart:convert';
 import 'dart:io';
 import 'package:archive/archive.dart';
 import 'package:device_calendar/device_calendar.dart' as cal;
@@ -12,6 +10,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_contacts/flutter_contacts.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:photo_manager/photo_manager.dart';
+import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:syncfusion_flutter_pdf/pdf.dart';
 import 'package:xml/xml.dart';
@@ -944,9 +943,55 @@ class LocalData {
 
   /// Search the web to augment local knowledge.
   /// ONLY called when the user says "search", "look up", "google", etc.
+  /// Uses DuckDuckGo Instant Answers API — no key required.
   Future<String> webSearch(String query) async {
-    // TODO: Use http package to hit a search API
-    return '';
+    try {
+      final uri = Uri.https('api.duckduckgo.com', '/', {
+        'q': query,
+        'format': 'json',
+        'no_html': '1',
+        'skip_disambig': '1',
+        't': 'ocula',
+      });
+      final resp = await http.get(uri).timeout(const Duration(seconds: 8));
+      if (resp.statusCode != 200) return '';
+
+      final data = jsonDecode(resp.body) as Map<String, dynamic>;
+      final parts = <String>[];
+
+      // Direct answer (calculations, unit conversions, etc.)
+      final answer = (data['Answer'] as String? ?? '').trim();
+      if (answer.isNotEmpty) {
+        parts.add('Answer: $answer');
+      }
+
+      // Wikipedia-style abstract
+      final abstract = (data['AbstractText'] as String? ?? '').trim();
+      final source = (data['AbstractSource'] as String? ?? '').trim();
+      final abstractUrl = (data['AbstractURL'] as String? ?? '').trim();
+      if (abstract.isNotEmpty) {
+        final cite = source.isNotEmpty ? ' ($source)' : '';
+        parts.add('$abstract$cite');
+        if (abstractUrl.isNotEmpty) parts.add('Source: $abstractUrl');
+      }
+
+      // Related topics — take up to 4 with non-empty text
+      final topics = (data['RelatedTopics'] as List<dynamic>? ?? []);
+      int topicCount = 0;
+      for (final t in topics) {
+        if (topicCount >= 4) break;
+        if (t is! Map<String, dynamic>) continue;
+        final text = (t['Text'] as String? ?? '').trim();
+        if (text.isEmpty) continue;
+        parts.add('- $text');
+        topicCount++;
+      }
+
+      return parts.isEmpty ? '' : parts.join('\n\n');
+    } catch (e) {
+      debugPrint('[LocalData] webSearch error: $e');
+      return '';
+    }
   }
 }
 
