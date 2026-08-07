@@ -654,6 +654,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     ),
                   ),
                 ),
+                const SizedBox(height: 4),
+                Center(
+                  child: Text(
+                    'Ocula and the Ocula logo are trademarks of Finai Labz.',
+                    style: TextStyle(
+                      fontSize: 11,
+                      color: colors.onSurface.withAlpha(80),
+                    ),
+                  ),
+                ),
 
                 const SizedBox(height: 16),
 
