@@ -1359,6 +1359,23 @@ class _AssistantScreenState extends State<AssistantScreen>
     // Reset stop flag — this new query is intentional
     _stopRequested = false;
 
+    // Capture the most recent exchange (before this turn is appended) so the
+    // model can see what it just asked and avoid repeating itself.
+    String? previousUserMessage;
+    String? previousAssistantMessage;
+    for (int i = _messages.length - 1; i >= 0; i--) {
+      if (!_messages[i].isUser && _messages[i].actionRequest == null) {
+        previousAssistantMessage = _messages[i].text;
+        for (int j = i - 1; j >= 0; j--) {
+          if (_messages[j].isUser) {
+            previousUserMessage = _messages[j].text;
+            break;
+          }
+        }
+        break;
+      }
+    }
+
     setState(() {
       _messages.add(_Message(text: displayText, isUser: true, image: image));
       _attachedImage = null;
@@ -1392,6 +1409,8 @@ class _AssistantScreenState extends State<AssistantScreen>
             retrievalScope: runScope,
             forcedTier: forcedTier,
             sessionId: _sessionId,
+            previousUserMessage: previousUserMessage,
+            previousAssistantMessage: previousAssistantMessage,
           )
           .timeout(
             const Duration(minutes: 2),
@@ -2398,6 +2417,21 @@ class _SourcesListState extends State<_SourcesList> {
         final parsed = Uri.tryParse(raw);
         if (parsed != null && parsed.hasScheme) return parsed;
         return Uri.tryParse('https://$raw');
+      case 'calendar':
+        // assetRef is 'cal:<millisecondsSinceEpoch>' — deep-link into the
+        // native Calendar app at that event's time.
+        final millis = int.tryParse(asset.assetRef.replaceFirst('cal:', ''));
+        if (millis == null) return null;
+        if (Platform.isIOS || Platform.isMacOS) {
+          // calshow: takes Mac absolute time (seconds since 2001-01-01 UTC).
+          const macEpochOffsetSeconds = 978307200;
+          final macSeconds = (millis / 1000).round() - macEpochOffsetSeconds;
+          return Uri.parse('calshow:$macSeconds');
+        }
+        if (Platform.isAndroid) {
+          return Uri.parse('content://com.android.calendar/time/$millis');
+        }
+        return null;
       default:
         return null;
     }

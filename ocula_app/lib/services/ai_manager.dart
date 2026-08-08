@@ -780,6 +780,8 @@ class AIManager {
     bool hasImage = false,
     String? imagePath,
     QueryIntent intent = QueryIntent.chat,
+    String? previousUserMessage,
+    String? previousAssistantMessage,
   }) async {
     // ── Prompt strategy per model tier ──
     //
@@ -817,7 +819,9 @@ class AIManager {
         'Include key metadata when available: date/time, location, sender, author, file name. '
         'Follow explicit user format and language instructions exactly (for example: exact bullet count, requested output language, concise length). '
         'Return only the final answer, with no internal reasoning steps. '
-        'If context contains [Ambiguity], ask one clarifying question instead of guessing. ';
+        'If context contains [Ambiguity], ask one clarifying question instead of guessing. '
+        'If [Recent exchange] is shown below, you already said that and the user has now replied — '
+        'do not ask the same question again; respond to what they actually said. ';
 
     // Intent-specific data label for context sections
     final String dataLabel = _intentDataLabel(intent);
@@ -866,14 +870,16 @@ class AIManager {
             'Do NOT invent contacts, events, or files. '
             'If the user references a specific file or item by name, acknowledge it by name and explain it hasn\'t been indexed yet — suggest they open Settings > Your Data to index it. '
             'For general knowledge questions answer helpfully, concisely and accurately. '
-            'If the user is searching phone info, ask one clarifying question: '
-            'which source to search — docs, images, contacts, calendar, or email.';
+            'If the user is searching phone info and this is a fresh question, ask one specific clarifying question about it — '
+            'e.g. a rough date range, a name, or which app it lives in — instead of a generic "which source" prompt. '
+            'Vary your phrasing and angle each time; never repeat a question you already asked in this conversation. '
+            'If there is truly nothing to go on, be curious and conversational: ask the user something concrete about what they\'re trying to do so the conversation actually moves forward.';
       } else {
         systemMsg =
             '$rolePrefix'
             'No indexed data found for this query. Do not make up information. Be brief. '
             'If the user mentions a specific file or item by name, acknowledge it and suggest indexing it via Settings > Your Data. '
-            'Otherwise ask whether to search docs, images, contacts, calendar, or email.';
+            'Otherwise ask one short, specific follow-up question about what they need — vary it each time and never repeat a question you already asked.';
       }
       userMsg = prompt;
     }
@@ -882,8 +888,24 @@ class AIManager {
     // Combined with the empty <think></think> prefill, this reliably disables
     // chain-of-thought output and keeps the token budget for the actual answer.
     userMsg = '$userMsg /no_think';
+
+    // Give the model a short window into what it just said, so multi-turn
+    // exchanges (e.g. "which calendar?" clarifying questions) don't repeat
+    // the exact same question every turn — the model never otherwise sees
+    // prior turns since each call is stateless.
+    String historyBlock = '';
+    if (previousAssistantMessage != null &&
+        previousAssistantMessage.trim().isNotEmpty) {
+      final prevUser = _clip((previousUserMessage ?? '').trim(), 150);
+      final prevAssistant = _clip(previousAssistantMessage.trim(), 300);
+      historyBlock =
+          '<|im_start|>user\n[Recent exchange] $prevUser /no_think<|im_end|>\n'
+          '<|im_start|>assistant\n<think>\n\n</think>\n$prevAssistant<|im_end|>\n';
+    }
+
     String fullPrompt =
         '<|im_start|>system\n$systemMsg<|im_end|>\n'
+        '$historyBlock'
         '<|im_start|>user\n$userMsg<|im_end|>\n'
         '<|im_start|>assistant\n<think>\n\n</think>\n';
 
@@ -894,7 +916,8 @@ class AIManager {
       isProModel: isProModel,
     );
     if (fullPrompt.length > maxPromptChars && compactContext.isNotEmpty) {
-      final staticOverhead = fullPrompt.length - compactContext.length;
+      final staticOverhead =
+          fullPrompt.length - compactContext.length - historyBlock.length;
       final targetCtx = (maxPromptChars - staticOverhead - 120).clamp(
         350,
         1800,
@@ -903,6 +926,9 @@ class AIManager {
       userMsg = isProModel
           ? '$dataLabel:\n$compactContext\n\nQuestion: $prompt'
           : '$dataLabel:\n$compactContext\n\nQ: $prompt';
+      // Drop history when context has to be clamped — staying under the
+      // native decode budget takes priority over the anti-repetition hint.
+      historyBlock = '';
       fullPrompt =
           '<|im_start|>system\n$systemMsg<|im_end|>\n'
           '<|im_start|>user\n$userMsg<|im_end|>\n'
@@ -1238,7 +1264,9 @@ class AIManager {
         'Include key metadata when available: date/time, location, sender, author, file name. '
         'Follow explicit user format and language instructions exactly (for example: exact bullet count, requested output language, concise length). '
         'Return only the final answer, with no internal reasoning steps. '
-        'If context contains [Ambiguity], ask one clarifying question instead of guessing. ';
+        'If context contains [Ambiguity], ask one clarifying question instead of guessing. '
+        'If [Recent exchange] is shown below, you already said that and the user has now replied — '
+        'do not ask the same question again; respond to what they actually said. ';
     if (compactContext.isNotEmpty) {
       final dataLabel = _intentDataLabel(intent);
       if (isProModel) {
@@ -1274,13 +1302,13 @@ class AIManager {
             'If the user asks about their phone data, tell them you don\'t '
             'have that information yet and suggest checking Settings > Your Data. '
             'For general questions, answer helpfully and concisely. '
-            'If the user is searching phone info, ask one clarifying question: '
-            'whether to search docs, images, contacts, calendar, or email.';
+            'If the user is searching phone info, ask one specific clarifying question about it — vary your phrasing '
+            'and never repeat a question you already asked in this conversation.';
       } else {
         systemMsg =
             '$rolePrefix'
             'No phone data available. Do not make up information. Be brief. '
-            'If the user is searching phone info, ask whether to search docs, images, contacts, calendar, or email.';
+            'If the user is searching phone info, ask one short follow-up question — vary it each time and never repeat one you already asked.';
       }
       userMsg = prompt;
     }
@@ -1778,6 +1806,12 @@ class AIManager {
 
     return 'I found some data but couldn\'t form a clear answer. '
         'Try rephrasing your question.';
+  }
+
+  /// Truncate to at most [maxChars], keeping the string usable in a prompt.
+  String _clip(String s, int maxChars) {
+    if (s.length <= maxChars) return s;
+    return '${s.substring(0, maxChars)}…';
   }
 
   /// Pre-summarize RAG context to fit in a small model's context window.

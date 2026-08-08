@@ -424,7 +424,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       ),
                       const SizedBox(height: 4),
                       Text(
-                        'By Finai Labz',
+                        'By AI Labz',
                         style: TextStyle(
                           fontSize: 14,
                           color: colors.primary,
@@ -602,9 +602,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 const SizedBox(height: 20),
 
                 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-                // ABOUT FINAI LABZ
+                // ABOUT AI LABZ
                 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-                const _SectionHeader(title: 'About Finai Labz'),
+                const _SectionHeader(title: 'About AI Labz'),
                 const SizedBox(height: 8),
                 Container(
                   padding: const EdgeInsets.all(16),
@@ -616,7 +616,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Text(
-                        'Finai Labz builds AI tools that put privacy and user '
+                        'AI Labz builds AI tools that put privacy and user '
                         'ownership first. We believe the future of artificial '
                         'intelligence is on-device, offline, and in your hands.',
                         style: TextStyle(
@@ -647,7 +647,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
                 Center(
                   child: Text(
-                    '\u00A9 2026 Finai Labz. All rights reserved.',
+                    '\u00A9 2026 AI Labz. All rights reserved.',
                     style: TextStyle(
                       fontSize: 11,
                       color: colors.onSurface.withAlpha(80),
@@ -657,7 +657,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 const SizedBox(height: 4),
                 Center(
                   child: Text(
-                    'Ocula and the Ocula logo are trademarks of Finai Labz.',
+                    'Ocula and the Ocula logo are trademarks of AI Labz.',
                     style: TextStyle(
                       fontSize: 11,
                       color: colors.onSurface.withAlpha(80),

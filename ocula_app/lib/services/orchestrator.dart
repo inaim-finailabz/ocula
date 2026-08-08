@@ -122,6 +122,8 @@ class AgentState {
   List<String> stepsCompleted;
   DateTime timestamp;
   List<LinkedAsset> linkedAssets;
+  final String? previousUserMessage;
+  final String? previousAssistantMessage;
 
   AgentState({
     required this.query,
@@ -137,6 +139,8 @@ class AgentState {
     List<String>? stepsCompleted,
     DateTime? timestamp,
     List<LinkedAsset>? linkedAssets,
+    this.previousUserMessage,
+    this.previousAssistantMessage,
   }) : stepsCompleted = stepsCompleted ?? [],
        timestamp = timestamp ?? DateTime.now(),
        linkedAssets = linkedAssets ?? [];
@@ -212,6 +216,8 @@ class Orchestrator {
     RetrievalScope retrievalScope = RetrievalScope.all,
     AITier? forcedTier,
     String? sessionId,
+    String? previousUserMessage,
+    String? previousAssistantMessage,
   }) async {
     // If a previous run is still active, stop it first.
     if (_isRunning) {
@@ -231,6 +237,8 @@ class Orchestrator {
         retrievalScope: retrievalScope,
         forcedTier: forcedTier,
         sessionId: sessionId,
+        previousUserMessage: previousUserMessage,
+        previousAssistantMessage: previousAssistantMessage,
       );
     } finally {
       _isRunning = false;
@@ -245,6 +253,8 @@ class Orchestrator {
     RetrievalScope retrievalScope = RetrievalScope.all,
     AITier? forcedTier,
     String? sessionId,
+    String? previousUserMessage,
+    String? previousAssistantMessage,
   }) async {
     var state = AgentState(
       query: query,
@@ -252,6 +262,8 @@ class Orchestrator {
       imagePath: imagePath,
       forcedTier: forcedTier,
       retrievalScope: retrievalScope,
+      previousUserMessage: previousUserMessage,
+      previousAssistantMessage: previousAssistantMessage,
     );
     state.status = StepStatus.running;
 
@@ -1287,6 +1299,8 @@ class Orchestrator {
       hasImage: state.hasImage,
       imagePath: state.imagePath,
       intent: state.intent,
+      previousUserMessage: state.previousUserMessage,
+      previousAssistantMessage: state.previousAssistantMessage,
     );
     debugPrint('[Orchestrator] Response: ${state.response.length} chars');
     state.stepsCompleted.add('generate');

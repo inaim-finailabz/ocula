@@ -571,7 +571,7 @@ class Indexer with WidgetsBindingObserver {
         await _db.linkAsset(
           sourceId: sourceId,
           assetType: 'calendar',
-          assetRef: 'cal:${event.title}',
+          assetRef: 'cal:${event.start.millisecondsSinceEpoch}',
           label:
               '${event.title} — ${event.start.toLocal().toString().substring(0, 16)}',
         );

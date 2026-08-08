@@ -52,6 +52,22 @@ class SpeechService {
 
   /// Initialize TTS with saved or default voice settings.
   Future<void> init() async {
+    if (Platform.isIOS || Platform.isMacOS) {
+      // Without an explicit audio session category, iOS/macOS can route TTS
+      // through the earpiece at reduced quality and let other audio duck it,
+      // which is heard as "unclear"/muffled speech. `.playback` + speaker
+      // routing forces full-quality loudspeaker output.
+      await _tts.setSharedInstance(true);
+      await _tts.setIosAudioCategory(
+        IosTextToSpeechAudioCategory.playback,
+        [
+          IosTextToSpeechAudioCategoryOptions.allowBluetooth,
+          IosTextToSpeechAudioCategoryOptions.allowBluetoothA2DP,
+          IosTextToSpeechAudioCategoryOptions.defaultToSpeaker,
+        ],
+        IosTextToSpeechAudioMode.defaultMode,
+      );
+    }
     await _loadSettings();
     await _applySettings();
 

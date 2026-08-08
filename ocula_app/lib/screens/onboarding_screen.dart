@@ -232,7 +232,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
             child: Text(
               'All AI inference runs on a model stored on your device. '
               'Ocula does not use any cloud-based or third-party AI service. '
-              'No personal data is ever transmitted to Ocula, Finailabz, or any third party.',
+              'No personal data is ever transmitted to Ocula, AI Labz, or any third party.',
               style: TextStyle(
                 color: Colors.white.withAlpha(200),
                 fontSize: 13,
