@@ -55,8 +55,13 @@ class _ResultCardsState extends State<ResultCards> {
     final visible = expanded ? items : items.take(_collapsedCount).toList();
     final hidden = items.length - visible.length;
     final colors = Theme.of(context).colorScheme;
+    final isContact = type == 'contact' || type == 'phone';
     return [
       for (final a in visible) _ResultTile(asset: a),
+      // A single contact is almost always "the" answer, so put the actions
+      // right on the card instead of behind the detail sheet.
+      if (isContact && items.length == 1)
+        _ContactActions(contact: ContactInfo.fromAsset(items.first)),
       if (hidden > 0)
         Align(
           alignment: Alignment.centerLeft,
@@ -246,12 +251,15 @@ class _ResultTile extends StatelessWidget {
         }
       case 'file':
         final name = _fileName(asset);
-        leading = _IconBox(icon: _fileIcon(name));
+        leading = _IconBox(icon: _fileIcon(name), color: typeColor('file'));
         title = name;
         subtitle = _excerpt(asset.snippet, max: 90);
         onTap = () => showDocumentSheet(context, asset);
       case 'calendar':
-        leading = const _IconBox(icon: Icons.event_outlined);
+        leading = _IconBox(
+          icon: Icons.event_outlined,
+          color: typeColor('calendar'),
+        );
         final lines = (asset.snippet ?? '').split('\n');
         // Indexed labels look like "Title — 2026-10-05 09:00".
         title = (asset.label ?? '').split(' — ').first;
@@ -266,12 +274,15 @@ class _ResultTile extends StatelessWidget {
         final addr = asset.assetRef
             .replaceFirst('mailto:', '')
             .replaceFirst('email:', '');
-        leading = const _IconBox(icon: Icons.mail_outline);
+        leading = _IconBox(
+          icon: Icons.mail_outline,
+          color: typeColor('email'),
+        );
         title = asset.label ?? addr;
         subtitle = asset.label == null ? null : addr;
         onTap = () => _launch(context, Uri(scheme: 'mailto', path: addr));
       default:
-        leading = const _IconBox(icon: Icons.link);
+        leading = _IconBox(icon: Icons.link, color: typeColor('link'));
         title = asset.label ?? asset.assetRef;
         onTap = () {
           final uri = Uri.tryParse(asset.assetRef);
@@ -341,21 +352,121 @@ class _ResultTile extends StatelessWidget {
   }
 }
 
+/// Accent colour per result type, so each kind of record is recognisable at
+/// a glance: contacts violet, photos teal, documents orange, events green.
+Color typeColor(String assetType) {
+  switch (assetType) {
+    case 'contact':
+    case 'phone':
+      return const Color(0xFF8B5CF6);
+    case 'photo':
+    case 'video':
+      return const Color(0xFF14B8C4);
+    case 'file':
+      return const Color(0xFFF97316);
+    case 'calendar':
+      return const Color(0xFF22C55E);
+    case 'email':
+      return const Color(0xFF3B82F6);
+    default:
+      return const Color(0xFF64748B);
+  }
+}
+
 class _IconBox extends StatelessWidget {
   final IconData icon;
-  const _IconBox({required this.icon});
+  final Color color;
+  const _IconBox({required this.icon, required this.color});
 
   @override
   Widget build(BuildContext context) {
-    final colors = Theme.of(context).colorScheme;
     return Container(
       width: 32,
       height: 32,
       decoration: BoxDecoration(
-        color: colors.primaryContainer.withAlpha(140),
-        borderRadius: BorderRadius.circular(8),
+        gradient: LinearGradient(
+          colors: [Color.lerp(color, Colors.white, 0.12)!, color],
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+        ),
+        borderRadius: BorderRadius.circular(9),
       ),
-      child: Icon(icon, size: 18, color: colors.primary),
+      child: Icon(icon, size: 18, color: Colors.white),
+    );
+  }
+}
+
+/// Inline Call / Message / Email row shown under a single contact result.
+class _ContactActions extends StatelessWidget {
+  final ContactInfo contact;
+  const _ContactActions({required this.contact});
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    final digits = contact.phone?.replaceAll(RegExp(r'[^0-9+]'), '');
+    final hasPhone = digits != null && digits.isNotEmpty;
+
+    Widget action(IconData icon, String label, VoidCallback? onTap) {
+      final fg = onTap == null
+          ? colors.onSurfaceVariant.withAlpha(90)
+          : colors.onSurface;
+      return Expanded(
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 3),
+          child: Material(
+            color: colors.surfaceContainerHigh,
+            borderRadius: BorderRadius.circular(10),
+            child: InkWell(
+              borderRadius: BorderRadius.circular(10),
+              onTap: onTap,
+              child: Padding(
+                padding: const EdgeInsets.symmetric(vertical: 9),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(icon, size: 17, color: fg),
+                    const SizedBox(height: 3),
+                    Text(label, style: TextStyle(fontSize: 11, color: fg)),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+    }
+
+    return Padding(
+      padding: const EdgeInsets.only(top: 6),
+      child: Row(
+        children: [
+          action(
+            Icons.call_outlined,
+            'Call',
+            hasPhone
+                ? () => _launch(context, Uri(scheme: 'tel', path: digits))
+                : null,
+          ),
+          action(
+            Icons.chat_bubble_outline,
+            'Message',
+            hasPhone
+                ? () => _launch(context, Uri(scheme: 'sms', path: digits))
+                : null,
+          ),
+          action(
+            Icons.mail_outline,
+            'Email',
+            contact.email == null
+                ? null
+                : () => _launch(
+                    context,
+                    Uri(scheme: 'mailto', path: contact.email),
+                  ),
+          ),
+        ],
+      ),
     );
   }
 }
@@ -507,7 +618,7 @@ Future<void> showDocumentSheet(BuildContext context, LinkedAsset a) {
             children: [
               Row(
                 children: [
-                  _IconBox(icon: _fileIcon(name)),
+                  _IconBox(icon: _fileIcon(name), color: typeColor('file')),
                   const SizedBox(width: 10),
                   Expanded(
                     child: Text(
@@ -596,34 +707,61 @@ class _PhotoStrip extends StatelessWidget {
   final List<LinkedAsset> photos;
   const _PhotoStrip({required this.photos});
 
+  static const _maxVisible = 3;
+
   @override
   Widget build(BuildContext context) {
+    // Up to three equal thumbnails across the card; any extra are counted
+    // on the last one and reachable by swiping in the viewer.
+    final shown = photos.take(_maxVisible).toList();
+    final extra = photos.length - shown.length;
     return Padding(
-      padding: const EdgeInsets.only(top: 6),
-      child: SizedBox(
-        key: const ValueKey('photo-strip'),
-        height: 92,
-        child: ListView.separated(
-          scrollDirection: Axis.horizontal,
-          itemCount: photos.length,
-          separatorBuilder: (_, _) => const SizedBox(width: 6),
-          itemBuilder: (ctx, i) => GestureDetector(
-            onTap: () => Navigator.of(ctx).push(
-              MaterialPageRoute(
-                fullscreenDialog: true,
-                builder: (_) => _PhotoViewer(photos: photos, initialIndex: i),
-              ),
+      key: const ValueKey('photo-strip'),
+      padding: const EdgeInsets.only(top: 8),
+      child: Row(
+        children: [
+          for (var i = 0; i < _maxVisible; i++) ...[
+            if (i > 0) const SizedBox(width: 6),
+            Expanded(
+              child: i < shown.length
+                  ? GestureDetector(
+                      onTap: () => Navigator.of(context).push(
+                        MaterialPageRoute(
+                          fullscreenDialog: true,
+                          builder: (_) =>
+                              _PhotoViewer(photos: photos, initialIndex: i),
+                        ),
+                      ),
+                      child: ClipRRect(
+                        borderRadius: BorderRadius.circular(8),
+                        child: AspectRatio(
+                          aspectRatio: 1.25,
+                          child: Stack(
+                            fit: StackFit.expand,
+                            children: [
+                              _PhotoThumb(asset: shown[i]),
+                              if (extra > 0 && i == shown.length - 1)
+                                Container(
+                                  color: Colors.black.withAlpha(120),
+                                  alignment: Alignment.center,
+                                  child: Text(
+                                    '+$extra',
+                                    style: const TextStyle(
+                                      color: Colors.white,
+                                      fontSize: 18,
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                                  ),
+                                ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    )
+                  : const SizedBox.shrink(),
             ),
-            child: ClipRRect(
-              borderRadius: BorderRadius.circular(10),
-              child: SizedBox(
-                width: 92,
-                height: 92,
-                child: _PhotoThumb(asset: photos[i]),
-              ),
-            ),
-          ),
-        ),
+          ],
+        ],
       ),
     );
   }

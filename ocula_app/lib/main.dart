@@ -1905,7 +1905,7 @@ class _AssistantScreenState extends State<AssistantScreen>
                         children: [
                           ShaderMask(
                             shaderCallback: (bounds) => const LinearGradient(
-                              colors: [Color(0xFF6C5CE7), Color(0xFF00CEC9)],
+                              colors: [Color(0xFFA78BFA), Color(0xFF38BDF8)],
                             ).createShader(bounds),
                             child: const Text(
                               'Ocula',
@@ -2540,10 +2540,7 @@ class _MessageBubble extends StatelessWidget {
                   )
                 : null,
             color: isUser ? null : colors.surfaceContainer,
-            borderRadius: BorderRadius.circular(18).copyWith(
-              bottomRight: isUser ? const Radius.circular(6) : null,
-              bottomLeft: !isUser ? const Radius.circular(6) : null,
-            ),
+            borderRadius: BorderRadius.circular(isUser ? 14 : 16),
             border: isUser ? null : Border.all(color: colors.outlineVariant),
           ),
           child: Column(
