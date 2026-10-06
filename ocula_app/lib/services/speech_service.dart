@@ -50,24 +50,30 @@ class SpeechService {
 
   SpeechService({AIManager? aiManager}) : _aiManager = aiManager ?? AIManager();
 
+  /// Force the iOS/macOS audio session into plain playback.
+  ///
+  /// Without an explicit category, TTS can route through the earpiece at
+  /// reduced quality. Worse, speech_to_text switches the shared session to
+  /// `.playAndRecord` with voice processing while listening, and TTS spoken
+  /// in that state comes out echoey and choppy. Re-applied before every
+  /// utterance so a prior listen session can't leak into playback.
+  Future<void> _applyPlaybackSession() async {
+    if (!(Platform.isIOS || Platform.isMacOS)) return;
+    await _tts.setSharedInstance(true);
+    await _tts.setIosAudioCategory(
+      IosTextToSpeechAudioCategory.playback,
+      [
+        IosTextToSpeechAudioCategoryOptions.allowBluetooth,
+        IosTextToSpeechAudioCategoryOptions.allowBluetoothA2DP,
+        IosTextToSpeechAudioCategoryOptions.duckOthers,
+      ],
+      IosTextToSpeechAudioMode.spokenAudio,
+    );
+  }
+
   /// Initialize TTS with saved or default voice settings.
   Future<void> init() async {
-    if (Platform.isIOS || Platform.isMacOS) {
-      // Without an explicit audio session category, iOS/macOS can route TTS
-      // through the earpiece at reduced quality and let other audio duck it,
-      // which is heard as "unclear"/muffled speech. `.playback` + speaker
-      // routing forces full-quality loudspeaker output.
-      await _tts.setSharedInstance(true);
-      await _tts.setIosAudioCategory(
-        IosTextToSpeechAudioCategory.playback,
-        [
-          IosTextToSpeechAudioCategoryOptions.allowBluetooth,
-          IosTextToSpeechAudioCategoryOptions.allowBluetoothA2DP,
-          IosTextToSpeechAudioCategoryOptions.defaultToSpeaker,
-        ],
-        IosTextToSpeechAudioMode.defaultMode,
-      );
-    }
+    await _applyPlaybackSession();
     await _loadSettings();
     await _applySettings();
 
@@ -210,14 +216,17 @@ class SpeechService {
 
   /// Speak the given text aloud.
   Future<void> speak(String text) async {
-    final normalized = text.trim();
+    final normalized = toSpeakable(text);
     if (normalized.isEmpty) return;
     if (!_voiceEnabled) return;
 
     // Avoid audio-session conflicts between STT input and TTS output.
-    if (_isListening) {
+    // iOS needs a moment to tear down the record session after stop().
+    if (_isListening || _speech.isListening) {
       await stopListening();
-      await Future.delayed(const Duration(milliseconds: 80));
+    }
+    if (_sttInitialized) {
+      await Future.delayed(const Duration(milliseconds: 300));
     }
 
     // If there is already speech in progress, restart cleanly.
@@ -226,6 +235,8 @@ class SpeechService {
       await Future.delayed(const Duration(milliseconds: 60));
     }
 
+    await _applyPlaybackSession();
+
     _isSpeaking = true;
     try {
       await _tts.speak(normalized);
@@ -233,6 +244,57 @@ class SpeechService {
       _isSpeaking = false;
       rethrow;
     }
+  }
+
+  /// Turn a chat response into text that sounds natural when read aloud.
+  ///
+  /// Responses are formatted for the screen (markdown, bullets, URLs, file
+  /// paths, emoji); read verbatim the synthesizer spells out symbols and
+  /// mangles links, which is heard as gibberish.
+  @visibleForTesting
+  static String toSpeakable(String text) {
+    var s = text;
+    // Code blocks and inline code.
+    s = s.replaceAll(RegExp(r'```[\s\S]*?```'), ' ');
+    s = s.replaceAllMapped(RegExp(r'`([^`]*)`'), (m) => m[1]!);
+    // Markdown links/images: keep the label, drop the target.
+    s = s.replaceAllMapped(
+      RegExp(r'!?\[([^\]]*)\]\([^)]*\)'),
+      (m) => m[1]!,
+    );
+    // Bare URLs and file paths.
+    s = s.replaceAll(RegExp(r'(https?://|www\.)\S+'), ' ');
+    // Only paths that start a word, so dates like 10/06/2026 survive.
+    s = s.replaceAll(
+      RegExp(r'(?<!\S)(file://)?/(?:[\w.\-]+/)+[\w.\-]*'),
+      ' ',
+    );
+    // Citation markers like [1] or [2, 3].
+    s = s.replaceAll(RegExp(r'\[\d+(?:\s*,\s*\d+)*\]'), '');
+    // Headings, blockquotes, list bullets and numbering at line start.
+    s = s.replaceAll(RegExp(r'^\s*#{1,6}\s*', multiLine: true), '');
+    s = s.replaceAll(RegExp(r'^\s*>\s?', multiLine: true), '');
+    s = s.replaceAll(RegExp(r'^\s*([-*+•·]|\d+[.)])\s+', multiLine: true), '');
+    // Emphasis markers and table pipes.
+    s = s.replaceAll(RegExp(r'[*_~]{1,3}'), '');
+    s = s.replaceAll('|', ' ');
+    // Emoji and pictographs.
+    s = s.replaceAll(
+      RegExp(
+        r'[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}\u{FE0F}\u{200D}]',
+        unicode: true,
+      ),
+      '',
+    );
+    // Dashes used as separators read as "dash"; make them pauses.
+    s = s.replaceAll(RegExp(r'\s[—–-]\s'), ', ');
+    // Line breaks become sentence pauses so list items don't run together.
+    s = s.replaceAllMapped(
+      RegExp(r'([^.!?:,;\s])\s*\n+'),
+      (m) => '${m[1]}. ',
+    );
+    s = s.replaceAll(RegExp(r'\s+'), ' ').trim();
+    return s;
   }
 
   /// Stop any ongoing speech.
