@@ -8,8 +8,6 @@ import 'screens/sessions_screen.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:permission_handler/permission_handler.dart';
-import 'package:url_launcher/url_launcher.dart';
-import 'package:share_plus/share_plus.dart';
 import 'services/ai_manager.dart';
 import 'services/speech_service.dart';
 import 'services/export_service.dart';
@@ -29,7 +27,9 @@ import 'services/env_config.dart';
 import 'services/action_service.dart';
 import 'services/notification_service.dart';
 import 'services/tray_service.dart';
+import 'services/user_profile.dart';
 import 'widgets/action_card.dart';
+import 'widgets/result_cards.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -45,32 +45,79 @@ class OculaApp extends StatelessWidget {
 
   static const _colorScheme = ColorScheme(
     brightness: Brightness.dark,
-    primary: Color(0xFF6C5CE7),
+    primary: Color(0xFF8B7CF6),
     onPrimary: Colors.white,
-    secondary: Color(0xFF00CEC9),
+    primaryContainer: Color(0xFF2B2550),
+    onPrimaryContainer: Color(0xFFE4DEFF),
+    secondary: Color(0xFF2DD4BF),
     onSecondary: Colors.black,
-    tertiary: Color(0xFFFF7675),
-    error: Color(0xFFFF7675),
+    tertiary: Color(0xFFFF8A80),
+    error: Color(0xFFFF6B6B),
     onError: Colors.white,
-    surface: Color(0xFF1E1E2E),
-    onSurface: Color(0xFFE0E0E0),
-    surfaceContainerHighest: Color(0xFF2A2A3E),
-    outline: Color(0xFF444475),
+    surface: Color(0xFF111218),
+    onSurface: Color(0xFFECECF1),
+    onSurfaceVariant: Color(0xFF9A9BAA),
+    surfaceContainer: Color(0xFF181922),
+    surfaceContainerHigh: Color(0xFF1E1F2A),
+    surfaceContainerHighest: Color(0xFF252633),
+    outline: Color(0xFF3A3B4C),
+    outlineVariant: Color(0xFF2A2B38),
   );
 
   @override
   Widget build(BuildContext context) {
+    final base = ThemeData(colorScheme: _colorScheme, useMaterial3: true);
     return MaterialApp(
       title: 'Ocula',
       debugShowCheckedModeBanner: false,
-      theme: ThemeData(
-        colorScheme: _colorScheme,
-        useMaterial3: true,
+      theme: base.copyWith(
         scaffoldBackgroundColor: _colorScheme.surface,
+        textTheme: base.textTheme.apply(
+          bodyColor: _colorScheme.onSurface,
+          displayColor: _colorScheme.onSurface,
+        ),
         appBarTheme: AppBarTheme(
           backgroundColor: _colorScheme.surface,
           elevation: 0,
+          scrolledUnderElevation: 0,
         ),
+        iconButtonTheme: IconButtonThemeData(
+          style: IconButton.styleFrom(
+            foregroundColor: _colorScheme.onSurfaceVariant,
+            visualDensity: VisualDensity.compact,
+          ),
+        ),
+        bottomSheetTheme: BottomSheetThemeData(
+          backgroundColor: _colorScheme.surfaceContainer,
+          surfaceTintColor: Colors.transparent,
+          showDragHandle: true,
+          dragHandleColor: _colorScheme.outline,
+          shape: const RoundedRectangleBorder(
+            borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+          ),
+        ),
+        filledButtonTheme: FilledButtonThemeData(
+          style: FilledButton.styleFrom(
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(14),
+            ),
+          ),
+        ),
+        snackBarTheme: SnackBarThemeData(
+          behavior: SnackBarBehavior.floating,
+          backgroundColor: _colorScheme.surfaceContainerHighest,
+          contentTextStyle: TextStyle(color: _colorScheme.onSurface),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(12),
+          ),
+        ),
+        popupMenuTheme: PopupMenuThemeData(
+          color: _colorScheme.surfaceContainerHigh,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(14),
+          ),
+        ),
+        dividerTheme: DividerThemeData(color: _colorScheme.outlineVariant),
       ),
       initialRoute: '/',
       routes: {
@@ -103,6 +150,7 @@ class _AssistantScreenState extends State<AssistantScreen>
   final _shareReceiver = ShareReceiver();
   late final SpeechService _speech;
   final _textController = TextEditingController();
+  final _inputFocus = FocusNode();
   final _scrollController = ScrollController();
   final _modelManager = OculaModelManager();
   StreamSubscription? _downloadProgressSubscription;
@@ -183,12 +231,16 @@ class _AssistantScreenState extends State<AssistantScreen>
     if (await _ai.isTierDownloaded(AITier.plus)) return;
     if (!await _ai.canDeviceRunTier(AITier.plus)) return;
     debugPrint('[Home] Tablet/desktop: auto-downloading Plus tier...');
-    _modelManager.downloadTierWithProgress(AITier.plus).then((ok) {
-      if (!ok && mounted) setState(() => _backgroundDownloadFailed = AITier.plus);
-    }).catchError((e) {
-      debugPrint('[Home] Plus auto-download error: $e');
-      if (mounted) setState(() => _backgroundDownloadFailed = AITier.plus);
-    });
+    _modelManager
+        .downloadTierWithProgress(AITier.plus)
+        .then((ok) {
+          if (!ok && mounted)
+            setState(() => _backgroundDownloadFailed = AITier.plus);
+        })
+        .catchError((e) {
+          debugPrint('[Home] Plus auto-download error: $e');
+          if (mounted) setState(() => _backgroundDownloadFailed = AITier.plus);
+        });
   }
 
   /// Proactively send a morning briefing as the first AI message of the day.
@@ -265,6 +317,62 @@ class _AssistantScreenState extends State<AssistantScreen>
     }
   }
 
+  /// Today's remaining events (plus tomorrow's after 17:00) as grounded
+  /// model context, tappable calendar cards, and a plain fallback text.
+  static Future<
+    ({String context, List<LinkedAsset> assets, String fallbackText})
+  >
+  _loadBriefingSchedule(DateTime now) async {
+    final dayStart = DateTime(now.year, now.month, now.day);
+    final morning = now.hour < 12;
+    final evening = now.hour >= 17;
+    final from = morning ? dayStart : now.subtract(const Duration(hours: 1));
+    final to = dayStart.add(Duration(days: evening ? 2 : 1));
+    final events =
+        (await LocalData().getEvents(
+            from,
+            to,
+          )).where((e) => e.end.isAfter(from)).toList()
+          ..sort((a, b) => a.start.compareTo(b.start));
+
+    String hhmm(DateTime d) =>
+        '${d.hour.toString().padLeft(2, '0')}:${d.minute.toString().padLeft(2, '0')}';
+    String when(LocalEvent e) {
+      final allDay = e.end.difference(e.start).inHours >= 23;
+      final dayLabel = e.start.isBefore(dayStart.add(const Duration(days: 1)))
+          ? 'Today'
+          : 'Tomorrow';
+      return allDay
+          ? '$dayLabel · all day'
+          : '$dayLabel · ${hhmm(e.start)}–${hhmm(e.end)}';
+    }
+
+    final lines = <String>[];
+    final assets = <LinkedAsset>[];
+    for (final e in events) {
+      final loc = (e.location ?? '').trim();
+      lines.add('- ${when(e)}: ${e.title}${loc.isEmpty ? '' : ' @ $loc'}');
+      assets.add(
+        LinkedAsset(
+          sourceId: 'cal:${e.title}:${e.start.toIso8601String()}',
+          assetType: 'calendar',
+          assetRef: 'cal:${e.start.millisecondsSinceEpoch}',
+          label: e.title,
+          snippet: [when(e), if (loc.isNotEmpty) loc].join('\n'),
+        ),
+      );
+    }
+
+    final context = events.isEmpty
+        ? '[SOURCE 1]\nType: Calendar\nContent: No events on the calendar '
+              'for ${evening ? 'the rest of today or tomorrow' : 'today'}.'
+        : '[SOURCE 1]\nType: Calendar (device, live)\nContent:\n${lines.join('\n')}';
+    final fallbackText = events.isEmpty
+        ? 'Your calendar is clear ${evening ? 'for tonight and tomorrow' : 'today'}.'
+        : 'You have ${events.length} event${events.length == 1 ? '' : 's'} coming up:';
+    return (context: context, assets: assets, fallbackText: fallbackText);
+  }
+
   /// Fire a contextual briefing as a proactive AI message (no user turn shown).
   Future<void> _triggerMorningBriefing() async {
     if (!mounted || _isThinking || !_ai.isModelLoaded) return;
@@ -286,15 +394,24 @@ class _AssistantScreenState extends State<AssistantScreen>
     _orbSizeController.forward();
 
     try {
+      // Read the device calendar directly — semantic search over indexed
+      // chunks can't reliably pick "today", which made the briefing claim
+      // the schedule was empty.
+      final schedule = await _loadBriefingSchedule(now);
       final prefsCtx = await _loadUserPrefsContext();
-      final prompt = prefsCtx.isEmpty
-          ? _briefingPrompt(now)
-          : '${_briefingPrompt(now)}\n\n$prefsCtx\nUse these preferences to enrich activity suggestions.';
+      final prompt = [
+        _briefingPrompt(now),
+        if (prefsCtx.isNotEmpty)
+          '$prefsCtx\nUse these preferences to enrich activity suggestions.',
+        'Only mention events listed in the sources. If none are listed, say '
+            'the calendar is clear — do not invent events.',
+      ].join('\n\n');
       final result = await _orchestrator
           .run(
             prompt,
             retrievalScope: RetrievalScope.calendar,
             sessionId: _sessionId,
+            groundedContext: schedule.context,
           )
           .timeout(
             const Duration(seconds: 45),
@@ -302,13 +419,15 @@ class _AssistantScreenState extends State<AssistantScreen>
           );
 
       if (!mounted) return;
-      if (result.response.isNotEmpty) {
+      // Event cards are shown even if the model times out or returns nothing.
+      final text = result.response.isNotEmpty
+          ? result.response
+          : schedule.fallbackText;
+      if (text.isNotEmpty) {
         setState(() {
-          _messages.add(_Message(
-            text: result.response,
-            isUser: false,
-            linkedAssets: result.linkedAssets,
-          ));
+          _messages.add(
+            _Message(text: text, isUser: false, linkedAssets: schedule.assets),
+          );
           _isThinking = false;
           _orbState = OrbState.idle;
           _orbExpanded = false;
@@ -335,13 +454,31 @@ class _AssistantScreenState extends State<AssistantScreen>
   }
 
   static String _weekdayName(int weekday) => const [
-        '', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'
-      ][weekday];
+    '',
+    'Monday',
+    'Tuesday',
+    'Wednesday',
+    'Thursday',
+    'Friday',
+    'Saturday',
+    'Sunday',
+  ][weekday];
 
   static String _monthName(int month) => const [
-        '', 'January', 'February', 'March', 'April', 'May', 'June',
-        'July', 'August', 'September', 'October', 'November', 'December'
-      ][month];
+    '',
+    'January',
+    'February',
+    'March',
+    'April',
+    'May',
+    'June',
+    'July',
+    'August',
+    'September',
+    'October',
+    'November',
+    'December',
+  ][month];
 
   void _startHelpTour() {
     if (mounted) setState(() => _showingHelpTour = true);
@@ -375,7 +512,9 @@ class _AssistantScreenState extends State<AssistantScreen>
     _speech.init();
     // If the splash navigated before the model was ready (background install
     // path), auto-load when ensureFreeModelReady signals success.
-    _freeModelStatusSubscription = _modelManager.freeModelStatusStream.listen((ok) {
+    _freeModelStatusSubscription = _modelManager.freeModelStatusStream.listen((
+      ok,
+    ) {
       if (!mounted) return;
       if (ok) {
         setState(() => _freeModelFailed = false);
@@ -411,8 +550,9 @@ class _AssistantScreenState extends State<AssistantScreen>
     _stepSubscription = _orchestrator.stepStream.listen((step) {
       if (!mounted) return;
       setState(() {
-        _currentStepLabel =
-            step.type == AgentStepType.complete ? null : step.label;
+        _currentStepLabel = step.type == AgentStepType.complete
+            ? null
+            : step.label;
       });
     });
     Indexer().startBackgroundIndexing();
@@ -466,6 +606,7 @@ class _AssistantScreenState extends State<AssistantScreen>
     // Check if we should show the help tour after first onboarding.
     // Also restore avatar style preference and check for morning briefing.
     WidgetsBinding.instance.addPostFrameCallback((_) async {
+      UserProfile().load().catchError((_) {});
       final prefs = await SharedPreferences.getInstance();
       if ((prefs.getBool('show_help_tour') ?? false) && mounted) {
         _startHelpTour();
@@ -474,21 +615,24 @@ class _AssistantScreenState extends State<AssistantScreen>
       final customPath = prefs.getString('avatar_custom_path');
       if (mounted) {
         setState(() {
-          _avatarStyle = AvatarStyle.values[styleIndex.clamp(0, AvatarStyle.values.length - 1)];
+          _avatarStyle = AvatarStyle
+              .values[styleIndex.clamp(0, AvatarStyle.values.length - 1)];
           _customAvatarPath = customPath;
         });
       }
 
       // Data-sources banner: shown once until dismissed when email is not yet set up.
       final emailConfigured = await LocalData().isEmailConfigured;
-      final bannerDismissed = prefs.getBool('data_sources_banner_dismissed') ?? false;
+      final bannerDismissed =
+          prefs.getBool('data_sources_banner_dismissed') ?? false;
       if (!emailConfigured && !bannerDismissed && mounted) {
         setState(() => _showDataSourcesBanner = true);
       }
 
       // Contextual briefing: morning (6–11) or afternoon (12–17), once per window.
       final now = DateTime.now();
-      final today = '${now.year}-${now.month.toString().padLeft(2,'0')}-${now.day.toString().padLeft(2,'0')}';
+      final today =
+          '${now.year}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')}';
       final isMorningWindow = now.hour >= 6 && now.hour < 11;
       final isAfternoonWindow = now.hour >= 12 && now.hour < 17;
       if (isMorningWindow || isAfternoonWindow) {
@@ -554,7 +698,8 @@ class _AssistantScreenState extends State<AssistantScreen>
                   style: AvatarStyle.custom,
                   icon: Icons.image_outlined,
                   title: 'Custom Image',
-                  subtitle: 'PNG, JPG or SVG — transparent backgrounds supported',
+                  subtitle:
+                      'PNG, JPG or SVG — transparent backgrounds supported',
                   onTap: () async {
                     Navigator.pop(ctx);
                     await _pickCustomAvatar();
@@ -581,17 +726,23 @@ class _AssistantScreenState extends State<AssistantScreen>
     return ListTile(
       leading: Icon(icon, color: selected ? colors.primary : colors.onSurface),
       title: Text(title),
-      subtitle: Text(subtitle,
-          style: TextStyle(fontSize: 12, color: colors.onSurface.withAlpha(140))),
-      trailing: selected ? Icon(Icons.check_circle, color: colors.primary) : null,
+      subtitle: Text(
+        subtitle,
+        style: TextStyle(fontSize: 12, color: colors.onSurface.withAlpha(140)),
+      ),
+      trailing: selected
+          ? Icon(Icons.check_circle, color: colors.primary)
+          : null,
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
       tileColor: selected ? colors.primary.withAlpha(18) : Colors.transparent,
-      onTap: onTap ?? () async {
-        Navigator.pop(ctx);
-        setState(() => _avatarStyle = style);
-        final prefs = await SharedPreferences.getInstance();
-        await prefs.setInt('avatar_style', style.index);
-      },
+      onTap:
+          onTap ??
+          () async {
+            Navigator.pop(ctx);
+            setState(() => _avatarStyle = style);
+            final prefs = await SharedPreferences.getInstance();
+            await prefs.setInt('avatar_style', style.index);
+          },
     );
   }
 
@@ -629,12 +780,15 @@ class _AssistantScreenState extends State<AssistantScreen>
 
   void _resumeBannerDownload(AITier tier) {
     setState(() => _backgroundDownloadFailed = null);
-    _modelManager.downloadTierWithProgress(tier).then((ok) {
-      if (!ok && mounted) setState(() => _backgroundDownloadFailed = tier);
-    }).catchError((e) {
-      debugPrint('[Home] Resume download error: $e');
-      if (mounted) setState(() => _backgroundDownloadFailed = tier);
-    });
+    _modelManager
+        .downloadTierWithProgress(tier)
+        .then((ok) {
+          if (!ok && mounted) setState(() => _backgroundDownloadFailed = tier);
+        })
+        .catchError((e) {
+          debugPrint('[Home] Resume download error: $e');
+          if (mounted) setState(() => _backgroundDownloadFailed = tier);
+        });
   }
 
   /// Thin banner below the top bar for background model downloads and failures.
@@ -662,7 +816,10 @@ class _AssistantScreenState extends State<AssistantScreen>
             TextButton(
               onPressed: _retryFreeModelInstall,
               style: TextButton.styleFrom(
-                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 10,
+                  vertical: 4,
+                ),
                 minimumSize: Size.zero,
                 tapTargetSize: MaterialTapTargetSize.shrinkWrap,
                 foregroundColor: colors.error,
@@ -699,7 +856,10 @@ class _AssistantScreenState extends State<AssistantScreen>
             TextButton(
               onPressed: () => _resumeBannerDownload(tier),
               style: TextButton.styleFrom(
-                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 10,
+                  vertical: 4,
+                ),
                 minimumSize: Size.zero,
                 tapTargetSize: MaterialTapTargetSize.shrinkWrap,
                 foregroundColor: colors.primary,
@@ -708,10 +868,16 @@ class _AssistantScreenState extends State<AssistantScreen>
             ),
             IconButton(
               onPressed: () => setState(() => _backgroundDownloadFailed = null),
-              icon: Icon(Icons.close, size: 14, color: colors.onSurface.withAlpha(120)),
+              icon: Icon(
+                Icons.close,
+                size: 14,
+                color: colors.onSurface.withAlpha(120),
+              ),
               padding: const EdgeInsets.all(6),
               constraints: const BoxConstraints(),
-              style: IconButton.styleFrom(tapTargetSize: MaterialTapTargetSize.shrinkWrap),
+              style: IconButton.styleFrom(
+                tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+              ),
             ),
           ],
         ),
@@ -721,12 +887,14 @@ class _AssistantScreenState extends State<AssistantScreen>
     // ── Normal download progress ──
     // Prefer showing the main (non-projector, non-embed) model being downloaded.
     // Falls back to any downloading file so progress is never hidden.
-    final primary = _activeDownloads.entries.where((e) {
-      final m = OculaModelManager.models
-          .where((m) => m.fileName == e.key)
-          .firstOrNull;
-      return m != null && !m.isVisionProjector && !m.isEmbeddingModel;
-    }).firstOrNull ?? _activeDownloads.entries.firstOrNull;
+    final primary =
+        _activeDownloads.entries.where((e) {
+          final m = OculaModelManager.models
+              .where((m) => m.fileName == e.key)
+              .firstOrNull;
+          return m != null && !m.isVisionProjector && !m.isEmbeddingModel;
+        }).firstOrNull ??
+        _activeDownloads.entries.firstOrNull;
 
     if (primary == null) return const SizedBox.shrink();
 
@@ -786,10 +954,16 @@ class _AssistantScreenState extends State<AssistantScreen>
           if (tierForCancel != null && tierForCancel != AITier.free)
             IconButton(
               onPressed: _cancelBannerDownload,
-              icon: Icon(Icons.close, size: 14, color: colors.onSurface.withAlpha(150)),
+              icon: Icon(
+                Icons.close,
+                size: 14,
+                color: colors.onSurface.withAlpha(150),
+              ),
               padding: const EdgeInsets.all(6),
               constraints: const BoxConstraints(),
-              style: IconButton.styleFrom(tapTargetSize: MaterialTapTargetSize.shrinkWrap),
+              style: IconButton.styleFrom(
+                tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+              ),
               tooltip: 'Cancel download',
             ),
         ],
@@ -853,7 +1027,10 @@ class _AssistantScreenState extends State<AssistantScreen>
           Expanded(
             child: Text(
               'Connect email & messaging to unlock more context',
-              style: TextStyle(fontSize: 11, color: colors.onSurface.withAlpha(180)),
+              style: TextStyle(
+                fontSize: 11,
+                color: colors.onSurface.withAlpha(180),
+              ),
             ),
           ),
           TextButton(
@@ -874,10 +1051,16 @@ class _AssistantScreenState extends State<AssistantScreen>
             child: const Text('Set up', style: TextStyle(fontSize: 11)),
           ),
           IconButton(
-            icon: Icon(Icons.close, size: 14, color: colors.onSurface.withAlpha(120)),
+            icon: Icon(
+              Icons.close,
+              size: 14,
+              color: colors.onSurface.withAlpha(120),
+            ),
             padding: const EdgeInsets.all(6),
             constraints: const BoxConstraints(),
-            style: IconButton.styleFrom(tapTargetSize: MaterialTapTargetSize.shrinkWrap),
+            style: IconButton.styleFrom(
+              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+            ),
             tooltip: 'Dismiss',
             onPressed: () async {
               setState(() => _showDataSourcesBanner = false);
@@ -961,8 +1144,7 @@ class _AssistantScreenState extends State<AssistantScreen>
     return false;
   }
 
-  static const _cameraChannel =
-      MethodChannel('com.finailabz.ai.ocula/camera');
+  static const _cameraChannel = MethodChannel('com.finailabz.ai.ocula/camera');
 
   /// Open the native macOS camera capture panel and return the saved path.
   Future<void> _takeMacOSPhoto() async {
@@ -985,14 +1167,25 @@ class _AssistantScreenState extends State<AssistantScreen>
     }
 
     final items = [
-      (Icons.camera_alt_rounded, colors.primary, 'Camera',
-          () => _pickImage(fromCamera: true)),
-      (Icons.photo_library_rounded, Colors.green, 'Photos',
-          () => _pickImage(fromCamera: false)),
-      (Icons.videocam_rounded, Colors.deepOrange, 'Video',
-          () => _pickVideo()),
-      (Icons.description_rounded, Colors.blueGrey, 'Document',
-          () => _pickDocument()),
+      (
+        Icons.camera_alt_rounded,
+        colors.primary,
+        'Camera',
+        () => _pickImage(fromCamera: true),
+      ),
+      (
+        Icons.photo_library_rounded,
+        Colors.green,
+        'Photos',
+        () => _pickImage(fromCamera: false),
+      ),
+      (Icons.videocam_rounded, Colors.deepOrange, 'Video', () => _pickVideo()),
+      (
+        Icons.description_rounded,
+        Colors.blueGrey,
+        'Document',
+        () => _pickDocument(),
+      ),
     ];
 
     showModalBottomSheet(
@@ -1065,14 +1258,52 @@ class _AssistantScreenState extends State<AssistantScreen>
     );
   }
 
+  /// Empty-state shortcuts: run a ready query, or narrow the scope and
+  /// prefill the input so the user only types the name / topic.
+  void _applyQuickStart(_QuickStart q) {
+    if (q.sendNow) {
+      _send(q.text);
+      return;
+    }
+    setState(() => _retrievalScope = q.scope);
+    _textController.text = q.text;
+    _textController.selection = TextSelection.collapsed(offset: q.text.length);
+    _inputFocus.requestFocus();
+  }
+
   void _showScopeFilter() {
     final options = [
-      (RetrievalScope.all, Icons.all_inclusive, 'All sources', 'Search everything'),
-      (RetrievalScope.contacts, Icons.contacts_outlined, 'Contacts', 'People & phone numbers'),
-      (RetrievalScope.calendar, Icons.calendar_today_outlined, 'Calendar', 'Events & schedule'),
+      (
+        RetrievalScope.all,
+        Icons.all_inclusive,
+        'All sources',
+        'Search everything',
+      ),
+      (
+        RetrievalScope.contacts,
+        Icons.contacts_outlined,
+        'Contacts',
+        'People & phone numbers',
+      ),
+      (
+        RetrievalScope.calendar,
+        Icons.calendar_today_outlined,
+        'Calendar',
+        'Events & schedule',
+      ),
       (RetrievalScope.email, Icons.email_outlined, 'Email', 'Messages & inbox'),
-      (RetrievalScope.docs, Icons.description_outlined, 'Documents', 'Files, PDFs & notes'),
-      (RetrievalScope.images, Icons.photo_library_outlined, 'Photos', 'Images on your device'),
+      (
+        RetrievalScope.docs,
+        Icons.description_outlined,
+        'Documents',
+        'Files, PDFs & notes',
+      ),
+      (
+        RetrievalScope.images,
+        Icons.photo_library_outlined,
+        'Photos',
+        'Images on your device',
+      ),
     ];
     showModalBottomSheet(
       context: context,
@@ -1107,22 +1338,42 @@ class _AssistantScreenState extends State<AssistantScreen>
                   return ListTile(
                     leading: Icon(
                       icon,
-                      color: selected ? colors.primary : colors.onSurface.withAlpha(180),
+                      color: selected
+                          ? colors.primary
+                          : colors.onSurface.withAlpha(180),
                     ),
-                    title: Text(label,
-                        style: TextStyle(
-                            fontWeight: selected ? FontWeight.w600 : FontWeight.normal)),
-                    subtitle: Text(subtitle,
-                        style: TextStyle(
-                            fontSize: 12, color: colors.onSurface.withAlpha(120))),
+                    title: Text(
+                      label,
+                      style: TextStyle(
+                        fontWeight: selected
+                            ? FontWeight.w600
+                            : FontWeight.normal,
+                      ),
+                    ),
+                    subtitle: Text(
+                      subtitle,
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: colors.onSurface.withAlpha(120),
+                      ),
+                    ),
                     trailing: selected
-                        ? Icon(Icons.check_circle, color: colors.primary, size: 20)
+                        ? Icon(
+                            Icons.check_circle,
+                            color: colors.primary,
+                            size: 20,
+                          )
                         : null,
-                    tileColor: selected ? colors.primary.withAlpha(18) : Colors.transparent,
+                    tileColor: selected
+                        ? colors.primary.withAlpha(18)
+                        : Colors.transparent,
                     shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(12)),
-                    contentPadding:
-                        const EdgeInsets.symmetric(horizontal: 20, vertical: 2),
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    contentPadding: const EdgeInsets.symmetric(
+                      horizontal: 20,
+                      vertical: 2,
+                    ),
                     onTap: () {
                       Navigator.pop(ctx);
                       setState(() => _retrievalScope = scope);
@@ -1149,7 +1400,8 @@ class _AssistantScreenState extends State<AssistantScreen>
         maxHeight: 1024,
         imageQuality: 85,
       );
-      if (picked != null && mounted) setState(() => _attachedImage = File(picked.path));
+      if (picked != null && mounted)
+        setState(() => _attachedImage = File(picked.path));
     } else {
       if (_isDesktop) {
         await _pickImageDesktop();
@@ -1161,7 +1413,8 @@ class _AssistantScreenState extends State<AssistantScreen>
         maxHeight: 1024,
         imageQuality: 85,
       );
-      if (picked != null && mounted) setState(() => _attachedImage = File(picked.path));
+      if (picked != null && mounted)
+        setState(() => _attachedImage = File(picked.path));
     }
   }
 
@@ -1390,7 +1643,9 @@ class _AssistantScreenState extends State<AssistantScreen>
       // Add the action card immediately — contact resolution happens inside ActionCard.
       if (mounted) {
         setState(() {
-          _messages.add(_Message(text: '', isUser: false, actionRequest: actionReq));
+          _messages.add(
+            _Message(text: '', isUser: false, actionRequest: actionReq),
+          );
         });
         _scrollToBottom();
       }
@@ -1435,6 +1690,14 @@ class _AssistantScreenState extends State<AssistantScreen>
         });
         return;
       }
+      // On-device preference learning — fire and forget.
+      UserProfile()
+          .recordInteraction(
+            userQuery: queryText,
+            assistantResponse: result.response,
+            isFollowUp: previousUserMessage != null,
+          )
+          .catchError((_) {});
       setState(() {
         _messages.add(
           _Message(
@@ -1503,7 +1766,7 @@ class _AssistantScreenState extends State<AssistantScreen>
               _messages.add(_Message(text: _textController.text, isUser: true));
               _messages.add(_Message(text: response, isUser: false));
               _isListening = false;
-                    _orbState = OrbState.idle;
+              _orbState = OrbState.idle;
               _textController.clear();
               _orbExpanded = false;
             });
@@ -1516,7 +1779,7 @@ class _AssistantScreenState extends State<AssistantScreen>
             );
             setState(() {
               _isListening = false;
-                    _orbState = OrbState.idle;
+              _orbState = OrbState.idle;
             });
           },
         );
@@ -1524,13 +1787,13 @@ class _AssistantScreenState extends State<AssistantScreen>
         _showSnackbar(e.toString());
         setState(() {
           _isListening = false;
-            _orbState = OrbState.idle;
+          _orbState = OrbState.idle;
         });
       } catch (e) {
         _showSnackbar('An error occurred: $e');
         setState(() {
           _isListening = false;
-            _orbState = OrbState.idle;
+          _orbState = OrbState.idle;
         });
       }
     }
@@ -1570,6 +1833,7 @@ class _AssistantScreenState extends State<AssistantScreen>
     _shareReceiver.dispose();
     _ai.dispose();
     _textController.dispose();
+    _inputFocus.dispose();
     _scrollController.dispose();
     _orbSizeController.dispose();
     _downloadProgressSubscription?.cancel();
@@ -1619,579 +1883,607 @@ class _AssistantScreenState extends State<AssistantScreen>
         }
       },
       child: Scaffold(
-      resizeToAvoidBottomInset: true,
-      body: Container(
-        decoration: BoxDecoration(
-          gradient: LinearGradient(
-            begin: Alignment.topCenter,
-            end: Alignment.bottomCenter,
-            colors: [colors.surface, const Color(0xFF16162A)],
+        resizeToAvoidBottomInset: true,
+        body: Container(
+          decoration: BoxDecoration(
+            gradient: LinearGradient(
+              begin: Alignment.topCenter,
+              end: Alignment.bottomCenter,
+              colors: [colors.surface, const Color(0xFF0B0C11)],
+            ),
           ),
-        ),
-        child: SafeArea(
-          child: Stack(
-            children: [
-              // ── Layer 1: Chat transcript ──
-              Column(
-                children: [
-                  // Top bar
-                  Padding(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 16,
-                      vertical: 12,
-                    ),
-                    child: Row(
-                      children: [
-                        ShaderMask(
-                          shaderCallback: (bounds) => const LinearGradient(
-                            colors: [Color(0xFF6C5CE7), Color(0xFF00CEC9)],
-                          ).createShader(bounds),
-                          child: const Text(
-                            'Ocula',
-                            style: TextStyle(
-                              fontSize: 26,
-                              fontWeight: FontWeight.bold,
-                              color: Colors.white,
-                            ),
-                          ),
-                        ),
-                        const SizedBox(width: 8),
-                        // Ready indicator dot — green when model loaded, amber while loading
-                        AnimatedContainer(
-                          duration: const Duration(milliseconds: 400),
-                          width: 7,
-                          height: 7,
-                          decoration: BoxDecoration(
-                            shape: BoxShape.circle,
-                            color: _ai.isModelLoaded
-                                ? const Color(0xFF00E676)
-                                : const Color(0xFFFFB300),
-                            boxShadow: [
-                              BoxShadow(
-                                color: (_ai.isModelLoaded
-                                        ? const Color(0xFF00E676)
-                                        : const Color(0xFFFFB300))
-                                    .withAlpha(120),
-                                blurRadius: 6,
-                                spreadRadius: 1,
+          child: SafeArea(
+            child: Stack(
+              children: [
+                // ── Layer 1: Chat transcript ──
+                Column(
+                  children: [
+                    // Top bar
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(16, 4, 4, 4),
+                      child: Row(
+                        children: [
+                          ShaderMask(
+                            shaderCallback: (bounds) => const LinearGradient(
+                              colors: [Color(0xFF6C5CE7), Color(0xFF00CEC9)],
+                            ).createShader(bounds),
+                            child: const Text(
+                              'Ocula',
+                              style: TextStyle(
+                                fontSize: 22,
+                                fontWeight: FontWeight.w700,
+                                letterSpacing: -0.5,
+                                color: Colors.white,
                               ),
-                            ],
-                          ),
-                        ),
-                        const Spacer(),
-                        // Source filter — tap to narrow RAG scope
-                        Stack(
-                          clipBehavior: Clip.none,
-                          children: [
-                            IconButton(
-                              key: _cameraButtonKey,
-                              icon: const Icon(Icons.filter_list_rounded, size: 20),
-                              tooltip: 'Filter source',
-                              onPressed: _showScopeFilter,
                             ),
-                            if (_retrievalScope != RetrievalScope.all)
-                              Positioned(
-                                right: 6,
-                                top: 6,
-                                child: Container(
-                                  width: 8,
-                                  height: 8,
-                                  decoration: BoxDecoration(
-                                    color: Theme.of(context).colorScheme.primary,
-                                    shape: BoxShape.circle,
+                          ),
+                          const SizedBox(width: 8),
+                          // Ready indicator dot — green when model loaded, amber while loading
+                          AnimatedContainer(
+                            duration: const Duration(milliseconds: 400),
+                            width: 7,
+                            height: 7,
+                            decoration: BoxDecoration(
+                              shape: BoxShape.circle,
+                              color: _ai.isModelLoaded
+                                  ? const Color(0xFF00E676)
+                                  : const Color(0xFFFFB300),
+                              boxShadow: [
+                                BoxShadow(
+                                  color:
+                                      (_ai.isModelLoaded
+                                              ? const Color(0xFF00E676)
+                                              : const Color(0xFFFFB300))
+                                          .withAlpha(120),
+                                  blurRadius: 6,
+                                  spreadRadius: 1,
+                                ),
+                              ],
+                            ),
+                          ),
+                          const Spacer(),
+                          // Source filter — tap to narrow RAG scope
+                          Stack(
+                            clipBehavior: Clip.none,
+                            children: [
+                              IconButton(
+                                key: _cameraButtonKey,
+                                icon: const Icon(
+                                  Icons.filter_list_rounded,
+                                  size: 20,
+                                ),
+                                tooltip: 'Filter source',
+                                onPressed: _showScopeFilter,
+                              ),
+                              if (_retrievalScope != RetrievalScope.all)
+                                Positioned(
+                                  right: 6,
+                                  top: 6,
+                                  child: Container(
+                                    width: 8,
+                                    height: 8,
+                                    decoration: BoxDecoration(
+                                      color: Theme.of(
+                                        context,
+                                      ).colorScheme.primary,
+                                      shape: BoxShape.circle,
+                                    ),
                                   ),
                                 ),
-                              ),
-                          ],
-                        ),
-                        // Export button — visible in the top bar only on
-                        // tablet/desktop where there is room; phones access it
-                        // via the overflow menu below.
-                        if (_isTabletOrDesktop &&
-                            _messages.any((m) => !m.isUser))
-                          Builder(
-                            builder: (ctx) => IconButton(
-                              icon: const Icon(Icons.ios_share, size: 20),
-                              tooltip: 'Export',
-                              onPressed: () {
-                                final lastResponse = _messages
-                                    .lastWhere((m) => !m.isUser)
-                                    .text;
-                                final box =
-                                    ctx.findRenderObject() as RenderBox?;
-                                final origin = box != null
-                                    ? box.localToGlobal(Offset.zero) & box.size
-                                    : null;
-                                _export.exportAndShare(
-                                  lastResponse,
-                                  origin: origin,
-                                );
-                              },
-                            ),
+                            ],
                           ),
-                        IconButton(
-                          icon: const Icon(Icons.add_comment_outlined, size: 20),
-                          tooltip: 'New chat',
-                          onPressed: _startNewSession,
-                        ),
-                        IconButton(
-                          icon: const Icon(Icons.mic_none_rounded, size: 20),
-                          tooltip: 'Record meeting / lecture',
-                          onPressed: () {
-                            Navigator.of(context).pushNamed('/recorder');
-                          },
-                        ),
-                        IconButton(
-                          icon: const Icon(Icons.settings_outlined, size: 20),
-                          tooltip: 'Settings',
-                          onPressed: () {
-                            Navigator.of(context).push(
-                              MaterialPageRoute(
-                                builder: (_) => SettingsScreen(
-                                  speech: _speech,
-                                  onRequestHelpTour: _startHelpTour,
-                                ),
+                          // Export button — visible in the top bar only on
+                          // tablet/desktop where there is room; phones access it
+                          // via the overflow menu below.
+                          if (_isTabletOrDesktop &&
+                              _messages.any((m) => !m.isUser))
+                            Builder(
+                              builder: (ctx) => IconButton(
+                                icon: const Icon(Icons.ios_share, size: 20),
+                                tooltip: 'Export',
+                                onPressed: () {
+                                  final lastResponse = _messages
+                                      .lastWhere((m) => !m.isUser)
+                                      .text;
+                                  final box =
+                                      ctx.findRenderObject() as RenderBox?;
+                                  final origin = box != null
+                                      ? box.localToGlobal(Offset.zero) &
+                                            box.size
+                                      : null;
+                                  _export.exportAndShare(
+                                    lastResponse,
+                                    origin: origin,
+                                  );
+                                },
                               ),
-                            );
-                          },
-                        ),
-                        // Overflow menu: history + help + export (on phone)
-                        Builder(
-                          builder: (ctx) => PopupMenuButton<String>(
-                            icon: const Icon(Icons.more_vert, size: 20),
-                            tooltip: 'More',
-                            onSelected: (value) {
-                              if (value == 'history') {
-                                _openSessionHistory(ctx);
-                              } else if (value == 'help') {
-                                _startHelpTour();
-                              } else if (value == 'export') {
-                                final lastResponse = _messages
-                                    .lastWhere((m) => !m.isUser)
-                                    .text;
-                                final box =
-                                    ctx.findRenderObject() as RenderBox?;
-                                final origin = box != null
-                                    ? box.localToGlobal(Offset.zero) & box.size
-                                    : null;
-                                _export.exportAndShare(
-                                  lastResponse,
-                                  origin: origin,
-                                );
-                              }
+                            ),
+                          IconButton(
+                            icon: const Icon(
+                              Icons.add_comment_outlined,
+                              size: 20,
+                            ),
+                            tooltip: 'New chat',
+                            onPressed: _startNewSession,
+                          ),
+                          IconButton(
+                            icon: const Icon(Icons.settings_outlined, size: 20),
+                            tooltip: 'Settings',
+                            onPressed: () {
+                              Navigator.of(context).push(
+                                MaterialPageRoute(
+                                  builder: (_) => SettingsScreen(
+                                    speech: _speech,
+                                    onRequestHelpTour: _startHelpTour,
+                                  ),
+                                ),
+                              );
                             },
-                            itemBuilder: (_) => [
-                              const PopupMenuItem(
-                                value: 'history',
-                                child: Row(
-                                  children: [
-                                    Icon(Icons.history_outlined, size: 18),
-                                    SizedBox(width: 10),
-                                    Text('Chat history'),
-                                  ],
-                                ),
-                              ),
-                              const PopupMenuItem(
-                                value: 'help',
-                                child: Row(
-                                  children: [
-                                    Icon(Icons.help_outline, size: 18),
-                                    SizedBox(width: 10),
-                                    Text('Help tour'),
-                                  ],
-                                ),
-                              ),
-                              // Export last response — shown on phone only
-                              // (tablet/desktop have the dedicated icon button)
-                              if (!_isTabletOrDesktop &&
-                                  _messages.any((m) => !m.isUser))
+                          ),
+                          // Overflow menu: history + help + export (on phone)
+                          Builder(
+                            builder: (ctx) => PopupMenuButton<String>(
+                              icon: const Icon(Icons.more_vert, size: 20),
+                              tooltip: 'More',
+                              onSelected: (value) {
+                                if (value == 'record') {
+                                  Navigator.of(context).pushNamed('/recorder');
+                                } else if (value == 'history') {
+                                  _openSessionHistory(ctx);
+                                } else if (value == 'help') {
+                                  _startHelpTour();
+                                } else if (value == 'export') {
+                                  final lastResponse = _messages
+                                      .lastWhere((m) => !m.isUser)
+                                      .text;
+                                  final box =
+                                      ctx.findRenderObject() as RenderBox?;
+                                  final origin = box != null
+                                      ? box.localToGlobal(Offset.zero) &
+                                            box.size
+                                      : null;
+                                  _export.exportAndShare(
+                                    lastResponse,
+                                    origin: origin,
+                                  );
+                                }
+                              },
+                              itemBuilder: (_) => [
                                 const PopupMenuItem(
-                                  value: 'export',
+                                  value: 'record',
                                   child: Row(
                                     children: [
-                                      Icon(Icons.ios_share, size: 18),
+                                      Icon(Icons.mic_none_rounded, size: 18),
                                       SizedBox(width: 10),
-                                      Text('Export response'),
+                                      Text('Record meeting'),
                                     ],
                                   ),
                                 ),
-                            ],
+                                const PopupMenuItem(
+                                  value: 'history',
+                                  child: Row(
+                                    children: [
+                                      Icon(Icons.history_outlined, size: 18),
+                                      SizedBox(width: 10),
+                                      Text('Chat history'),
+                                    ],
+                                  ),
+                                ),
+                                const PopupMenuItem(
+                                  value: 'help',
+                                  child: Row(
+                                    children: [
+                                      Icon(Icons.help_outline, size: 18),
+                                      SizedBox(width: 10),
+                                      Text('Help tour'),
+                                    ],
+                                  ),
+                                ),
+                                // Export last response — shown on phone only
+                                // (tablet/desktop have the dedicated icon button)
+                                if (!_isTabletOrDesktop &&
+                                    _messages.any((m) => !m.isUser))
+                                  const PopupMenuItem(
+                                    value: 'export',
+                                    child: Row(
+                                      children: [
+                                        Icon(Icons.ios_share, size: 18),
+                                        SizedBox(width: 10),
+                                        Text('Export response'),
+                                      ],
+                                    ),
+                                  ),
+                              ],
+                            ),
                           ),
-                        ),
-                      ],
+                        ],
+                      ),
                     ),
-                  ),
 
-                  // Show failure banner always (needs user action).
-                  // Show download progress for free-tier (first install) and
-                  // for Plus/Pro when explicitly downloading from the picker
-                  // or auto-downloading on tablet/desktop.
-                  if (_freeModelFailed ||
-                      _backgroundDownloadFailed != null ||
-                      (_activeDownloads.isNotEmpty &&
-                          (_ai.activeTier == null ||
-                              _activeDownloads.keys.any((k) =>
-                                  OculaModelManager.models.any(
+                    // Show failure banner always (needs user action).
+                    // Show download progress for free-tier (first install) and
+                    // for Plus/Pro when explicitly downloading from the picker
+                    // or auto-downloading on tablet/desktop.
+                    if (_freeModelFailed ||
+                        _backgroundDownloadFailed != null ||
+                        (_activeDownloads.isNotEmpty &&
+                            (_ai.activeTier == null ||
+                                _activeDownloads.keys.any(
+                                  (k) => OculaModelManager.models.any(
                                     (m) =>
                                         m.fileName == k &&
                                         (m.tier == AITier.plus ||
                                             m.tier == AITier.pro),
-                                  )))))
-                    _buildDownloadBanner(colors),
-                  if (_showDataSourcesBanner) _buildDataSourcesBanner(colors),
-
-                  // Chat messages
-                  Expanded(
-                    child: Container(
-                      // Key used by HelpTour to find the correct bounds of the
-                      // chat area. Must be on a widget that always renders with
-                      // the correct dimensions (Container fills Expanded space
-                      // even when the ListView is absent).
-                      key: _chatListKey,
-                      child: hasMessages
-                          ? ListView.builder(
-                            controller: _scrollController,
-                            padding: EdgeInsets.only(
-                              left: 16,
-                              right: 16,
-                              top: _orbExpanded
-                                  ? expandedSize + 40
-                                  : miniSize + 20,
-                              bottom: 8,
-                            ),
-                            itemCount: _messages.length + (_isThinking ? 1 : 0),
-                            itemBuilder: (context, index) {
-                              if (_isThinking && index == _messages.length) {
-                                return _ThinkingBubble(stepLabel: _currentStepLabel);
-                              }
-                              final msg = _messages[index];
-                              // Find the user query that preceded this AI response
-                              final precedingQuery = (!msg.isUser && index > 0)
-                                  ? _messages[index - 1].text
-                                  : null;
-                              return _MessageBubble(
-                                message: msg,
-                                onCopy: () => _copyToClipboard(msg.text),
-                                onSearchWeb: (!msg.isUser && precedingQuery != null)
-                                    ? () => _send(
-                                          'search online for: $precedingQuery',
-                                        )
-                                    : null,
-                              );
-                            },
-                          )
-                        : const SizedBox.shrink(),
-                    ),
-                  ),
-
-                  // ── Attached image preview ──
-                  if (_attachedImage != null)
-                    Container(
-                      padding: const EdgeInsets.fromLTRB(16, 6, 16, 0),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Row(
-                            children: [
-                              ClipRRect(
-                                borderRadius: BorderRadius.circular(10),
-                                child: Image.file(
-                                  _attachedImage!,
-                                  width: 56,
-                                  height: 56,
-                                  fit: BoxFit.cover,
-                                ),
-                              ),
-                              const SizedBox(width: 8),
-                              Expanded(
-                                child: Text(
-                                  'Image attached',
-                                  style: TextStyle(
-                                    color: colors.onSurface.withAlpha(150),
-                                    fontSize: 13,
                                   ),
-                                ),
-                              ),
-                              IconButton(
-                                icon: const Icon(Icons.close, size: 18),
-                                onPressed: () =>
-                                    setState(() => _attachedImage = null),
-                              ),
-                            ],
-                          ),
-                        ],
-                      ),
-                    ),
+                                ))))
+                      _buildDownloadBanner(colors),
+                    if (_showDataSourcesBanner) _buildDataSourcesBanner(colors),
 
-                  // ── Attached document preview ──
-                  if (_attachedDocument != null)
-                    Container(
-                      padding: const EdgeInsets.fromLTRB(16, 6, 16, 0),
-                      child: Row(
-                        children: [
-                          Container(
-                            width: 40,
-                            height: 40,
-                            decoration: BoxDecoration(
-                              color: colors.primary.withAlpha(30),
-                              borderRadius: BorderRadius.circular(8),
-                            ),
-                            child: Icon(
-                              Icons.description,
-                              size: 22,
-                              color: colors.primary,
-                            ),
-                          ),
-                          const SizedBox(width: 8),
-                          Expanded(
-                            child: Text(
-                              _attachedDocName ?? 'Document attached',
-                              style: TextStyle(
-                                color: colors.onSurface.withAlpha(150),
-                                fontSize: 13,
-                              ),
-                              overflow: TextOverflow.ellipsis,
-                            ),
-                          ),
-                          IconButton(
-                            icon: const Icon(Icons.close, size: 18),
-                            onPressed: () => setState(() {
-                              _attachedDocument = null;
-                              _attachedDocName = null;
-                            }),
-                          ),
-                        ],
-                      ),
-                    ),
-
-                  // ── Input bar ──
-                  Container(
-                    key: _inputBarKey,
-                    padding: const EdgeInsets.fromLTRB(6, 8, 6, 8),
-                    decoration: BoxDecoration(
-                      color: colors.surfaceContainerHighest,
-                      borderRadius: const BorderRadius.vertical(
-                        top: Radius.circular(24),
-                      ),
-                      boxShadow: [
-                        BoxShadow(
-                          color: Colors.black.withAlpha(40),
-                          blurRadius: 12,
-                          offset: const Offset(0, -4),
-                        ),
-                      ],
-                    ),
-                    child: SafeArea(
-                      top: false,
-                      child: Row(
-                        children: [
-                          // Attach — camera, photo/video, document
-                          IconButton(
-                            icon: const Icon(Icons.add_circle_outline, size: 24),
-                            tooltip: 'Attach file, photo or video',
-                            padding: const EdgeInsets.symmetric(horizontal: 4),
-                            onPressed: _showAttachmentPicker,
-                          ),
-                          // Text input
-                          Expanded(
-                            child: Container(
-                              margin: const EdgeInsets.symmetric(horizontal: 8),
-                              padding: const EdgeInsets.symmetric(
-                                horizontal: 14,
-                              ),
-                              decoration: BoxDecoration(
-                                color: colors.surface,
-                                borderRadius: BorderRadius.circular(24),
-                                border: Border.all(
-                                  color: colors.outline.withAlpha(40),
-                                ),
-                              ),
-                              child: TextField(
-                                controller: _textController,
-                                style: const TextStyle(fontSize: 15),
-                                maxLines: null,
-                                minLines: 1,
-                                keyboardType: TextInputType.multiline,
-                                textCapitalization:
-                                    TextCapitalization.sentences,
-                                textInputAction: TextInputAction.newline,
-                                autocorrect: true,
-                                enableSuggestions: true,
-                                decoration: InputDecoration(
-                                  hintText: 'Ask anything...',
-                                  hintStyle: TextStyle(
-                                    color: colors.onSurface.withAlpha(80),
-                                  ),
-                                  border: InputBorder.none,
-                                  contentPadding: const EdgeInsets.symmetric(
-                                    vertical: 12,
-                                  ),
-                                ),
-                              ),
-                            ),
-                          ),
-                          // Send / Stop / Mic — context-dependent action
-                          _isThinking || _isSpeaking
-                              ? _InputAction(
-                                  icon: Icons.stop_circle,
-                                  label: 'Stop',
-                                  color: const Color(0xFFFF7675),
-                                  onTap: _stopEverything,
-                                )
-                              : _isListening
-                              ? _InputAction(
-                                  icon: Icons.stop_circle,
-                                  label: 'Stop',
-                                  color: const Color(0xFFFF7675),
-                                  onTap: _toggleVoice,
-                                )
-                              : _textController.text.isNotEmpty
-                              ? _SendButton(
-                                  onTap: () => _send(_textController.text),
-                                  color: colors.primary,
-                                )
-                              : _InputAction(
-                                  icon: Icons.mic,
-                                  label: 'Voice',
-                                  color: colors.primary,
-                                  onTap: _toggleVoice,
-                                ),
-                        ],
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-
-              // ── Layer 2: Floating 3D Orb overlay ──
-              AnimatedPositioned(
-                duration: const Duration(milliseconds: 400),
-                curve: Curves.easeOutCubic,
-                top: _orbExpanded
-                    ? (hasMessages ? 60 : screenHeight * 0.15)
-                    : 60,
-                left: 0,
-                right: _orbExpanded ? 0 : null,
-                child: GestureDetector(
-                  key: _orbKey,
-                  onTap: _orbExpanded && hasMessages
-                      ? _toggleOrb
-                      : _toggleVoice,
-                  onLongPress: _showAvatarStylePicker,
-                  child: AnimatedAlign(
-                    duration: const Duration(milliseconds: 400),
-                    curve: Curves.easeOutCubic,
-                    alignment: _orbExpanded
-                        ? Alignment.center
-                        : Alignment.centerLeft,
-                    child: Padding(
-                      padding: EdgeInsets.only(left: _orbExpanded ? 0 : 16),
-                      child: AnimatedContainer(
-                        duration: const Duration(milliseconds: 400),
-                        curve: Curves.easeOutCubic,
-                        width: _orbExpanded
-                            ? expandedSize * 1.5
-                            : miniSize * 1.5,
-                        height: _orbExpanded
-                            ? expandedSize * 1.5
-                            : miniSize * 1.5,
-                        child: OculaOrb(
-                          state: _orbState,
-                          size: _orbExpanded ? expandedSize : miniSize,
-                          avatarStyle: _avatarStyle,
-                          customImagePath: _customAvatarPath,
-                        ),
-                      ),
-                    ),
-                  ),
-                ),
-              ),
-
-              // ── Layer 3: "Show chat" hint ──
-              if (_orbExpanded && hasMessages)
-                Positioned(
-                  top: expandedSize + 110,
-                  left: 0,
-                  right: 0,
-                  child: Center(
-                    child: GestureDetector(
-                      onTap: _toggleOrb,
+                    // Chat messages
+                    Expanded(
                       child: Container(
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 18,
-                          vertical: 8,
-                        ),
-                        decoration: BoxDecoration(
-                          color: colors.surfaceContainerHighest.withAlpha(220),
-                          borderRadius: BorderRadius.circular(20),
-                          border: Border.all(
-                            color: colors.outline.withAlpha(30),
-                          ),
-                        ),
-                        child: Row(
-                          mainAxisSize: MainAxisSize.min,
+                        // Key used by HelpTour to find the correct bounds of the
+                        // chat area. Must be on a widget that always renders with
+                        // the correct dimensions (Container fills Expanded space
+                        // even when the ListView is absent).
+                        key: _chatListKey,
+                        child: hasMessages
+                            ? ListView.builder(
+                                controller: _scrollController,
+                                padding: EdgeInsets.only(
+                                  left: 16,
+                                  right: 16,
+                                  top: _orbExpanded
+                                      ? expandedSize + 40
+                                      : miniSize + 20,
+                                  bottom: 8,
+                                ),
+                                itemCount:
+                                    _messages.length + (_isThinking ? 1 : 0),
+                                itemBuilder: (context, index) {
+                                  if (_isThinking &&
+                                      index == _messages.length) {
+                                    return _ThinkingBubble(
+                                      stepLabel: _currentStepLabel,
+                                    );
+                                  }
+                                  final msg = _messages[index];
+                                  // Find the user query that preceded this AI response
+                                  final precedingQuery =
+                                      (!msg.isUser && index > 0)
+                                      ? _messages[index - 1].text
+                                      : null;
+                                  return _MessageBubble(
+                                    message: msg,
+                                    onCopy: () => _copyToClipboard(msg.text),
+                                    onSearchWeb:
+                                        (!msg.isUser && precedingQuery != null)
+                                        ? () => _send(
+                                            'search online for: $precedingQuery',
+                                          )
+                                        : null,
+                                  );
+                                },
+                              )
+                            : const SizedBox.shrink(),
+                      ),
+                    ),
+
+                    // ── Quick starts (empty state) ──
+                    if (!hasMessages &&
+                        _attachedImage == null &&
+                        _attachedDocument == null)
+                      _QuickStarts(onPick: _applyQuickStart),
+
+                    // ── Attached image preview ──
+                    if (_attachedImage != null)
+                      Container(
+                        padding: const EdgeInsets.fromLTRB(16, 6, 16, 0),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            Icon(
-                              Icons.keyboard_arrow_down,
-                              size: 18,
-                              color: colors.onSurface.withAlpha(150),
-                            ),
-                            const SizedBox(width: 4),
-                            Text(
-                              'Show chat',
-                              style: TextStyle(
-                                fontSize: 13,
-                                color: colors.onSurface.withAlpha(150),
-                              ),
+                            Row(
+                              children: [
+                                ClipRRect(
+                                  borderRadius: BorderRadius.circular(10),
+                                  child: Image.file(
+                                    _attachedImage!,
+                                    width: 56,
+                                    height: 56,
+                                    fit: BoxFit.cover,
+                                  ),
+                                ),
+                                const SizedBox(width: 8),
+                                Expanded(
+                                  child: Text(
+                                    'Image attached',
+                                    style: TextStyle(
+                                      color: colors.onSurface.withAlpha(150),
+                                      fontSize: 13,
+                                    ),
+                                  ),
+                                ),
+                                IconButton(
+                                  icon: const Icon(Icons.close, size: 18),
+                                  onPressed: () =>
+                                      setState(() => _attachedImage = null),
+                                ),
+                              ],
                             ),
                           ],
                         ),
                       ),
+
+                    // ── Attached document preview ──
+                    if (_attachedDocument != null)
+                      Container(
+                        padding: const EdgeInsets.fromLTRB(16, 6, 16, 0),
+                        child: Row(
+                          children: [
+                            Container(
+                              width: 40,
+                              height: 40,
+                              decoration: BoxDecoration(
+                                color: colors.primary.withAlpha(30),
+                                borderRadius: BorderRadius.circular(8),
+                              ),
+                              child: Icon(
+                                Icons.description,
+                                size: 22,
+                                color: colors.primary,
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: Text(
+                                _attachedDocName ?? 'Document attached',
+                                style: TextStyle(
+                                  color: colors.onSurface.withAlpha(150),
+                                  fontSize: 13,
+                                ),
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ),
+                            IconButton(
+                              icon: const Icon(Icons.close, size: 18),
+                              onPressed: () => setState(() {
+                                _attachedDocument = null;
+                                _attachedDocName = null;
+                              }),
+                            ),
+                          ],
+                        ),
+                      ),
+
+                    // ── Input bar ──
+                    SafeArea(
+                      top: false,
+                      child: Container(
+                        key: _inputBarKey,
+                        margin: const EdgeInsets.fromLTRB(10, 6, 10, 8),
+                        padding: const EdgeInsets.fromLTRB(4, 4, 6, 4),
+                        decoration: BoxDecoration(
+                          color: colors.surfaceContainerHigh,
+                          borderRadius: BorderRadius.circular(28),
+                          border: Border.all(color: colors.outlineVariant),
+                          boxShadow: [
+                            BoxShadow(
+                              color: Colors.black.withAlpha(70),
+                              blurRadius: 18,
+                              offset: const Offset(0, 6),
+                            ),
+                          ],
+                        ),
+                        child: Row(
+                          crossAxisAlignment: CrossAxisAlignment.end,
+                          children: [
+                            // Attach — camera, photo/video, document
+                            IconButton(
+                              icon: const Icon(
+                                Icons.add_circle_outline,
+                                size: 24,
+                              ),
+                              tooltip: 'Attach file, photo or video',
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 4,
+                              ),
+                              onPressed: _showAttachmentPicker,
+                            ),
+                            // Text input
+                            Expanded(
+                              child: Padding(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 4,
+                                ),
+                                child: TextField(
+                                  controller: _textController,
+                                  focusNode: _inputFocus,
+                                  style: const TextStyle(fontSize: 15),
+                                  maxLines: 5,
+                                  minLines: 1,
+                                  keyboardType: TextInputType.multiline,
+                                  textCapitalization:
+                                      TextCapitalization.sentences,
+                                  textInputAction: TextInputAction.newline,
+                                  autocorrect: true,
+                                  enableSuggestions: true,
+                                  decoration: InputDecoration(
+                                    hintText: 'Ask Ocula…',
+                                    hintStyle: TextStyle(
+                                      color: colors.onSurface.withAlpha(80),
+                                    ),
+                                    border: InputBorder.none,
+                                    contentPadding: const EdgeInsets.symmetric(
+                                      vertical: 12,
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            ),
+                            // Send / Stop / Mic — context-dependent action
+                            _isThinking || _isSpeaking
+                                ? _InputAction(
+                                    icon: Icons.stop_circle,
+                                    label: 'Stop',
+                                    color: const Color(0xFFFF7675),
+                                    onTap: _stopEverything,
+                                  )
+                                : _isListening
+                                ? _InputAction(
+                                    icon: Icons.stop_circle,
+                                    label: 'Stop',
+                                    color: const Color(0xFFFF7675),
+                                    onTap: _toggleVoice,
+                                  )
+                                : _textController.text.isNotEmpty
+                                ? _SendButton(
+                                    onTap: () => _send(_textController.text),
+                                    color: colors.primary,
+                                  )
+                                : _InputAction(
+                                    icon: Icons.mic,
+                                    label: 'Voice',
+                                    color: colors.primary,
+                                    onTap: _toggleVoice,
+                                  ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+
+                // ── Layer 2: Floating 3D Orb overlay ──
+                AnimatedPositioned(
+                  duration: const Duration(milliseconds: 400),
+                  curve: Curves.easeOutCubic,
+                  top: _orbExpanded
+                      ? (hasMessages ? 60 : screenHeight * 0.15)
+                      : 60,
+                  left: 0,
+                  right: _orbExpanded ? 0 : null,
+                  child: GestureDetector(
+                    key: _orbKey,
+                    onTap: _orbExpanded && hasMessages
+                        ? _toggleOrb
+                        : _toggleVoice,
+                    onLongPress: _showAvatarStylePicker,
+                    child: AnimatedAlign(
+                      duration: const Duration(milliseconds: 400),
+                      curve: Curves.easeOutCubic,
+                      alignment: _orbExpanded
+                          ? Alignment.center
+                          : Alignment.centerLeft,
+                      child: Padding(
+                        padding: EdgeInsets.only(left: _orbExpanded ? 0 : 16),
+                        child: AnimatedContainer(
+                          duration: const Duration(milliseconds: 400),
+                          curve: Curves.easeOutCubic,
+                          width: _orbExpanded
+                              ? expandedSize * 1.5
+                              : miniSize * 1.5,
+                          height: _orbExpanded
+                              ? expandedSize * 1.5
+                              : miniSize * 1.5,
+                          child: OculaOrb(
+                            state: _orbState,
+                            size: _orbExpanded ? expandedSize : miniSize,
+                            avatarStyle: _avatarStyle,
+                            customImagePath: _customAvatarPath,
+                          ),
+                        ),
+                      ),
                     ),
                   ),
                 ),
 
-              // ── Layer 4: Help Tour overlay ──
-              if (_showingHelpTour)
-                HelpTour(
-                  steps: [
-                    HelpStep(
-                      targetKey: _orbKey,
-                      title: 'Talk to Ocula',
-                      description:
-                          'Tap the orb to start speaking. Ocula listens and responds aloud.',
+                // ── Layer 3: "Show chat" hint ──
+                if (_orbExpanded && hasMessages)
+                  Positioned(
+                    top: expandedSize + 110,
+                    left: 0,
+                    right: 0,
+                    child: Center(
+                      child: GestureDetector(
+                        onTap: _toggleOrb,
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 18,
+                            vertical: 8,
+                          ),
+                          decoration: BoxDecoration(
+                            color: colors.surfaceContainerHighest.withAlpha(
+                              220,
+                            ),
+                            borderRadius: BorderRadius.circular(20),
+                            border: Border.all(
+                              color: colors.outline.withAlpha(30),
+                            ),
+                          ),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(
+                                Icons.keyboard_arrow_down,
+                                size: 18,
+                                color: colors.onSurface.withAlpha(150),
+                              ),
+                              const SizedBox(width: 4),
+                              Text(
+                                'Show chat',
+                                style: TextStyle(
+                                  fontSize: 13,
+                                  color: colors.onSurface.withAlpha(150),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
                     ),
-                    HelpStep(
-                      targetKey: _chatListKey,
-                      title: 'Chat Window',
-                      description:
-                          'Your conversation appears here. Ocula runs fully on-device — no cloud.',
-                    ),
-                    HelpStep(
-                      targetKey: _inputBarKey,
-                      title: 'Type a Question',
-                      description:
-                          'Type anything here. Tap + to attach photos, documents, or files.',
-                    ),
-                    HelpStep(
-                      targetKey: _cameraButtonKey,
-                      title: 'Attach Assets',
-                      description:
-                          'Tap + to attach a photo, video, PDF, Word or spreadsheet — Ocula reads and analyzes it on-device.',
-                    ),
-                  ],
-                  onComplete: () {
-                    setState(() => _showingHelpTour = false);
-                    SharedPreferences.getInstance().then(
-                      (p) => p.setBool('show_help_tour', false),
-                    );
-                  },
-                ),
-            ],
+                  ),
+
+                // ── Layer 4: Help Tour overlay ──
+                if (_showingHelpTour)
+                  HelpTour(
+                    steps: [
+                      HelpStep(
+                        targetKey: _orbKey,
+                        title: 'Talk to Ocula',
+                        description:
+                            'Tap the orb to start speaking. Ocula listens and responds aloud.',
+                      ),
+                      HelpStep(
+                        targetKey: _chatListKey,
+                        title: 'Chat Window',
+                        description:
+                            'Your conversation appears here. Ocula runs fully on-device — no cloud.',
+                      ),
+                      HelpStep(
+                        targetKey: _inputBarKey,
+                        title: 'Type a Question',
+                        description:
+                            'Type anything here. Tap + to attach photos, documents, or files.',
+                      ),
+                      HelpStep(
+                        targetKey: _cameraButtonKey,
+                        title: 'Attach Assets',
+                        description:
+                            'Tap + to attach a photo, video, PDF, Word or spreadsheet — Ocula reads and analyzes it on-device.',
+                      ),
+                    ],
+                    onComplete: () {
+                      setState(() => _showingHelpTour = false);
+                      SharedPreferences.getInstance().then(
+                        (p) => p.setBool('show_help_tour', false),
+                      );
+                    },
+                  ),
+              ],
+            ),
           ),
         ),
-      ),
-    ), // Scaffold
+      ), // Scaffold
     ); // PopScope
   }
 }
@@ -2217,6 +2509,7 @@ class _Message {
 class _MessageBubble extends StatelessWidget {
   final _Message message;
   final VoidCallback? onCopy;
+
   /// Called when the user taps "Search Web" on a no-data response.
   final VoidCallback? onSearchWeb;
 
@@ -2232,36 +2525,26 @@ class _MessageBubble extends StatelessWidget {
       child: GestureDetector(
         onLongPress: onCopy,
         child: Container(
-          margin: const EdgeInsets.only(bottom: 10),
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+          margin: const EdgeInsets.only(bottom: 8),
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
           constraints: BoxConstraints(
-            maxWidth: MediaQuery.of(context).size.width * 0.8,
+            maxWidth:
+                MediaQuery.of(context).size.width * (isUser ? 0.78 : 0.88),
           ),
           decoration: BoxDecoration(
             gradient: isUser
                 ? const LinearGradient(
-                    colors: [Color(0xFF6C5CE7), Color(0xFF5A4BD1)],
+                    colors: [Color(0xFF8B7CF6), Color(0xFF6D5BE8)],
                     begin: Alignment.topLeft,
                     end: Alignment.bottomRight,
                   )
                 : null,
-            color: isUser ? null : colors.surfaceContainerHighest,
-            borderRadius: BorderRadius.circular(20).copyWith(
-              bottomRight: isUser ? const Radius.circular(4) : null,
-              bottomLeft: !isUser ? const Radius.circular(4) : null,
+            color: isUser ? null : colors.surfaceContainer,
+            borderRadius: BorderRadius.circular(18).copyWith(
+              bottomRight: isUser ? const Radius.circular(6) : null,
+              bottomLeft: !isUser ? const Radius.circular(6) : null,
             ),
-            border: isUser
-                ? null
-                : Border.all(color: colors.outline.withAlpha(25)),
-            boxShadow: [
-              BoxShadow(
-                color: isUser
-                    ? const Color(0xFF6C5CE7).withAlpha(40)
-                    : Colors.black.withAlpha(20),
-                blurRadius: 8,
-                offset: const Offset(0, 2),
-              ),
-            ],
+            border: isUser ? null : Border.all(color: colors.outlineVariant),
           ),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -2271,60 +2554,69 @@ class _MessageBubble extends StatelessWidget {
               if (!isUser && message.actionRequest != null) ...[
                 ActionCard(request: message.actionRequest!),
               ] else ...[
-              if (message.image != null) ...[
-                ClipRRect(
-                  borderRadius: BorderRadius.circular(12),
-                  child: Image.file(
-                    message.image!,
-                    width: 200,
-                    fit: BoxFit.cover,
+                if (message.image != null) ...[
+                  ClipRRect(
+                    borderRadius: BorderRadius.circular(12),
+                    child: Image.file(
+                      message.image!,
+                      width: 200,
+                      fit: BoxFit.cover,
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                ],
+                SelectableText(
+                  message.text,
+                  style: TextStyle(
+                    color: isUser ? colors.onPrimary : colors.onSurface,
+                    fontSize: 14.5,
+                    height: 1.4,
                   ),
                 ),
-                const SizedBox(height: 8),
-              ],
-              SelectableText(
-                message.text,
-                style: TextStyle(
-                  color: isUser ? colors.onPrimary : colors.onSurface,
-                  fontSize: 15,
-                  height: 1.45,
-                ),
-              ),
-              // Linked sources list
-              if (!isUser && message.linkedAssets.isNotEmpty) ...[
-                const SizedBox(height: 10),
-                _SourcesList(assets: message.linkedAssets),
-              ],
-              // "Search Web" offer — shown when local data was insufficient
-              if (!isUser && onSearchWeb != null && _isNoDataResponse(message.text)) ...[
-                const SizedBox(height: 10),
-                GestureDetector(
-                  onTap: onSearchWeb,
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                    decoration: BoxDecoration(
-                      color: colors.primaryContainer.withAlpha(180),
-                      borderRadius: BorderRadius.circular(20),
-                      border: Border.all(color: colors.primary.withAlpha(60)),
-                    ),
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Icon(Icons.language_outlined, size: 14, color: colors.primary),
-                        const SizedBox(width: 6),
-                        Text(
-                          'Search the web for more info',
-                          style: TextStyle(
-                            fontSize: 12,
+                // Structured result cards (contacts, photos, documents, events)
+                if (!isUser && message.linkedAssets.isNotEmpty) ...[
+                  const SizedBox(height: 4),
+                  ResultCards(assets: message.linkedAssets),
+                ],
+                // "Search Web" offer — shown when local data was insufficient
+                if (!isUser &&
+                    onSearchWeb != null &&
+                    _isNoDataResponse(message.text)) ...[
+                  const SizedBox(height: 10),
+                  GestureDetector(
+                    onTap: onSearchWeb,
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 12,
+                        vertical: 6,
+                      ),
+                      decoration: BoxDecoration(
+                        color: colors.primaryContainer.withAlpha(180),
+                        borderRadius: BorderRadius.circular(20),
+                        border: Border.all(color: colors.primary.withAlpha(60)),
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(
+                            Icons.language_outlined,
+                            size: 14,
                             color: colors.primary,
-                            fontWeight: FontWeight.w500,
                           ),
-                        ),
-                      ],
+                          const SizedBox(width: 6),
+                          Text(
+                            'Search the web for more info',
+                            style: TextStyle(
+                              fontSize: 12,
+                              color: colors.primary,
+                              fontWeight: FontWeight.w500,
+                            ),
+                          ),
+                        ],
+                      ),
                     ),
                   ),
-                ),
-              ],
+                ],
               ], // end else (non-action messages)
             ],
           ),
@@ -2350,235 +2642,76 @@ bool _isNoDataResponse(String text) {
       lower.contains("not found in your");
 }
 
-/// Expandable list of linked RAG sources shown below an AI response.
-/// Each row shows an icon, source name, and an open/share action button.
-class _SourcesList extends StatefulWidget {
-  final List<LinkedAsset> assets;
-  const _SourcesList({required this.assets});
-
-  @override
-  State<_SourcesList> createState() => _SourcesListState();
+class _QuickStart {
+  final IconData icon;
+  final String label;
+  final String text;
+  final RetrievalScope scope;
+  final bool sendNow;
+  const _QuickStart(
+    this.icon,
+    this.label,
+    this.text,
+    this.scope, {
+    this.sendNow = false,
+  });
 }
 
-class _SourcesListState extends State<_SourcesList> {
-  static const _initialCount = 4;
-  bool _expanded = false;
+/// Horizontal row of shortcut chips shown before the first message.
+class _QuickStarts extends StatelessWidget {
+  final ValueChanged<_QuickStart> onPick;
+  const _QuickStarts({required this.onPick});
 
-  static IconData _iconForAsset(LinkedAsset asset) {
-    switch (asset.assetType) {
-      case 'file':
-        final ext = asset.assetRef.contains('.')
-            ? asset.assetRef.split('.').last.toLowerCase()
-            : '';
-        if (ext == 'pdf') return Icons.picture_as_pdf_outlined;
-        return Icons.insert_drive_file_outlined;
-      case 'photo':
-        return Icons.photo_outlined;
-      case 'video':
-        return Icons.videocam_outlined;
-      case 'email':
-        return Icons.email_outlined;
-      case 'contact':
-        return Icons.person_outline;
-      case 'calendar':
-        return Icons.calendar_today_outlined;
-      case 'phone':
-        return Icons.phone_outlined;
-      case 'link':
-        return Icons.link;
-      default:
-        return Icons.attach_file;
-    }
-  }
-
-  static Uri? _uriForAsset(LinkedAsset asset) {
-    switch (asset.assetType) {
-      case 'file':
-      case 'photo':
-      case 'video':
-        if (asset.assetRef.startsWith('file://')) return Uri.tryParse(asset.assetRef);
-        return Uri.file(asset.assetRef);
-      case 'email':
-        if (asset.assetRef.startsWith('mailto:')) return Uri.tryParse(asset.assetRef);
-        return Uri(scheme: 'mailto', path: asset.assetRef.trim());
-      case 'phone':
-        if (asset.assetRef.startsWith('tel:')) return Uri.tryParse(asset.assetRef);
-        final digits = asset.assetRef.replaceAll(RegExp(r'[^0-9+]'), '');
-        return digits.isEmpty ? null : Uri(scheme: 'tel', path: digits);
-      case 'contact':
-        if (asset.assetRef.startsWith('tel:') || asset.assetRef.startsWith('mailto:')) {
-          return Uri.tryParse(asset.assetRef);
-        }
-        if (asset.assetRef.contains('@')) return Uri(scheme: 'mailto', path: asset.assetRef.trim());
-        final digs = asset.assetRef.replaceAll(RegExp(r'[^0-9+]'), '');
-        return digs.isEmpty ? null : Uri(scheme: 'tel', path: digs);
-      case 'link':
-        final raw = asset.assetRef.trim();
-        final parsed = Uri.tryParse(raw);
-        if (parsed != null && parsed.hasScheme) return parsed;
-        return Uri.tryParse('https://$raw');
-      case 'calendar':
-        // assetRef is 'cal:<millisecondsSinceEpoch>' — deep-link into the
-        // native Calendar app at that event's time.
-        final millis = int.tryParse(asset.assetRef.replaceFirst('cal:', ''));
-        if (millis == null) return null;
-        if (Platform.isIOS || Platform.isMacOS) {
-          // calshow: takes Mac absolute time (seconds since 2001-01-01 UTC).
-          const macEpochOffsetSeconds = 978307200;
-          final macSeconds = (millis / 1000).round() - macEpochOffsetSeconds;
-          return Uri.parse('calshow:$macSeconds');
-        }
-        if (Platform.isAndroid) {
-          return Uri.parse('content://com.android.calendar/time/$millis');
-        }
-        return null;
-      default:
-        return null;
-    }
-  }
-
-  Future<void> _open(LinkedAsset asset) async {
-    // Files and photos: use share sheet (iOS sandbox blocks file:// in external apps).
-    if (asset.assetType == 'file' || asset.assetType == 'photo' || asset.assetType == 'video') {
-      final path = asset.assetRef.startsWith('file://')
-          ? Uri.parse(asset.assetRef).toFilePath()
-          : asset.assetRef;
-      final file = File(path);
-      if (await file.exists()) {
-        await Share.shareXFiles(
-          [XFile(path)],
-          subject: asset.label ?? asset.assetRef.split('/').last,
-        );
-      } else if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('File not found: ${asset.label ?? path.split('/').last}')),
-        );
-      }
-      return;
-    }
-
-    final uri = _uriForAsset(asset);
-    if (uri == null) {
-      if (asset.assetType == 'contact') {
-        final query = Uri.encodeComponent(asset.assetRef.trim());
-        final contactsUri = Uri.parse('mobilecontact://contacts?search=$query');
-        final fallback = Uri.parse('contacts://');
-        if (!await launchUrl(contactsUri, mode: LaunchMode.externalApplication)) {
-          if (mounted) await launchUrl(fallback, mode: LaunchMode.externalApplication);
-        }
-      } else if (mounted) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(const SnackBar(content: Text('This source cannot be opened yet.')));
-      }
-      return;
-    }
-
-    bool launched = false;
-    try {
-      launched = await launchUrl(uri, mode: LaunchMode.externalApplication);
-    } catch (_) {}
-    if (!launched && mounted) {
-      try {
-        launched = await launchUrl(uri, mode: LaunchMode.platformDefault);
-      } catch (_) {}
-    }
-    if (!launched && mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Could not open: ${asset.label ?? asset.assetRef}')),
-      );
-    }
-  }
-
-  String _displayLabel(LinkedAsset asset) {
-    if (asset.label != null && asset.label!.isNotEmpty) return asset.label!;
-    if (asset.assetRef.contains('/')) return asset.assetRef.split('/').last;
-    return asset.assetRef;
-  }
+  static const _items = [
+    _QuickStart(
+      Icons.wb_sunny_outlined,
+      'My day',
+      "What's on my schedule today?",
+      RetrievalScope.calendar,
+      sendNow: true,
+    ),
+    _QuickStart(
+      Icons.person_search_outlined,
+      'Find a contact',
+      'Find ',
+      RetrievalScope.contacts,
+    ),
+    _QuickStart(
+      Icons.photo_library_outlined,
+      'Photos',
+      'Show photos of ',
+      RetrievalScope.images,
+    ),
+    _QuickStart(
+      Icons.description_outlined,
+      'Documents',
+      'Find document ',
+      RetrievalScope.docs,
+    ),
+  ];
 
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
-    final total = widget.assets.length;
-    final visible = _expanded ? total : total.clamp(0, _initialCount);
-    final hidden = total - visible;
-
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text(
-          'Sources',
-          style: TextStyle(
-            fontSize: 11,
-            fontWeight: FontWeight.w600,
-            color: colors.onSurface.withAlpha(110),
-            letterSpacing: 0.4,
-          ),
-        ),
-        const SizedBox(height: 4),
-        for (int i = 0; i < visible; i++) _buildRow(widget.assets[i], colors),
-        if (hidden > 0)
-          GestureDetector(
-            onTap: () => setState(() => _expanded = true),
-            child: Padding(
-              padding: const EdgeInsets.only(top: 4, left: 2),
-              child: Text(
-                'Show $hidden more',
-                style: TextStyle(
-                  fontSize: 12,
-                  color: colors.primary,
-                  fontWeight: FontWeight.w500,
-                ),
-              ),
-            ),
-          ),
-      ],
-    );
-  }
-
-  Widget _buildRow(LinkedAsset asset, ColorScheme colors) {
-    final actionLabel = (asset.assetType == 'file' ||
-            asset.assetType == 'photo' ||
-            asset.assetType == 'video')
-        ? 'Share'
-        : 'Open';
-
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 3),
-      child: Row(
-        children: [
-          Icon(_iconForAsset(asset), size: 15, color: colors.primary.withAlpha(180)),
-          const SizedBox(width: 8),
-          Expanded(
-            child: Text(
-              _displayLabel(asset),
-              style: TextStyle(
-                fontSize: 13,
-                color: colors.onSurface.withAlpha(200),
-              ),
-              overflow: TextOverflow.ellipsis,
-              maxLines: 1,
-            ),
-          ),
-          const SizedBox(width: 8),
-          GestureDetector(
-            onTap: () => _open(asset),
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
-              decoration: BoxDecoration(
-                color: colors.primaryContainer.withAlpha(100),
-                borderRadius: BorderRadius.circular(8),
-              ),
-              child: Text(
-                actionLabel,
-                style: TextStyle(
-                  fontSize: 11,
-                  fontWeight: FontWeight.w600,
-                  color: colors.primary,
-                ),
-              ),
-            ),
-          ),
-        ],
+    return SizedBox(
+      height: 44,
+      child: ListView.separated(
+        scrollDirection: Axis.horizontal,
+        padding: const EdgeInsets.symmetric(horizontal: 12),
+        itemCount: _items.length,
+        separatorBuilder: (_, _) => const SizedBox(width: 8),
+        itemBuilder: (_, i) {
+          final q = _items[i];
+          return ActionChip(
+            avatar: Icon(q.icon, size: 16, color: colors.primary),
+            label: Text(q.label),
+            labelStyle: TextStyle(fontSize: 13, color: colors.onSurface),
+            backgroundColor: colors.surfaceContainerHigh,
+            side: BorderSide(color: colors.outlineVariant),
+            shape: const StadiumBorder(),
+            onPressed: () => onPick(q),
+          );
+        },
       ),
     );
   }
@@ -2639,7 +2772,10 @@ class _ThinkingBubbleState extends State<_ThinkingBubble>
                   mainAxisSize: MainAxisSize.min,
                   children: List.generate(3, (i) {
                     final delay = i * 0.2;
-                    final t = ((_controller.value - delay) % 1.0).clamp(0.0, 1.0);
+                    final t = ((_controller.value - delay) % 1.0).clamp(
+                      0.0,
+                      1.0,
+                    );
                     final y = -4.0 * (1.0 - (2.0 * t - 1.0) * (2.0 * t - 1.0));
                     return Padding(
                       padding: const EdgeInsets.symmetric(horizontal: 3),
@@ -2677,8 +2813,6 @@ class _ThinkingBubbleState extends State<_ThinkingBubble>
     );
   }
 }
-
-
 
 /// Labeled input action button (camera, mic).
 class _InputAction extends StatelessWidget {
@@ -2732,6 +2866,10 @@ class _SendButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    return Tooltip(message: 'Send', child: _buildButton());
+  }
+
+  Widget _buildButton() {
     return GestureDetector(
       onTap: () {
         HapticFeedback.mediumImpact();

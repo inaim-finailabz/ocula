@@ -3,6 +3,8 @@ import 'package:flutter/foundation.dart';
 
 import 'ai_manager.dart';
 import 'rag_engine.dart';
+import 'user_profile.dart';
+import 'direct_lookup.dart';
 import 'rag_config.dart';
 import 'indexer.dart';
 import 'network_permission.dart';
@@ -20,7 +22,14 @@ import 'ocula_db.dart';
 // ──────────────────────────────────────────
 
 /// Capabilities the orchestrator may request at runtime.
-enum OculaCapability { webSearch, contactsRead, calendarRead, emailRead, photoRead, fileRead }
+enum OculaCapability {
+  webSearch,
+  contactsRead,
+  calendarRead,
+  emailRead,
+  photoRead,
+  fileRead,
+}
 
 enum CapabilityBehavior { allow, deny, ask }
 
@@ -77,14 +86,22 @@ class AgentStep {
 
   String get label {
     switch (type) {
-      case AgentStepType.detectingIntent:      return 'Analyzing...';
-      case AgentStepType.retrieving:           return detail ?? 'Searching...';
-      case AgentStepType.webSearching:         return 'Searching the web...';
-      case AgentStepType.requestingPermission: return 'Waiting for permission...';
-      case AgentStepType.routingModel:         return 'Selecting model...';
-      case AgentStepType.generating:           return 'Generating response...';
-      case AgentStepType.complete:             return 'Done';
-      case AgentStepType.error:                return detail ?? 'Error';
+      case AgentStepType.detectingIntent:
+        return 'Analyzing...';
+      case AgentStepType.retrieving:
+        return detail ?? 'Searching...';
+      case AgentStepType.webSearching:
+        return 'Searching the web...';
+      case AgentStepType.requestingPermission:
+        return 'Waiting for permission...';
+      case AgentStepType.routingModel:
+        return 'Selecting model...';
+      case AgentStepType.generating:
+        return 'Generating response...';
+      case AgentStepType.complete:
+        return 'Done';
+      case AgentStepType.error:
+        return detail ?? 'Error';
     }
   }
 }
@@ -124,6 +141,12 @@ class AgentState {
   List<LinkedAsset> linkedAssets;
   final String? previousUserMessage;
   final String? previousAssistantMessage;
+
+  /// Set by [DirectLookup] when names / file names / photo labels matched
+  /// exactly, so plain lookups can be answered without the model.
+  String? directSource;
+  List<String> directTerms = const [];
+  Set<String> directIds = const {};
 
   AgentState({
     required this.query,
@@ -218,6 +241,7 @@ class Orchestrator {
     String? sessionId,
     String? previousUserMessage,
     String? previousAssistantMessage,
+    String? groundedContext,
   }) async {
     // If a previous run is still active, stop it first.
     if (_isRunning) {
@@ -239,6 +263,7 @@ class Orchestrator {
         sessionId: sessionId,
         previousUserMessage: previousUserMessage,
         previousAssistantMessage: previousAssistantMessage,
+        groundedContext: groundedContext,
       );
     } finally {
       _isRunning = false;
@@ -255,6 +280,7 @@ class Orchestrator {
     String? sessionId,
     String? previousUserMessage,
     String? previousAssistantMessage,
+    String? groundedContext,
   }) async {
     var state = AgentState(
       query: query,
@@ -291,47 +317,73 @@ class Orchestrator {
       return OrchestratorResult(state.response);
     }
 
-    // STEPS 2+3: RAG retrieval and episodic memory in parallel
-    _stepController.add(AgentStep(AgentStepType.retrieving,
-        _retrievalLabel(state.intent, state.retrievalScope)));
-    // These are independent DB queries — running them concurrently saves 200-500ms.
-    final results = await Future.wait([
-      _retrieve(
-        AgentState(
-          query: query,
-          hasImage: hasImage,
-          imagePath: imagePath,
-          retrievalScope: retrievalScope,
-        )..intent = state.intent,
-      ),
-      _recallMemory(
-        AgentState(
-          query: query,
-          hasImage: hasImage,
-          imagePath: imagePath,
-          retrievalScope: retrievalScope,
-        )..intent = state.intent,
-        sessionId: sessionId,
-      ),
-    ]);
-    if (_cancelled) return OrchestratorResult.empty;
+    // Caller already gathered the exact facts (e.g. today's calendar for the
+    // briefing): skip retrieval so fuzzy search can't add or drop items.
+    if (groundedContext != null) {
+      state.ragContext = groundedContext;
+      state.stepsCompleted.add('grounded_context');
+    } else {
+      // STEPS 2+3: RAG retrieval and episodic memory in parallel
+      _stepController.add(
+        AgentStep(
+          AgentStepType.retrieving,
+          _retrievalLabel(state.intent, state.retrievalScope),
+        ),
+      );
+      // These are independent DB queries — running them concurrently saves 200-500ms.
+      final results = await Future.wait([
+        _retrieve(
+          AgentState(
+            query: query,
+            hasImage: hasImage,
+            imagePath: imagePath,
+            retrievalScope: retrievalScope,
+          )..intent = state.intent,
+        ),
+        _recallMemory(
+          AgentState(
+            query: query,
+            hasImage: hasImage,
+            imagePath: imagePath,
+            retrievalScope: retrievalScope,
+          )..intent = state.intent,
+          sessionId: sessionId,
+        ),
+      ]);
+      if (_cancelled) return OrchestratorResult.empty;
 
-    // Merge results back into state
-    final retrieveState = results[0];
-    final memoryState = results[1];
-    state.ragContext = retrieveState.ragContext;
-    state.linkedAssets = retrieveState.linkedAssets;
-    state.stepsCompleted.addAll(retrieveState.stepsCompleted);
-    if (memoryState.ragContext.isNotEmpty) {
-      state.ragContext += memoryState.ragContext;
+      // Merge results back into state
+      final retrieveState = results[0];
+      final memoryState = results[1];
+      state.ragContext = retrieveState.ragContext;
+      state.linkedAssets = retrieveState.linkedAssets;
+      state.directSource = retrieveState.directSource;
+      state.directTerms = retrieveState.directTerms;
+      state.directIds = retrieveState.directIds;
+      state.stepsCompleted.addAll(retrieveState.stepsCompleted);
+      if (memoryState.ragContext.isNotEmpty) {
+        state.ragContext += memoryState.ragContext;
+      }
+      state.stepsCompleted.addAll(memoryState.stepsCompleted);
     }
-    state.stepsCompleted.addAll(memoryState.stepsCompleted);
 
     // STEP 4: If web intent, check internet permission
     if (state.intent == QueryIntent.web) {
       _stepController.add(AgentStep(AgentStepType.webSearching));
       state = await _webSearch(state);
       if (_cancelled) return OrchestratorResult.empty;
+    }
+
+    // FAST PATH: plain lookups with exact matches are answered from the
+    // index — the cards carry the data, no model generation needed.
+    final quick = _quickLookupAnswer(state);
+    if (quick != null) {
+      state.response = quick;
+      state.stepsCompleted.add('direct_lookup_answer');
+      await _memory.log(state, sessionId: sessionId);
+      state.status = StepStatus.completed;
+      _stepController.add(AgentStep(AgentStepType.complete));
+      return OrchestratorResult(state.response, state.linkedAssets);
     }
 
     // STEP 5: Route to the right model
@@ -367,20 +419,32 @@ class Orchestrator {
   /// Human-readable retrieval label for the step stream.
   String _retrievalLabel(QueryIntent intent, RetrievalScope scope) {
     switch (scope) {
-      case RetrievalScope.docs:      return 'Searching documents...';
-      case RetrievalScope.images:    return 'Searching photos...';
-      case RetrievalScope.contacts:  return 'Searching contacts...';
-      case RetrievalScope.email:     return 'Searching emails...';
-      case RetrievalScope.calendar:  return 'Searching calendar...';
-      case RetrievalScope.location:  return 'Searching by location...';
+      case RetrievalScope.docs:
+        return 'Searching documents...';
+      case RetrievalScope.images:
+        return 'Searching photos...';
+      case RetrievalScope.contacts:
+        return 'Searching contacts...';
+      case RetrievalScope.email:
+        return 'Searching emails...';
+      case RetrievalScope.calendar:
+        return 'Searching calendar...';
+      case RetrievalScope.location:
+        return 'Searching by location...';
       case RetrievalScope.all:
         switch (intent) {
-          case QueryIntent.contact:  return 'Searching contacts...';
-          case QueryIntent.calendar: return 'Searching calendar...';
-          case QueryIntent.email:    return 'Searching emails...';
-          case QueryIntent.file:     return 'Searching documents...';
-          case QueryIntent.photo:    return 'Searching photos...';
-          default:                   return 'Searching...';
+          case QueryIntent.contact:
+            return 'Searching contacts...';
+          case QueryIntent.calendar:
+            return 'Searching calendar...';
+          case QueryIntent.email:
+            return 'Searching emails...';
+          case QueryIntent.file:
+            return 'Searching documents...';
+          case QueryIntent.photo:
+            return 'Searching photos...';
+          default:
+            return 'Searching...';
         }
     }
   }
@@ -411,6 +475,17 @@ class Orchestrator {
     };
     return greetings.contains(trimmed);
   }
+
+  // Whole-word patterns so "recall" ≠ call, "prevent" ≠ event.
+  static final _contactPattern = RegExp(
+    r"\b(contacts?|phone|numbers?|mobile|cell|call|text|whatsapp|"
+    r"address(es)? of|email of|who is|who's|reach)\b|'s (number|phone|email)",
+  );
+  static final _calendarPattern = RegExp(
+    r'\b(schedule|calendar|meetings?|appointments?|events?|agenda|'
+    r'today|tomorrow|tonight|this week|next week|busy|free|plans?|'
+    r'monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b',
+  );
 
   /// Node 1: Detect what the user wants.
   Future<AgentState> _detectIntent(AgentState state) async {
@@ -476,15 +551,9 @@ class Orchestrator {
         lower.contains('contract') ||
         lower.contains('certificate')) {
       state.intent = QueryIntent.file;
-    } else if (lower.contains('contact') ||
-        lower.contains('phone number') ||
-        lower.contains('call')) {
+    } else if (_contactPattern.hasMatch(lower)) {
       state.intent = QueryIntent.contact;
-    } else if (lower.contains('schedule') ||
-        lower.contains('calendar') ||
-        lower.contains('meeting') ||
-        lower.contains('appointment') ||
-        lower.contains('event')) {
+    } else if (_calendarPattern.hasMatch(lower)) {
       state.intent = QueryIntent.calendar;
     } else {
       state.intent = QueryIntent.chat;
@@ -558,14 +627,45 @@ class Orchestrator {
     );
     final searchQuery = rewrite.searchQuery;
     final retrievePlan = _buildRetrievePlan(state.intent);
+    // Exact match on names / file names / photo labels first.
+    var direct = <RAGResult>[];
+    final terms = DirectLookup.terms(state.query);
+    if (terms.isNotEmpty &&
+        const {'contact', 'file', 'photo'}.contains(sourceHint)) {
+      final rows = DirectLookup.rank(
+        await OculaDB().directLookup(sourceHint!, terms),
+        terms,
+      );
+      direct = [
+        for (final r in rows)
+          RAGResult(
+            text: r.text,
+            source: r.source,
+            sourceId: r.sourceId,
+            score: r.score,
+            timestamp: r.timestamp,
+          ),
+      ];
+      if (direct.isNotEmpty) {
+        state.directSource = sourceHint;
+        state.directTerms = terms;
+        state.directIds = {for (final r in direct) r.sourceId};
+      }
+      debugPrint(
+        '[Orchestrator] Direct lookup $sourceHint $terms → ${direct.length}',
+      );
+    }
 
-    // Single search — reuse results for both context and asset linking
-    var results = await _rag.search(
-      searchQuery,
-      sourceHint: sourceHint,
-      topK: retrievePlan.topK,
-      minScore: retrievePlan.minScore,
-    );
+    // Lookups with exact hits skip hybrid search (and its embedding pass).
+    final skipHybrid = direct.isNotEmpty && DirectLookup.isLookup(state.query);
+    var results = skipHybrid
+        ? <RAGResult>[]
+        : await _rag.search(
+            searchQuery,
+            sourceHint: sourceHint,
+            topK: retrievePlan.topK,
+            minScore: retrievePlan.minScore,
+          );
     debugPrint(
       '[Orchestrator] Hybrid search: ${results.length} results '
       '(sourceHint=$sourceHint, topK=${retrievePlan.topK}, '
@@ -576,7 +676,9 @@ class Orchestrator {
     // source intent, list all entries of that type. This handles "list all"
     // queries like "who are my contacts" or "what's on my calendar" where
     // the query doesn't semantically match individual records.
-    if (sourceHint != null && results.length < retrievePlan.minDesiredResults) {
+    if (!skipHybrid &&
+        sourceHint != null &&
+        results.length < retrievePlan.minDesiredResults) {
       final needed = retrievePlan.minDesiredResults - results.length;
       debugPrint(
         '[Orchestrator] Hybrid search thin (${results.length}) — '
@@ -595,6 +697,8 @@ class Orchestrator {
       rewrite: rewrite,
       sourceHint: sourceHint,
     );
+    // Exact matches always lead.
+    if (direct.isNotEmpty) results = _mergeUniqueResults(direct, results);
 
     if (results.isNotEmpty) {
       // Build structured context string so the model can explain:
@@ -614,7 +718,10 @@ class Orchestrator {
       try {
         final sourceIds = results.map((r) => r.sourceId).toList();
         final dbAssets = await OculaDB().findLinkedAssets(sourceIds);
-        final linkedById = {for (final a in dbAssets) a.sourceId: a};
+        final linkedById = <String, LinkedAsset>{};
+        for (final a in dbAssets) {
+          linkedById.putIfAbsent(a.sourceId, () => a);
+        }
 
         // Synthesize chips for file/photo sources not in the DB so tappable
         // links always appear even when linkAsset was never called for them.
@@ -645,14 +752,27 @@ class Orchestrator {
         // data queries (contact, email, file, photo, calendar) show their
         // own category's chips. This prevents contact/phone numbers from
         // bleeding into meeting notes, file lookups, and general chat.
-        final allAssets = linkedById.values.toList();
+        // Keep retrieval rank order and attach the chunk text so the UI can
+        // render structured cards (contact fields, file excerpt, photo date).
+        final snippetById = <String, String>{};
+        for (final r in results) {
+          snippetById.putIfAbsent(r.sourceId, () => r.text);
+        }
+        final allAssets = [
+          for (final id in snippetById.keys)
+            if (linkedById[id] != null)
+              linkedById[id]!.withSnippet(snippetById[id]),
+        ];
         final intent = state.intent;
+        final lowerQuery = state.query.toLowerCase();
         state.linkedAssets = allAssets.where((a) {
           switch (a.assetType) {
             case 'contact':
             case 'phone':
-              // Only show for explicit contact queries
-              return intent == QueryIntent.contact;
+              // Explicit contact queries, or any query naming this person
+              // ("when did Sarah send…", "Ahmed's birthday").
+              return intent == QueryIntent.contact ||
+                  _queryNamesContact(lowerQuery, a.label);
             case 'email':
               // Show for contact AND email queries (email address in contacts)
               return intent == QueryIntent.contact ||
@@ -678,10 +798,7 @@ class Orchestrator {
     // Calendar queries don't need entity enrichment (and adding contacts from
     // the graph pollutes meeting/schedule answers with irrelevant people).
     // File/chat/web intents never get graph enrichment.
-    final socialIntents = {
-      QueryIntent.contact,
-      QueryIntent.email,
-    };
+    final socialIntents = {QueryIntent.contact, QueryIntent.email};
     if (socialIntents.contains(state.intent)) {
       try {
         final graphCtx = await OculaDB().graphContext(
@@ -703,6 +820,33 @@ class Orchestrator {
 
     state.stepsCompleted.add('retrieve');
     return state;
+  }
+
+  /// Templated reply for plain lookups that matched exactly, or null when the
+  /// model is needed.
+  String? _quickLookupAnswer(AgentState state) {
+    final source = state.directSource;
+    if (source == null || state.hasImage) return null;
+    if (!DirectLookup.isLookup(state.query)) return null;
+    final hits = state.linkedAssets
+        .where((a) => state.directIds.contains(a.sourceId))
+        .toList();
+    if (hits.isEmpty) return null;
+    state.linkedAssets = hits;
+    return DirectLookup.answer(source, hits, state.directTerms);
+  }
+
+  /// True if [lowerQuery] contains a name token (≥3 chars) of [contactName]
+  /// as a whole word.
+  static bool _queryNamesContact(String lowerQuery, String? contactName) {
+    if (contactName == null) return false;
+    for (final part in contactName.toLowerCase().split(RegExp(r'\s+'))) {
+      if (part.length < 3) continue;
+      if (RegExp('\\b${RegExp.escape(part)}\\b').hasMatch(lowerQuery)) {
+        return true;
+      }
+    }
+    return false;
   }
 
   String? _retrievalAmbiguityNote(List<RAGResult> results) {
@@ -1286,7 +1430,7 @@ class Orchestrator {
   /// Node 6: Generate response from the LLM.
   Future<AgentState> _generate(AgentState state) async {
     // Build context string — ai_manager.ask() handles the system prompt + ChatML template
-    final context = state.ragContext;
+    final context = state.ragContext + UserProfile().toPromptContext();
     debugPrint(
       '[Orchestrator] Generate: intent=${state.intent.name}, '
       'hasImage=${state.hasImage}, tier=${_ai.activeTier?.name}, '
@@ -1379,7 +1523,11 @@ class EpisodicMemory {
 
   /// Recall recent conversations relevant to a query.
   /// [sessionId] scopes recall to the current session only.
-  Future<String> recall(String query, {int limit = 3, String? sessionId}) async {
+  Future<String> recall(
+    String query, {
+    int limit = 3,
+    String? sessionId,
+  }) async {
     // Combine keyword recall with knowledge graph context
     final chatRecall = await _db.recallChat(
       query,

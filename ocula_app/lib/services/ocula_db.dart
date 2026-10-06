@@ -188,9 +188,7 @@ class OculaDB {
   Future<void> _onUpgrade(Database db, int oldVersion, int newVersion) async {
     if (oldVersion < 3) {
       try {
-        await db.execute(
-          'ALTER TABLE chat_turns ADD COLUMN session_id TEXT',
-        );
+        await db.execute('ALTER TABLE chat_turns ADD COLUMN session_id TEXT');
         await db.execute(
           'CREATE INDEX IF NOT EXISTS idx_chat_session ON chat_turns(session_id)',
         );
@@ -442,6 +440,46 @@ class OculaDB {
   /// List all chunks for a given source type (e.g. 'contact', 'calendar').
   /// Used for "list all" queries where hybrid search may miss because
   /// the query doesn't semantically match individual records.
+  /// Exact substring lookup within one source type (names, file names,
+  /// photo labels). Rows containing any term are returned; callers rank them
+  /// with [DirectLookup.rank]. Much faster and more precise than hybrid
+  /// search for "find Kate" / "passport pdf" style requests.
+  Future<List<RagSearchResult>> directLookup(
+    String source,
+    List<String> terms, {
+    int limit = 40,
+  }) async {
+    if (terms.isEmpty) return [];
+    final d = await db;
+    final clause = List.filled(
+      terms.length,
+      '(LOWER(text) LIKE ? OR LOWER(source_id) LIKE ?)',
+    ).join(' OR ');
+    final args = <Object>[
+      source,
+      for (final t in terms) ...['%$t%', '%$t%'],
+    ];
+    final rows = await d.query(
+      'rag_chunks',
+      columns: ['id', 'text', 'source', 'source_id', 'created_at'],
+      where: 'source = ? AND ($clause)',
+      whereArgs: args,
+      orderBy: 'created_at DESC',
+      limit: limit,
+    );
+    return [
+      for (final row in rows)
+        RagSearchResult(
+          id: row['id'] as int,
+          text: row['text'] as String,
+          source: row['source'] as String,
+          sourceId: row['source_id'] as String,
+          score: 1.0,
+          timestamp: DateTime.parse(row['created_at'] as String),
+        ),
+    ];
+  }
+
   Future<List<RagSearchResult>> listBySource(
     String source, {
     int limit = 20,
@@ -1029,11 +1067,10 @@ class OculaDB {
           'nulled $count vectors for re-embedding.',
         );
       }
-      await d.insert(
-        'rag_meta',
-        {'key': 'embedding_model', 'value': _currentEmbeddingModel},
-        conflictAlgorithm: ConflictAlgorithm.replace,
-      );
+      await d.insert('rag_meta', {
+        'key': 'embedding_model',
+        'value': _currentEmbeddingModel,
+      }, conflictAlgorithm: ConflictAlgorithm.replace);
     }
   }
 
@@ -1393,13 +1430,26 @@ class LinkedAsset {
   assetType; // 'file', 'photo', 'email', 'contact', 'calendar', 'video', 'link'
   final String assetRef; // path, URI, or identifier
   final String? label; // display name
+  /// Indexed text of the matched RAG chunk (e.g. "Name: …\nPhone number: …").
+  /// Attached at retrieval time so the UI can render structured cards
+  /// without depending on the LLM to restate the data. Not persisted.
+  final String? snippet;
 
   LinkedAsset({
     required this.sourceId,
     required this.assetType,
     required this.assetRef,
     this.label,
+    this.snippet,
   });
+
+  LinkedAsset withSnippet(String? text) => LinkedAsset(
+    sourceId: sourceId,
+    assetType: assetType,
+    assetRef: assetRef,
+    label: label,
+    snippet: text,
+  );
 
   /// Icon name for this asset type.
   String get iconName {
