@@ -57,7 +57,12 @@ platform :ios do
     end
 
     # Run outside bundle exec to avoid CocoaPods/Bundler collision.
-    system("export PATH=\"/opt/homebrew/bin:/usr/local/bin:$PATH\" && cd #{File.expand_path("../..")} && flutter build ipa --release --export-options-plist=ios/ExportOptions.plist") \
+    # The homebrew fastlane launcher pins GEM_HOME/GEM_PATH to its own isolated
+    # gem dir (~/.local/share/fastlane/...); that leaks into this subshell and
+    # makes the nested `pod install` look for cocoapods in the wrong place,
+    # which flutter reports as "CocoaPods not installed or not in valid state."
+    # Unsetting them lets pod fall back to the system Ruby's real gem path.
+    system("unset BUNDLE_GEMFILE GEM_HOME GEM_PATH; export PATH=\"/opt/homebrew/opt/ruby/bin:/opt/homebrew/bin:/usr/local/bin:$PATH\" && cd #{File.expand_path("../..")} && flutter build ipa --release --export-options-plist=ios/ExportOptions.plist") \
       or UI.user_error!("flutter build ipa failed")
 
     upload_to_testflight(
